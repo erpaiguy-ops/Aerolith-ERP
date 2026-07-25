@@ -10,7 +10,7 @@ production use. Licences are permissive (MIT/Apache) unless flagged.
 | Language | TypeScript 5.x (strict) | One language across web, API, jobs, factory tablets |
 | Monorepo | pnpm workspaces + Turborepo | Free, fast, affected-only CI |
 | Web | Next.js 15 (App Router) + React 19 | SSR for heavy list screens, RSC cuts client bundle |
-| API | NestJS 11 | Its `@Module` system maps 1:1 onto your 17 modules; DI makes boundaries enforceable |
+| API | Fastify 5 | See "Revised: Fastify over NestJS" below |
 | Contracts | Zod + ts-rest | End-to-end type safety over plain REST, so third parties and mobile can integrate later |
 | DB | PostgreSQL 17 | Transactions, RLS, JSONB custom fields, materialised views, full-text search, `pg_cron` |
 | ORM | Drizzle ORM | SQL-first; ERP reporting needs real SQL, and Drizzle does not fight you. Migrations via drizzle-kit |
@@ -21,6 +21,26 @@ production use. Licences are permissive (MIT/Apache) unless flagged.
 | Files | Cloudflare R2 (S3 API) | 10 GB free, **zero egress fees** — critical for a document-heavy ERP |
 | Search | Postgres FTS → Meilisearch when needed | Avoids running Elasticsearch on a free box |
 | Realtime | SSE over Postgres `LISTEN/NOTIFY` | Enough for approvals, notifications, live job status. WebSockets only if you add chat |
+
+### Revised: Fastify over NestJS
+
+This document originally specified NestJS, chosen because its `@Module` system
+mapped onto the 17 business modules. Building the kernel changed the reasoning,
+so the decision is revised here rather than left contradicting the code.
+
+The module registry in `@aerolith/kernel` already does that job, and does it
+better for this product: it resolves modules **per tenant at request time** from
+entitlement rows, which is what makes one binary serve both the standalone
+product and the full ERP. NestJS's module graph is static and resolved at boot,
+so it cannot express that — which would leave two parallel module concepts to
+keep in sync, one of which does not actually control anything.
+
+Fastify keeps one module concept, the one that carries the licensing model.
+NestJS's DI, guards and interceptors would have been genuine value if the
+manifest system did not exist; given that it does, they duplicate it.
+
+What is unchanged: typed contracts via Zod at the boundary, and REST rather than
+RPC so third parties and the PWA can integrate later.
 
 ## UI
 

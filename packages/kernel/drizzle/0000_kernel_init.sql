@@ -1,7 +1,7 @@
 CREATE SCHEMA "kernel";
 --> statement-breakpoint
 CREATE TYPE "kernel"."approval_decision" AS ENUM('approved', 'rejected', 'delegated', 'recalled', 'escalated', 'auto_approved', 'skipped');--> statement-breakpoint
-CREATE TYPE "kernel"."approval_state" AS ENUM('draft', 'pending', 'approved', 'rejected', 'cancelled', 'recalled', 'expired');--> statement-breakpoint
+CREATE TYPE "kernel"."approval_state" AS ENUM('draft', 'pending', 'approved', 'rejected', 'cancelled', 'recalled', 'expired', 'skipped');--> statement-breakpoint
 CREATE TYPE "kernel"."approver_type" AS ENUM('role', 'user', 'manager_of_requester', 'department_head', 'project_manager', 'legal_entity_owner', 'cost_centre_owner', 'dynamic');--> statement-breakpoint
 CREATE TYPE "kernel"."quorum_rule" AS ENUM('all', 'any', 'majority', 'count');--> statement-breakpoint
 CREATE TYPE "kernel"."audit_action" AS ENUM('create', 'update', 'delete', 'read', 'approve', 'reject', 'submit', 'cancel', 'post', 'reverse', 'login', 'logout', 'export', 'permission_change');--> statement-breakpoint
@@ -909,6 +909,7 @@ CREATE TABLE "kernel"."number_allocation" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"series_id" uuid NOT NULL,
+	"period" varchar(16) NOT NULL,
 	"value" integer NOT NULL,
 	"formatted" text NOT NULL,
 	"entity_id" uuid,
@@ -917,7 +918,7 @@ CREATE TABLE "kernel"."number_allocation" (
 	"allocated_by" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "number_allocation_uq" UNIQUE("series_id","value")
+	CONSTRAINT "number_allocation_uq" UNIQUE("series_id","period","value")
 );
 --> statement-breakpoint
 CREATE TABLE "kernel"."number_series" (
@@ -1122,6 +1123,7 @@ CREATE INDEX "notification_inbox_idx" ON "kernel"."notification" USING btree ("t
 CREATE INDEX "notification_delivery_status_idx" ON "kernel"."notification_delivery" USING btree ("status","created_at");--> statement-breakpoint
 CREATE INDEX "notification_type_module_idx" ON "kernel"."notification_type" USING btree ("module_key");--> statement-breakpoint
 CREATE INDEX "number_allocation_entity_idx" ON "kernel"."number_allocation" USING btree ("tenant_id","entity_id");--> statement-breakpoint
+CREATE INDEX "number_allocation_period_idx" ON "kernel"."number_allocation" USING btree ("series_id","period","value");--> statement-breakpoint
 CREATE INDEX "number_series_entity_idx" ON "kernel"."number_series" USING btree ("tenant_id","entity_type","is_active");--> statement-breakpoint
 CREATE INDEX "permission_module_idx" ON "kernel"."permission" USING btree ("module_key");--> statement-breakpoint
 CREATE INDEX "role_permission_tenant_idx" ON "kernel"."role_permission" USING btree ("tenant_id");--> statement-breakpoint

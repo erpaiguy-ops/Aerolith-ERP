@@ -9,22 +9,30 @@ not code** — see [`docs/06-localisation.md`](docs/06-localisation.md).
 
 ## Status
 
-Kernel scaffold. The platform layer every module will depend on is in place and
-tested; no business modules yet.
+Kernel and API. The platform layer every module depends on is built, running and
+tested. No business modules yet.
 
 **Built and working**
 
 - Monorepo (pnpm + Turborepo), TypeScript strict, ESLint, **enforced module boundaries**
 - Full kernel Postgres schema — tenancy, identity, RBAC, audit, numbering,
   documents, approvals, notifications, custom fields, master data, outbox, localisation
-- **Row Level Security** on all 44 tenant-scoped tables, with append-only enforcement
+- **Row Level Security** on all tenant-scoped tables, with append-only enforcement
   on the audit trail
+- **Approval engine** — data-driven workflows, amount thresholds, parallel steps
+  with quorum, delegation, self-approval prevention, workflow version pinning
+- **Document numbering** — pattern-driven, per-period reset, row-locked allocation
+  for statutory gapless series
+- **Audit trail** with automatic redaction of salary, passport and bank fields
 - Module manifest + registry with per-tenant entitlement resolution
 - Typed event bus over a transactional outbox
 - Data-driven localisation with country packs for **AE, QA, SA, OM, BH, KW**
-- 83 tests, including integration tests that prove tenant isolation holds
+- **HTTP API** (Fastify) — auth, module/navigation resolution, localisation admin,
+  approval inbox
+- **182 tests**, including integration tests that prove tenant isolation holds and
+  drive the approval engine and API end to end
 
-**Not built yet** — module APIs, the web app, and every business module.
+**Not built yet** — the web app and every business module.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ## Getting started
@@ -44,14 +52,39 @@ Integration tests need a database:
 TEST_DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith pnpm test
 ```
 
+Run the API:
+
+```bash
+DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith \
+pnpm --filter @aerolith/api dev
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Liveness |
+| `GET /api/v1/modules/catalogue` | Every module this deployment can serve |
+| `GET /api/v1/me` | The caller's tenant, modules, navigation and permissions |
+| `GET /api/v1/localisation/countries` | Countries available to adopt |
+| `POST /api/v1/localisation/adopt` | Adopt a country; pre-fills the tenant's requirements |
+| `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |
+| `GET /api/v1/localisation/rules` | Resolved rules, with the layer each answer came from |
+| `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
+| `GET /api/v1/approvals/inbox` | What is waiting on the caller |
+| `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
+
 ## Layout
 
 ```
+apps/
+  api/                 HTTP API — boots modules from the registry per tenant
 packages/
   kernel/              the platform — everything depends on it, it depends on nothing
     src/db/schema/     the kernel Postgres schema
     src/db/rls.ts      tenant isolation policies
     src/modules/       manifest + registry (how standalone vs unified works)
+    src/approvals/     workflow engine — used by every module, owned by none
+    src/numbering/     document number allocation
+    src/audit/         append-only trail with field redaction
     src/events/        typed event bus over the outbox
     src/localisation/  country-as-data: packs, rule resolution, adoption
     packs/             AE, QA, SA, OM, BH, KW — adding a country is a JSON file
@@ -74,7 +107,7 @@ docs/                  architecture and decisions
 
 ## Headline decisions
 
-- **TypeScript everywhere** — Next.js + NestJS + Drizzle + Postgres, one Turborepo.
+- **TypeScript everywhere** — Next.js + Fastify + Drizzle + Postgres, one Turborepo.
 - **Modular monolith** with mechanically enforced boundaries — not microservices,
   not a big ball of mud.
 - **Standalone vs unified is a licensing concern**, not a deployment one: same

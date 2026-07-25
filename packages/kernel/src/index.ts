@@ -27,8 +27,11 @@ export {
   getDatabase,
   schema,
   withTenant,
+  withTenantId,
   withoutTenantGuard,
 } from './db';
+
+export { KERNEL_MODULE_KEY, KERNEL_PERMISSIONS } from './rbac/permissions';
 
 export {
   APPEND_ONLY_TABLES,
@@ -96,3 +99,68 @@ export {
   adoptCountry,
   setTenantRule,
 } from './localisation/adopt';
+export {
+  loadRuleSnapshot,
+  registerModuleRules,
+  requirementsFor,
+} from './localisation/snapshot';
+
+// Numbering
+export {
+  type NumberTokens,
+  fiscalYear,
+  formatNumber,
+  periodKey,
+  validatePattern,
+  validateResetConsistency,
+} from './numbering/format';
+export {
+  type AllocateOptions,
+  type AllocatedNumber,
+  NoNumberSeriesError,
+  allocateNumber,
+  provisionSeries,
+  voidNumber,
+} from './numbering/service';
+
+// Approvals
+export {
+  type ApprovalContext,
+  type WorkflowCandidate,
+  evaluateCondition,
+  matchesConditions,
+  planSteps,
+  quorumMet,
+  readPath,
+  requiresReapproval,
+  selectWorkflow,
+} from './approvals/conditions';
+export {
+  type ApproverResolver,
+  type DecideInput,
+  type DecideResult,
+  type RequestApprovalInput,
+  type RequestApprovalResult,
+  ApproverResolverRegistry,
+  NoApproversError,
+  NoMatchingWorkflowError,
+  approverResolvers,
+  decide,
+  findOverdueTasks,
+  recall,
+  requestApproval,
+} from './approvals/engine';
+
+// Audit
+export {
+  type AuditAction,
+  type FieldChange,
+  type RecordAuditInput,
+  DEFAULT_REDACTED_FIELDS,
+  actorActivity,
+  diffRecords,
+  entityHistory,
+  recordAudit,
+  redactChanges,
+  tryRecordAudit,
+} from './audit/service';

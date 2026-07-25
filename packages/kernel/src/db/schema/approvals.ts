@@ -32,6 +32,8 @@ export const approvalState = kernel.enum('approval_state', [
   'cancelled',
   'recalled',
   'expired',
+  /** Task only: quorum was reached by others, so this approver need not act. */
+  'skipped',
 ]);
 
 export const approverType = kernel.enum('approver_type', [

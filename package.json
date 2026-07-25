@@ -21,7 +21,7 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm boundaries && pnpm test"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.10.2",
     "dependency-cruiser": "^16.9.0",
     "eslint": "^9.18.0",

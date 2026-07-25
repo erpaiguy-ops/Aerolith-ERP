@@ -66,9 +66,31 @@ export async function withTenant<T>(fn: (tx: Transaction) => Promise<T>): Promis
 }
 
 /**
+ * Like `withTenant`, but with the tenant passed explicitly.
+ *
+ * For paths that run BEFORE a tenant context exists — chiefly authentication,
+ * which must read `membership` and `role` to build the context in the first
+ * place. Those tables are tenant-scoped, so without a guard RLS correctly
+ * returns nothing and login silently fails.
+ */
+export async function withTenantId<T>(
+  tenantId: string,
+  fn: (tx: Transaction) => Promise<T>,
+): Promise<T> {
+  return getDatabase().transaction(async (tx) => {
+    await setTenantGuard(tx, tenantId);
+    return fn(tx);
+  });
+}
+
+/**
  * Escape hatch for cross-tenant work: migrations, the outbox dispatcher, the
  * tenant provisioning flow and platform administration. Named to be greppable —
  * every call site should be reviewable.
+ *
+ * Reads of tenant-scoped tables through this will return NOTHING when the app
+ * role is in use, because RLS is forced. That is the intended failure mode; use
+ * `withTenantId` when you know the tenant.
  */
 export async function withoutTenantGuard<T>(fn: (tx: Transaction) => Promise<T>): Promise<T> {
   return getDatabase().transaction(fn);

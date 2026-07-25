@@ -1,5 +1,5 @@
 {
-  "id": "cd858a3c-15a1-46c6-a689-1f5d046d17a6",
+  "id": "9b325ae9-3a89-41e9-a7b4-2cc9a9c9829b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -6938,6 +6938,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "period": {
+          "name": "period",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "value": {
           "name": "value",
           "type": "integer",
@@ -7011,6 +7017,33 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "number_allocation_period_idx": {
+          "name": "number_allocation_period_idx",
+          "columns": [
+            {
+              "expression": "series_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "period",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "value",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -7036,6 +7069,7 @@
           "nullsNotDistinct": false,
           "columns": [
             "series_id",
+            "period",
             "value"
           ]
         }
@@ -8056,7 +8090,8 @@
         "rejected",
         "cancelled",
         "recalled",
-        "expired"
+        "expired",
+        "skipped"
       ]
     },
     "kernel.approver_type": {

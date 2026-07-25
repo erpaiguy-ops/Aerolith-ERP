@@ -80,6 +80,13 @@ export const numberAllocation = kernel.table(
     seriesId: uuid('series_id')
       .notNull()
       .references(() => numberSeries.id, { onDelete: 'cascade' }),
+    /**
+     * The reset period the value belongs to ('2026', '2026-07', 'FY2026', 'ALL').
+     * Part of the key: a yearly series reissues value 1 every January, so
+     * (series, value) alone is not unique — and the gapless proof is per period
+     * anyway, since that is the unit an auditor asks about.
+     */
+    period: varchar('period', { length: 16 }).notNull(),
     value: integer('value').notNull(),
     formatted: text('formatted').notNull(),
     entityId: uuid('entity_id'),
@@ -90,7 +97,8 @@ export const numberAllocation = kernel.table(
     ...timestamps(),
   },
   (t) => [
-    unique('number_allocation_uq').on(t.seriesId, t.value),
+    unique('number_allocation_uq').on(t.seriesId, t.period, t.value),
     index('number_allocation_entity_idx').on(t.tenantId, t.entityId),
+    index('number_allocation_period_idx').on(t.seriesId, t.period, t.value),
   ],
 );
