@@ -94,17 +94,38 @@ Multi-warehouse, multi-location (rack/shelf/bin), barcode-driven.
 
 ## 6. Projects (Joinery Works)
 
-- WBS, Gantt with dependencies and baselines, milestones, resource loading.
+**Status: shipped (v0.1).** WBS with rules of credit, versioned budgets, an
+append-only job cost ledger, commitments, value-weighted progress, earned value
+and forecasting, milestones and snagging. What follows in this list beyond those
+is still to build.
+
+Three decisions worth recording, because they are the ones that were tempting to
+get wrong:
+
+- **Progress is value-weighted, always.** Averaging percentages across WBS nodes
+  reports 80% on a job that is 20% done, every time the work is unevenly
+  distributed — which it always is. The weight is the budget.
+- **Rules of credit replace opinions with counts.** A self-assessed percentage is
+  permitted, needs its own dangerous permission, and is capped below 100%: only
+  marking a node finished reaches 100. Without the cap, "100% complete" arrives
+  weeks before the work does.
+- **Earned value is rolled up in COST units as well as revenue units.** CPI is
+  earned value over actual cost; feeding it revenue-weighted earned value
+  overstates the index by exactly the job's margin, so a job losing money reads
+  comfortably above 1.0 until the final account. Both roll-ups are kept, and they
+  are not interchangeable.
+
+Still to build:
+
+- Gantt with dependencies and baselines, resource loading.
 - **Site survey & measurement records** with photos and dimension sheets.
 - **Shop drawing register: submission → consultant review → approved/approved-as-noted
   → revision.** Fit-out lives and dies by this. Include the approval clock, because
   consultant delay is your single biggest cause of claims.
 - Material submittals, mock-up approvals, sample tracking.
 - **RFI register** with response SLA.
-- Installation planning, site handover, **snag list with photo markup on drawings**,
-  de-snagging, final handover, DLP tracking.
-- Progress measurement (% complete by area/element) feeding payment applications.
-- Budget vs actual by cost code, EVM, cost-to-complete forecasting.
+- Installation planning, **photo markup on drawings** for snags (the register
+  itself is shipped), final handover certificate.
 
 ## 7. Estimation & Tendering
 
@@ -123,16 +144,36 @@ Multi-warehouse, multi-location (rack/shelf/bin), barcode-driven.
 
 ## 8. Contract Administration
 
-- Contract register: value, dates, retention %, defects liability period, payment
-  terms, LDs, bonds and guarantees with expiry alerts.
-- **Variations / VOs** — full lifecycle: instruction → estimate → submission →
-  approval → execution → certification. Track approved / pending / rejected value
-  separately, because pending VO value is the number that kills contractors.
-- **Payment applications / IPCs** — work done + materials on site + variations −
-  retention − advance recovery − previous certified. Generate the certificate PDF.
-- Retention release schedule (half at practical completion, half at end of DLP).
+**Status: shipped (v0.1).** Contract register (receivable and payable from one
+table), variations with valuation by contract rates / pro-rata / star rate /
+dayworks / lump sum, interim payment applications and certificates, retention
+with caps and a release schedule, advance recovery, back charges and the notice
+register.
+
+The four things that make it worth building rather than doing in Excel:
+
+- **Everything is cumulative-to-date; the certificate is the difference.** Never
+  "this month's work". A monthly-increment model has nowhere to put a downward
+  re-measurement, so the correction silently disappears and the overpayment
+  stands. This is the most common spreadsheet error in the trade.
+- **The application and the certificate are separate rows.** What you asked for
+  and what the client agreed to pay both survive. Typing one over the other
+  destroys the disallowance, and a client who certifies 94% of everything never
+  becomes a fact anyone can price against.
+- **Only approved variations move the contract sum.** Instructed-but-unapproved
+  work is reported as *exposure*, weighted by how much of it is actually built,
+  and kept separate from merely-claimed work that carries no instruction. Those
+  two have very different chances of ever being paid.
+- **Commercial terms come from the country pack.** A UAE contract gets 10%
+  retention, a 50/50 release, a 12-month defects period and 60-day terms with
+  nobody configuring anything — then they are snapshotted onto the contract, so
+  an admin editing a default later cannot restate a signed, part-certified deal.
+
+Still to build:
+
+- Certificate and application PDF generation.
 - Claims, EOT records, delay/disruption event log with contemporaneous records.
-- Sales invoices, credit notes, VAT treatment, ageing, dunning.
+- Sales invoices, credit notes, VAT treatment, ageing, dunning (with Accounts).
 - Back-to-back subcontractor certificates mirroring the main contract.
 
 ## 9. Logistics

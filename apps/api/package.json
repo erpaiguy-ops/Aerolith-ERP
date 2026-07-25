@@ -20,7 +20,9 @@
     "zod": "^3.24.1",
     "@aerolith/cutlist": "workspace:*",
     "@aerolith/module-production": "workspace:*",
-    "@aerolith/module-estimation": "workspace:*"
+    "@aerolith/module-estimation": "workspace:*",
+    "@aerolith/module-projects": "workspace:*",
+    "@aerolith/module-contracts": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

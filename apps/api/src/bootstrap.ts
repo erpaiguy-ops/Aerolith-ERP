@@ -18,13 +18,21 @@ import {
   type ModuleManifest,
   type ResolvedModules,
 } from '@aerolith/kernel';
+import { contractsModule } from '@aerolith/module-contracts';
 import { inventoryModule } from '@aerolith/module-inventory';
 import { estimationModule } from '@aerolith/module-estimation';
 import { productionModule } from '@aerolith/module-production';
+import { projectsModule } from '@aerolith/module-projects';
 import { eq } from 'drizzle-orm';
 
 /** Every module compiled into this binary. */
-export const MODULES: ModuleManifest[] = [inventoryModule, productionModule, estimationModule];
+export const MODULES: ModuleManifest[] = [
+  inventoryModule,
+  productionModule,
+  estimationModule,
+  projectsModule,
+  contractsModule,
+];
 
 export const registry = new ModuleRegistry().registerAll(MODULES);
 

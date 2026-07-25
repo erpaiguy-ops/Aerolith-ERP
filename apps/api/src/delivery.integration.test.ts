@@ -1,0 +1,954 @@
+/**
+ * Projects and Contract Administration end to end: real HTTP, real database.
+ *
+ * This is the back half of the joinery wedge, and the test is deliberately one
+ * continuous story rather than a set of isolated cases, because the claim being
+ * made is about CONTINUITY: a BOQ becomes a budget, becomes measured progress,
+ * becomes a payment application, becomes a certificate — and a variation
+ * instructed on site shows up as exposure before anyone has agreed a price.
+ *
+ * Two things it exists to prove above all:
+ *
+ *  - Commercial terms come from the AE country pack, not from a hardcoded 10%.
+ *  - Application 2 is measured against what the client CERTIFIED, not against
+ *    what was applied for. That single precedence is the difference between
+ *    re-claiming a disallowance and losing it.
+ *
+ * Skipped when TEST_DATABASE_URL is unset.
+ */
+import { createHash } from 'node:crypto';
+
+import { closeDatabase, createDatabase, getDatabase, schema } from '@aerolith/kernel';
+import { contractsSchema } from '@aerolith/module-contracts';
+import { projectsSchema } from '@aerolith/module-projects';
+import { and, eq } from 'drizzle-orm';
+import type { FastifyInstance } from 'fastify';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { buildApp } from './app';
+import { invalidateTenantModules, syncModules } from './bootstrap';
+
+const url = process.env.TEST_DATABASE_URL;
+const suite = url ? describe : describe.skip;
+
+const TENANT = 'cccc2222-2222-4222-8222-222222222222';
+const OWNER = 'dddddddd-0000-4000-8000-000000000001';
+const ENGINEER = 'dddddddd-0000-4000-8000-000000000002';
+const OWNER_TOKEN = 'delivery-owner-token';
+const ENGINEER_TOKEN = 'delivery-engineer-token';
+
+const PROJECT = '99999999-1111-4111-8111-999999999999';
+
+const hash = (t: string) => createHash('sha256').update(t).digest('hex');
+
+suite('Projects and Contract Administration', () => {
+  let app: FastifyInstance;
+  let contractId: string;
+  let doorsNodeId: string;
+  let wardrobesNodeId: string;
+
+  const auth = (token = OWNER_TOKEN) => ({ authorization: `Bearer ${token}` });
+
+  beforeAll(async () => {
+    createDatabase({ connectionString: url! });
+    await syncModules();
+    const db = getDatabase();
+
+    await db.insert(schema.tenant).values({
+      id: TENANT,
+      slug: 'delivery-test',
+      name: 'Delivery Test Joinery',
+      status: 'active',
+      primaryCountryCode: 'AE',
+      baseCurrencyCode: 'AED',
+    });
+
+    await db.insert(schema.appUser).values([
+      { id: OWNER, email: 'cm@delivery.test', name: 'Commercial Manager' },
+      { id: ENGINEER, email: 'site@delivery.test', name: 'Site Engineer' },
+    ]);
+    await db.insert(schema.membership).values([
+      { tenantId: TENANT, userId: OWNER, status: 'active', isOwner: true },
+      { tenantId: TENANT, userId: ENGINEER, status: 'active', isOwner: false },
+    ]);
+
+    const expiresAt = new Date(Date.now() + 3_600_000);
+    await db.insert(schema.session).values([
+      { userId: OWNER, tenantId: TENANT, tokenHash: hash(OWNER_TOKEN), expiresAt },
+      { userId: ENGINEER, tenantId: TENANT, tokenHash: hash(ENGINEER_TOKEN), expiresAt },
+    ]);
+
+    await db.insert(schema.tenantModule).values([
+      { tenantId: TENANT, moduleKey: 'projects', status: 'enabled' },
+      { tenantId: TENANT, moduleKey: 'contracts', status: 'enabled' },
+    ]);
+    invalidateTenantModules();
+
+    // The site engineer reads job costs but must NOT see the forecast margin.
+    const [role] = await db
+      .insert(schema.role)
+      .values({ tenantId: TENANT, code: 'site', name: 'Site Engineer' })
+      .returning({ id: schema.role.id });
+
+    await db.insert(schema.rolePermission).values(
+      ['projects.cost.read', 'projects.project.read', 'projects.progress.record'].map(
+        (permissionKey) => ({ tenantId: TENANT, roleId: role!.id, permissionKey }),
+      ),
+    );
+    await db
+      .insert(schema.userRole)
+      .values({ tenantId: TENANT, userId: ENGINEER, roleId: role!.id });
+
+    await db.insert(schema.project).values({
+      id: PROJECT,
+      tenantId: TENANT,
+      code: 'P-2026-001',
+      name: 'Marina Tower fit-out',
+      status: 'awarded',
+      currencyCode: 'AED',
+      countryCode: 'AE',
+    });
+
+    await db.insert(schema.numberSeries).values([
+      { tenantId: TENANT, entityType: 'contracts.contract', code: 'CON', name: 'Contract', pattern: 'CON-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'contracts.variation', code: 'VO', name: 'Variation', pattern: 'VO-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'contracts.payment_application', code: 'IPC', name: 'Payment Application', pattern: 'IPC-{YYYY}-{SEQ}' },
+    ]);
+
+    app = await buildApp();
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    const db = getDatabase();
+    const p = projectsSchema;
+    const c = contractsSchema;
+
+    await db.delete(c.paymentApplicationLine).where(eq(c.paymentApplicationLine.tenantId, TENANT));
+    await db.delete(c.retentionRelease).where(eq(c.retentionRelease.tenantId, TENANT));
+    await db.delete(c.paymentApplication).where(eq(c.paymentApplication.tenantId, TENANT));
+    await db.delete(c.variationLine).where(eq(c.variationLine.tenantId, TENANT));
+    await db.delete(c.variation).where(eq(c.variation.tenantId, TENANT));
+    await db.delete(c.backCharge).where(eq(c.backCharge.tenantId, TENANT));
+    await db.delete(c.correspondence).where(eq(c.correspondence.tenantId, TENANT));
+    await db.delete(c.contractLine).where(eq(c.contractLine.tenantId, TENANT));
+    await db.delete(c.contract).where(eq(c.contract.tenantId, TENANT));
+
+    await db.delete(p.costEntry).where(eq(p.costEntry.tenantId, TENANT));
+    await db.delete(p.commitment).where(eq(p.commitment.tenantId, TENANT));
+    await db.delete(p.progressEntry).where(eq(p.progressEntry.tenantId, TENANT));
+    await db.delete(p.budgetLine).where(eq(p.budgetLine.tenantId, TENANT));
+    await db.delete(p.budget).where(eq(p.budget.tenantId, TENANT));
+    await db.delete(p.snag).where(eq(p.snag.tenantId, TENANT));
+    await db.delete(p.milestone).where(eq(p.milestone.tenantId, TENANT));
+    await db.delete(p.wbsNode).where(eq(p.wbsNode.tenantId, TENANT));
+    await db.delete(p.projectDetail).where(eq(p.projectDetail.tenantId, TENANT));
+
+    await db.delete(schema.auditLog).where(eq(schema.auditLog.tenantId, TENANT));
+    await db.delete(schema.eventOutbox).where(eq(schema.eventOutbox.tenantId, TENANT));
+    await db.delete(schema.numberAllocation).where(eq(schema.numberAllocation.tenantId, TENANT));
+    await db.delete(schema.numberSeries).where(eq(schema.numberSeries.tenantId, TENANT));
+    await db.delete(schema.project).where(eq(schema.project.tenantId, TENANT));
+    await db.delete(schema.userRole).where(eq(schema.userRole.tenantId, TENANT));
+    await db.delete(schema.rolePermission).where(eq(schema.rolePermission.tenantId, TENANT));
+    await db.delete(schema.role).where(eq(schema.role.tenantId, TENANT));
+    await db.delete(schema.tenantModule).where(eq(schema.tenantModule.tenantId, TENANT));
+    await db.delete(schema.session).where(eq(schema.session.tenantId, TENANT));
+    await db.delete(schema.membership).where(eq(schema.membership.tenantId, TENANT));
+    await db.delete(schema.appUser).where(eq(schema.appUser.id, OWNER));
+    await db.delete(schema.appUser).where(eq(schema.appUser.id, ENGINEER));
+    await db.delete(schema.tenant).where(eq(schema.tenant.id, TENANT));
+
+    await app.close();
+    await closeDatabase();
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('1 — work breakdown and budget', () => {
+    it('creates a WBS, rejecting a child that names a parent it has not seen', async () => {
+      const bad = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/wbs`,
+        headers: auth(),
+        payload: { nodes: [{ code: 'CHILD', name: 'Child', parentCode: 'PARENT' }] },
+      });
+
+      expect(bad.statusCode).toBe(409);
+      expect(bad.json().error).toMatch(/must be listed before their children/);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/wbs`,
+        headers: auth(),
+        payload: {
+          nodes: [
+            { code: 'J', name: 'Joinery package' },
+            {
+              code: 'J-DOORS',
+              name: 'Veneered doors',
+              parentCode: 'J',
+              ruleOfCredit: 'units',
+              unitsPlanned: 100,
+              uomCode: 'NR',
+            },
+            {
+              code: 'J-WARD',
+              name: 'Bedroom wardrobes',
+              parentCode: 'J',
+              ruleOfCredit: 'units',
+              unitsPlanned: 40,
+              uomCode: 'NR',
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().created).toBe(3);
+
+      const db = getDatabase();
+      const nodes = await db
+        .select()
+        .from(projectsSchema.wbsNode)
+        .where(eq(projectsSchema.wbsNode.projectId, PROJECT));
+
+      doorsNodeId = nodes.find((n) => n.code === 'J-DOORS')!.id;
+      wardrobesNodeId = nodes.find((n) => n.code === 'J-WARD')!.id;
+      expect(nodes.find((n) => n.code === 'J-DOORS')!.path).toBe('J/J-DOORS');
+    });
+
+    it('rejects milestone credit whose weights do not total 100', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/wbs`,
+        headers: auth(),
+        payload: {
+          nodes: [
+            {
+              code: 'BAD-MS',
+              name: 'Badly weighted',
+              ruleOfCredit: 'milestone',
+              creditMilestones: [
+                { key: 'a', weightPercent: 40 },
+                { key: 'b', weightPercent: 40 },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/total 100%/);
+    });
+
+    it('creates and approves a budget, caching the weights the roll-up needs', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/budgets`,
+        headers: auth(),
+        payload: {
+          source: 'estimate',
+          lines: [
+            { wbsCode: 'J-DOORS', category: 'material', description: 'Door blanks and veneer', lineCost: 300_000, lineValue: 375_000 },
+            { wbsCode: 'J-DOORS', category: 'labour', description: 'Door manufacture and install', lineCost: 180_000, lineValue: 225_000 },
+            { wbsCode: 'J-WARD', category: 'material', description: 'Carcass board and hardware', lineCost: 200_000, lineValue: 250_000 },
+            { wbsCode: 'J-WARD', category: 'labour', description: 'Wardrobe manufacture and install', lineCost: 120_000, lineValue: 150_000 },
+          ],
+        },
+      });
+
+      expect(created.statusCode).toBe(200);
+      expect(created.json().version).toBe(1);
+      expect(created.json().totalCost).toBe(800_000);
+      expect(created.json().totalValue).toBe(1_000_000);
+
+      const approved = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/budgets/${created.json().budgetId}/approve`,
+        headers: auth(),
+      });
+      expect(approved.statusCode).toBe(200);
+
+      const db = getDatabase();
+      const [doors] = await db
+        .select()
+        .from(projectsSchema.wbsNode)
+        .where(eq(projectsSchema.wbsNode.id, doorsNodeId));
+
+      // 375k + 225k of revenue budget cached onto the node, which is what
+      // weights the progress roll-up.
+      expect(Number(doors!.budgetValue)).toBe(600_000);
+      expect(Number(doors!.budgetCost)).toBe(480_000);
+    });
+
+    it('refuses a budget line pointing at a WBS code that does not exist', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/budgets`,
+        headers: auth(),
+        payload: {
+          lines: [{ wbsCode: 'NOPE', category: 'material', description: 'x', lineCost: 1 }],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/does not exist on this project/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('2 — the contract, on UAE terms', () => {
+    it('takes retention, DLP and payment terms from the country pack', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/contracts',
+        headers: auth(),
+        payload: {
+          name: 'Marina Tower joinery package',
+          projectId: PROJECT,
+          countryCode: 'AE',
+          currencyCode: 'AED',
+          originalSum: 1_000_000,
+          awardedOn: '2026-01-05',
+          overrides: { taxPercent: 5 },
+          lines: [
+            { reference: 'A1', description: 'Veneered doors', quantity: 100, uomCode: 'NR', unitRate: 6_000, wbsNodeId: doorsNodeId },
+            { reference: 'A2', description: 'Bedroom wardrobes', quantity: 40, uomCode: 'NR', unitRate: 10_000, wbsNodeId: wardrobesNodeId },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      contractId = body.contractId;
+
+      // Nobody configured any of this. It came from packs/AE.json, resolved
+      // tenant → country → default. That is the localisation design paying off.
+      expect(body.terms.retentionPercent).toBe(10);
+      expect(body.terms.paymentTermDays).toBe(60);
+      expect(body.terms.defectsLiabilityMonths).toBe(12);
+      expect(body.terms.retentionReleaseSchedule).toEqual({
+        practicalCompletion: 50,
+        endOfDlp: 50,
+      });
+      // From the contracts module's own rule, since no contract states it.
+      expect(body.terms.noticePeriodDays).toBe(28);
+      expect(body.number).toMatch(/^CON-\d{4}-/);
+    });
+
+    it('refuses to value anything before the contract is activated', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications`,
+        headers: auth(),
+        payload: { periodTo: '2026-02-28', workDoneToDate: 100_000 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/Activate the contract/);
+    });
+
+    it('activates', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/activate`,
+        headers: auth(),
+        payload: { commencedOn: '2026-01-12' },
+      });
+      expect(response.statusCode).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('3 — progress becomes a payment application', () => {
+    it('records measured progress and weights it by budget', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/progress`,
+        headers: auth(),
+        payload: {
+          periodEnd: '2026-02-28',
+          measurements: [
+            { wbsCode: 'J-DOORS', unitsComplete: 50 },
+            { wbsCode: 'J-WARD', unitsComplete: 10 },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Doors 50% of 600k = 300k earned; wardrobes 25% of 400k = 100k.
+      // 400k of 1m budget value = 40%, NOT the (50+25)/2 = 37.5% an average
+      // of percentages would have produced.
+      expect(body.earnedValue).toBeCloseTo(400_000, 6);
+      expect(body.percentComplete).toBeCloseTo(40, 6);
+    });
+
+    it('needs the dangerous permission for a typed percentage', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/progress`,
+        headers: auth(ENGINEER_TOKEN),
+        payload: {
+          periodEnd: '2026-02-28',
+          measurements: [{ wbsCode: 'J-DOORS', manualPercent: 95 }],
+        },
+      });
+
+      // The engineer can record progress. Claiming a number instead of
+      // measuring one is a different act, and needs projects.progress.override.
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('values IPC 1 from the measured progress', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications/from-progress`,
+        headers: auth(),
+        payload: { projectId: PROJECT, periodTo: '2026-02-28', periodFrom: '2026-01-12' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // 100 doors x 50% x 6,000 = 300,000. 40 wardrobes x 25% x 10,000 = 100,000.
+      expect(body.valuedFromProgress.workDoneToDate).toBeCloseTo(400_000, 6);
+      expect(body.valuedFromProgress.linesValued).toBe(2);
+      expect(body.valuedFromProgress.linesUnlinked).toEqual([]);
+
+      const v = body.valuation;
+      expect(v.grossValuationToDate).toBeCloseTo(400_000, 6);
+      expect(v.retentionHeldToDate).toBeCloseTo(40_000, 6);
+      expect(v.netThisCertificate).toBeCloseTo(360_000, 6);
+      expect(v.taxAmount).toBeCloseTo(18_000, 6);
+      expect(v.totalPayable).toBeCloseTo(378_000, 6);
+      expect(body.sequence).toBe(1);
+    });
+
+    it('will not raise a second application while the first is still open', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications`,
+        headers: auth(),
+        payload: { periodTo: '2026-03-31', workDoneToDate: 500_000 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/two different cumulative positions/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('4 — certification, and the disallowance that survives it', () => {
+    let applicationId: string;
+
+    it('submits, taking the due date from the 60-day UAE terms', async () => {
+      const db = getDatabase();
+      const [application] = await db
+        .select()
+        .from(contractsSchema.paymentApplication)
+        .where(
+          and(
+            eq(contractsSchema.paymentApplication.contractId, contractId),
+            eq(contractsSchema.paymentApplication.sequence, 1),
+          ),
+        );
+      applicationId = application!.id;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/applications/${applicationId}/submit`,
+        headers: auth(),
+        payload: { submittedOn: '2026-03-05' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().dueOn).toBe('2026-05-04');
+    });
+
+    it('refuses a reduced certificate with no reason recorded', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/applications/${applicationId}/certify`,
+        headers: auth(),
+        payload: { certifiedNet: 340_000, certifiedOn: '2026-03-20' },
+      });
+
+      // An unexplained disallowance is one nobody ever re-claims.
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/Record why/);
+    });
+
+    it('records what the client actually certified, beside what was applied for', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/applications/${applicationId}/certify`,
+        headers: auth(),
+        payload: {
+          certifiedNet: 340_000,
+          certifiedTax: 17_000,
+          certifiedOn: '2026-03-20',
+          certificateReference: 'IPC-01-CERT',
+          disallowedReason: 'Client QS disallowed 4 doors as not yet delivered to site.',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const c = response.json().comparison;
+      expect(c.applied).toBeCloseTo(360_000, 6);
+      expect(c.certified).toBe(340_000);
+      expect(c.difference).toBeCloseTo(-20_000, 6);
+      expect(c.wasReduced).toBe(true);
+
+      const db = getDatabase();
+      const [row] = await db
+        .select()
+        .from(contractsSchema.paymentApplication)
+        .where(eq(contractsSchema.paymentApplication.id, applicationId));
+
+      // Both figures survive. A spreadsheet would have typed one over the other
+      // and the pattern of a client who certifies 94% of everything would be
+      // invisible forever.
+      expect(Number(row!.netThisApplication)).toBeCloseTo(360_000, 6);
+      expect(Number(row!.certifiedNet)).toBe(340_000);
+    });
+
+    it('measures IPC 2 against the CERTIFIED figure, not the applied one', async () => {
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/progress`,
+        headers: auth(),
+        payload: {
+          periodEnd: '2026-03-31',
+          measurements: [
+            { wbsCode: 'J-DOORS', unitsComplete: 80 },
+            { wbsCode: 'J-WARD', unitsComplete: 20 },
+          ],
+        },
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications/from-progress`,
+        headers: auth(),
+        payload: { projectId: PROJECT, periodTo: '2026-03-31', periodFrom: '2026-03-01' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const v = response.json().valuation;
+
+      // 100 x 80% x 6,000 = 480,000. 40 x 50% x 10,000 = 200,000. Gross 680,000.
+      expect(v.grossValuationToDate).toBeCloseTo(680_000, 6);
+      expect(v.retentionHeldToDate).toBeCloseTo(68_000, 6);
+      expect(v.netValuationToDate).toBeCloseTo(612_000, 6);
+
+      // The whole point: previously certified is 340,000 — what the client
+      // paid — not 360,000, what was asked for. So the disallowed 20,000 is
+      // automatically back in this certificate rather than quietly written off.
+      expect(v.previouslyCertifiedNet).toBe(340_000);
+      expect(v.netThisCertificate).toBeCloseTo(272_000, 6);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('5 — variations and exposure', () => {
+    let variationId: string;
+
+    it('records an instruction as exposure before anyone agrees a price', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/variations`,
+        headers: auth(),
+        payload: {
+          title: 'Twelve additional doors to level 8',
+          basis: 'contract_rates',
+          instructionReference: 'SI-014',
+          instructedOn: '2026-02-02',
+          instructedBy: 'M. Consultant',
+          percentExecuted: 100,
+          lines: [
+            { description: 'Additional veneered doors', quantity: 12, unitRate: 6_500, unitCost: 4_800 },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      variationId = response.json().variationId;
+      expect(response.json().value).toBe(78_000);
+      expect(response.json().cost).toBe(57_600);
+
+      const register = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/variations`,
+        headers: auth(),
+      });
+
+      const position = register.json().position;
+      // Built, instructed, unpriced: 78k of money genuinely at risk. The
+      // contract sum has not moved by a fil.
+      expect(position.exposureValue).toBe(78_000);
+      expect(position.exposureCost).toBe(57_600);
+      expect(position.approvedValue).toBe(0);
+      expect(position.currentContractSum).toBe(1_000_000);
+      expect(position.anticipatedFinalValue).toBe(1_078_000);
+    });
+
+    it('flags the variation as time barred once its notice period has run', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/notice-exposure`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Instructed 2 February with a 28-day notice period and no notice given.
+      // Entitlement extinguished — and the system knew the date all along.
+      expect(body.timeBarredCount).toBe(1);
+      expect(body.timeBarredValue).toBe(78_000);
+      expect(body.atRisk[0].status.isTimeBarred).toBe(true);
+    });
+
+    it('moves the contract sum only on approval, and keeps the quote beside it', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/variations/${variationId}/approve`,
+        headers: auth(),
+        payload: {
+          approvedValue: 70_000,
+          approvedOn: '2026-04-10',
+          reference: 'VO-014-APPROVED',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.currentSum).toBe(1_070_000);
+      // The client settled at 70k against a 78k claim. Keeping the variance is
+      // what makes "they settle everything at 90%" a fact you can price against.
+      expect(body.variance).toBe(-8_000);
+
+      const register = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/variations`,
+        headers: auth(),
+      });
+      const position = register.json().position;
+      expect(position.approvedValue).toBe(70_000);
+      expect(position.exposureValue).toBe(0);
+    });
+
+    it('refuses to approve the same variation twice', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/variations/${variationId}/approve`,
+        headers: auth(),
+        payload: { approvedValue: 70_000, approvedOn: '2026-04-11' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/already approved/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('6 — job costing', () => {
+    it('posts costs and traces every one to its source', async () => {
+      const posts = [
+        { category: 'material', description: 'Veneer and board issue', amount: 260_000, sourceModule: 'inventory', wbsNodeId: doorsNodeId },
+        { category: 'labour', description: 'February shop-floor hours', amount: 165_000, sourceModule: 'production', wbsNodeId: doorsNodeId },
+        { category: 'material', description: 'Carcass board issue', amount: 120_000, sourceModule: 'inventory', wbsNodeId: wardrobesNodeId },
+      ];
+
+      for (const post of posts) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/projects/${PROJECT}/costs`,
+          headers: auth(),
+          payload: { ...post, postedOn: '2026-03-31' },
+        });
+        expect(response.statusCode).toBe(200);
+      }
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/costs`,
+        headers: auth(),
+      });
+
+      const { summary, entries } = response.json();
+      expect(summary.actualCost).toBe(545_000);
+      expect(summary.budgetAtCompletion).toBe(800_000);
+      expect(entries).toHaveLength(3);
+      expect(entries.every((e: { sourceModule: string }) => e.sourceModule)).toBe(true);
+    });
+
+    it('corrects a cost with a reversal rather than an edit', async () => {
+      const db = getDatabase();
+      const [entry] = await db
+        .select()
+        .from(projectsSchema.costEntry)
+        .where(
+          and(
+            eq(projectsSchema.costEntry.projectId, PROJECT),
+            eq(projectsSchema.costEntry.description, 'Carcass board issue'),
+          ),
+        );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/costs/${entry!.id}/reverse`,
+        headers: auth(),
+        payload: { postedOn: '2026-04-01', reason: 'Issued against the wrong project.' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const again = await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/costs/${entry!.id}/reverse`,
+        headers: auth(),
+        payload: { postedOn: '2026-04-01', reason: 'Duplicate attempt.' },
+      });
+      expect(again.statusCode).toBe(409);
+      expect(again.json().error).toMatch(/already been reversed/);
+
+      const summary = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/costs`,
+        headers: auth(),
+      });
+
+      // Both rows remain. The correction is part of the record, not a gap in it.
+      expect(summary.json().entries).toHaveLength(4);
+      expect(summary.json().summary.actualCost).toBe(425_000);
+    });
+
+    it('counts only the unspent balance of a commitment as exposure', async () => {
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/projects/${PROJECT}/commitments`,
+        headers: auth(),
+        payload: {
+          type: 'subcontract',
+          reference: 'SC-2026-004',
+          category: 'subcontract',
+          committedAmount: 180_000,
+          sourceModule: 'procurement',
+          wbsNodeId: wardrobesNodeId,
+        },
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/costs`,
+        headers: auth(),
+      });
+
+      expect(response.json().summary.openCommitments).toBe(180_000);
+    });
+
+    it('measures cost performance in cost units, not revenue units', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/position?contractValue=1070000&method=performance_rate`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // The job is 68% complete. On the revenue budget that is 680k earned; on
+      // the 800k cost budget it is 544k. CPI must use the cost figure — 544/425
+      // = 1.28, not 680/425 = 1.6, which would overstate performance by exactly
+      // the 20% margin and keep saying so until the final account.
+      expect(body.summary.earnedValue).toBeCloseTo(680_000, 6);
+      expect(body.summary.earnedCost).toBeCloseTo(544_000, 6);
+      expect(body.summary.actualCost).toBe(425_000);
+
+      expect(body.metrics.earnedValue).toBeCloseTo(544_000, 6);
+      expect(body.metrics.costPerformanceIndex).toBeCloseTo(1.28, 4);
+      expect(body.metrics.percentComplete).toBeCloseTo(68, 6);
+      expect(body.metrics.percentSpent).toBeCloseTo(53.125, 4);
+    });
+
+    it('floors the forecast at the open commitment and prices the margin', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/position?contractValue=1070000&method=performance_rate`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+
+      // Performance alone puts 200k of cost budget left at CPI 1.28 = 200k.
+      // But 180k of subcontract is already committed, which is below that, so
+      // performance is the binding constraint here.
+      expect(body.forecast.commitmentBound).toBe(false);
+      expect(body.forecast.estimateToComplete).toBeCloseTo(200_000, 6);
+      expect(body.forecast.estimateAtCompletion).toBeCloseTo(625_000, 6);
+      expect(body.forecast.varianceAtCompletion).toBeCloseTo(175_000, 6);
+
+      // 1,070,000 of revenue less 625,000 of forecast cost.
+      expect(body.forecastMargin).toBeCloseTo(445_000, 6);
+    });
+
+    it('hides the forecast margin from the site engineer but not the overrun', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/position?contractValue=1070000`,
+        headers: auth(ENGINEER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.marginHidden).toBe(true);
+      expect(body.forecastMargin).toBeUndefined();
+      expect(body.forecastMarginPercent).toBeUndefined();
+      expect(body.contractValue).toBeUndefined();
+      // The cost position is still fully visible — that is the site team's job.
+      expect(body.summary.actualCost).toBe(425_000);
+      expect(body.forecast.estimateAtCompletion).toBeGreaterThan(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('7 — completion and retention', () => {
+    it('releases nothing before practical completion', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/retention/schedule`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().releasable).toBe(0);
+      expect(response.json().created).toBe(false);
+    });
+
+    it('releases half at practical completion and dates the defects period', async () => {
+      const pc = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/practical-completion`,
+        headers: auth(),
+        payload: { practicalCompletionOn: '2026-06-30' },
+      });
+
+      expect(pc.statusCode).toBe(200);
+      // 12 months, from the AE pack, snapshotted onto the contract at creation.
+      expect(pc.json().defectsLiabilityEndsOn).toBe('2027-06-30');
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/retention/schedule`,
+        headers: auth(),
+      });
+
+      // 68,000 held on the latest application; 50% releasable at PC.
+      expect(response.json().totalHeld).toBeCloseTo(68_000, 6);
+      expect(response.json().releasable).toBeCloseTo(34_000, 6);
+      expect(response.json().created).toBe(true);
+    });
+
+    it('does not release the second half while the defects period is running', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/retention/schedule`,
+        headers: auth(),
+      });
+
+      // The remaining 34,000 is the only leverage that gets a snag list
+      // finished. It waits for June 2027.
+      expect(response.json().previouslyReleased).toBeCloseTo(34_000, 6);
+      expect(response.json().releasable).toBe(0);
+    });
+
+    it('summarises the whole contract position in one call', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/position`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.originalSum).toBe(1_000_000);
+      expect(body.currentSum).toBe(1_070_000);
+      expect(body.grossValuedToDate).toBeCloseTo(680_000, 6);
+      expect(body.certifiedToDate).toBe(340_000);
+      // IPC 2 has been raised but not certified: 612k valued less 340k certified.
+      expect(body.uncertified).toBeCloseTo(272_000, 6);
+      expect(body.retentionHeld).toBeCloseTo(68_000, 6);
+      expect(body.retentionReleased).toBeCloseTo(34_000, 6);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+
+  describe('8 — entitlements', () => {
+    it('hides Contract Administration from a tenant that has not bought it', async () => {
+      const db = getDatabase();
+      await db
+        .delete(schema.tenantModule)
+        .where(
+          and(
+            eq(schema.tenantModule.tenantId, TENANT),
+            eq(schema.tenantModule.moduleKey, 'contracts'),
+          ),
+        );
+      invalidateTenantModules(TENANT);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/position`,
+        headers: auth(),
+      });
+
+      // 404, not 403: an unentitled module should not confirm it exists.
+      expect(response.statusCode).toBe(404);
+
+      await db
+        .insert(schema.tenantModule)
+        .values({ tenantId: TENANT, moduleKey: 'contracts', status: 'enabled' });
+      invalidateTenantModules(TENANT);
+    });
+
+    it('refuses to value from progress when Projects is not entitled', async () => {
+      const db = getDatabase();
+      await db
+        .delete(schema.tenantModule)
+        .where(
+          and(
+            eq(schema.tenantModule.tenantId, TENANT),
+            eq(schema.tenantModule.moduleKey, 'projects'),
+          ),
+        );
+      invalidateTenantModules(TENANT);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications/from-progress`,
+        headers: auth(),
+        payload: { projectId: PROJECT, periodTo: '2026-04-30' },
+      });
+
+      // Contract Administration still works — it says how, rather than failing.
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/Enter measured quantities directly/);
+
+      await db
+        .insert(schema.tenantModule)
+        .values({ tenantId: TENANT, moduleKey: 'projects', status: 'enabled' });
+      invalidateTenantModules(TENANT);
+    });
+  });
+});

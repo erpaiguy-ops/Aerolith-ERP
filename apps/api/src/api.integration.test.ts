@@ -212,9 +212,11 @@ suite('API', () => {
       const db = getDatabase();
       await db
         .insert(schema.tenantModule)
-        // A module this deployment does not ship. Update if 'contracts' is
-        // ever built — the point is a key the registry cannot resolve.
-        .values({ tenantId: TENANT_FULL, moduleKey: 'contracts', status: 'enabled' });
+        // A deliberately synthetic key rather than a module that is merely
+        // unbuilt today: the assertion is about the registry failing to resolve
+        // an entitlement, and pointing it at a real roadmap module means this
+        // test breaks every time one of them ships.
+        .values({ tenantId: TENANT_FULL, moduleKey: 'not_a_shipped_module', status: 'enabled' });
       invalidateTenantModules(TENANT_FULL);
 
       const response = await app.inject({
@@ -224,13 +226,13 @@ suite('API', () => {
       });
 
       expect(response.json().unavailableModules).toContainEqual({
-        key: 'contracts',
+        key: 'not_a_shipped_module',
         reason: 'Module is not present in this deployment.',
       });
 
       await db
         .delete(schema.tenantModule)
-        .where(eq(schema.tenantModule.moduleKey, 'contracts'));
+        .where(eq(schema.tenantModule.moduleKey, 'not_a_shipped_module'));
       invalidateTenantModules(TENANT_FULL);
     });
   });

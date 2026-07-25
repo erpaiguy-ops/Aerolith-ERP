@@ -56,9 +56,33 @@ business will pay for.
   Closing it needs a real search rather than a greedy pass. Recorded rather than
   hidden; worth doing once there is a customer whose material bill justifies it.
 
-Next in the wedge: the Production module proper — work orders, BOM explosion,
-routing through work centres, and shop-floor barcode scanning. The optimiser is
-the hard part and it is done; Production wires it to jobs and to the factory.
+### Phase 2 status — the wedge is joined end to end
+
+All four modules are shipped at v0.1, and the chain they exist to form is proven
+by an integration test that runs it as one continuous story:
+
+> BOQ line → rate build-up → estimate → **won tender** → project budget →
+> production work order → cut parts → **measured site progress** → interim
+> payment application → certificate.
+
+Two links in that chain are the ones nobody else joins:
+
+- `POST /estimating/estimates/:id/convert-to-work-order` — priced build-ups
+  become a work order with its parts, Estimation and Production composed in one
+  transaction without either importing the other.
+- `POST /contracts/:id/applications/from-progress` — the WBS roll-up values every
+  contract BOQ line at its measured percentage, and the total becomes a
+  cumulative payment application. Contract lines with no WBS link are **named**
+  in the response rather than counted, because an unvalued BOQ line is unbilled
+  work and "3 lines skipped" is a number nobody investigates.
+
+Both compositions live in the application layer. The boundary checker enforces
+that neither module imports the other, which is what keeps each one sellable on
+its own — and what leaves the door open to extracting any of them later.
+
+Remaining in phase 2, deliberately deferred rather than forgotten: shop drawing
+and submittal registers (the fit-out approval clock), certificate PDF generation,
+and the cutlist gap recorded above.
 
 ## Phase 3 — Commercial completion (months 14-20)
 
