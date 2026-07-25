@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { ForbiddenError, UnauthorizedError } from './context';
 import { approvalRoutes } from './routes/approvals';
 import { cutlistRoutes } from './routes/cutlist';
+import { estimationRoutes } from './routes/estimation';
 import { productionRoutes } from './routes/production';
 import { inventoryRoutes } from './routes/inventory';
 import { localisationRoutes } from './routes/localisation';
@@ -48,6 +49,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
   await app.register(inventoryRoutes, { prefix: '/api/v1' });
   await app.register(cutlistRoutes, { prefix: '/api/v1' });
   await app.register(productionRoutes, { prefix: '/api/v1' });
+  await app.register(estimationRoutes, { prefix: '/api/v1' });
 
   return app;
 }

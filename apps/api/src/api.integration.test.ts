@@ -212,7 +212,9 @@ suite('API', () => {
       const db = getDatabase();
       await db
         .insert(schema.tenantModule)
-        .values({ tenantId: TENANT_FULL, moduleKey: 'estimation', status: 'enabled' });
+        // A module this deployment does not ship. Update if 'contracts' is
+        // ever built — the point is a key the registry cannot resolve.
+        .values({ tenantId: TENANT_FULL, moduleKey: 'contracts', status: 'enabled' });
       invalidateTenantModules(TENANT_FULL);
 
       const response = await app.inject({
@@ -222,13 +224,13 @@ suite('API', () => {
       });
 
       expect(response.json().unavailableModules).toContainEqual({
-        key: 'estimation',
+        key: 'contracts',
         reason: 'Module is not present in this deployment.',
       });
 
       await db
         .delete(schema.tenantModule)
-        .where(eq(schema.tenantModule.moduleKey, 'estimation'));
+        .where(eq(schema.tenantModule.moduleKey, 'contracts'));
       invalidateTenantModules(TENANT_FULL);
     });
   });

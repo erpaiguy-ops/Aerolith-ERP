@@ -9,8 +9,10 @@ not code** — see [`docs/06-localisation.md`](docs/06-localisation.md).
 
 ## Status
 
-Kernel, API, two business modules (Inventory and Production), and the cutlist
-optimiser.
+Kernel, API, three business modules (Inventory, Production, Estimation), and the
+cutlist optimiser. **The joinery wedge now runs end to end:** a priced tender
+becomes a work order, becomes a cutting plan against real offcuts, becomes
+labelled parts, becomes scanned progress.
 
 **Built and working**
 
@@ -37,12 +39,38 @@ optimiser.
   cutting diagrams and edge-banding schedules
 - **Production module** — work orders, routings through work centres, batch
   finishing with cure time, and barcode shop-floor tracking
-- **435 tests**, including integration suites that prove tenant isolation holds and
-  drive the approval engine, the API, stock posting, cutlist planning and the
-  full factory flow end to end
+- **Estimation module** — tendering with bid/no-bid decisions, BOQ pricing from a
+  versioned rate library, margin scenarios, and conversion of a won tender into a
+  work order
+- **501 tests**, including integration suites that prove tenant isolation holds and
+  drive the approval engine, the API, stock posting, cutlist planning, the full
+  factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — the web app, and the rest of the wedge (Estimation, Projects,
-Contract Administration). See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+**Not built yet** — the web app, Projects and Contract Administration.
+See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+
+### Estimation
+
+Two things here are where estimators actually lose money, and both are handled
+explicitly rather than left to whoever writes the spreadsheet:
+
+- **Margin is not markup.** Adding 20% to cost gives a *16.7%* margin, not 20%.
+  Supplying both is rejected rather than silently merged, and both figures are
+  always reported so the difference is impossible to miss.
+- **Wastage applies to material, not labour.** Cutting 10% extra board does not
+  mean paying the joiner 10% more. Wastage is per component.
+
+Every rate and build-up is **snapshotted** onto the estimate. The library moves
+on; the submitted price must not — the same reasoning as approval workflow
+version pinning and routing rate snapshots.
+
+Seeing an estimate and seeing its **margin** are separate permissions. A site
+manager checking quantities should not see what the company makes on the job.
+
+The rate library is fed by job actuals, weighted by recency and quantity, and it
+**suggests** rather than applies. Every job finished makes the next estimate more
+accurate; an estimator overriding a suggestion is exercising judgement, and the
+system silently changing rates under them is how they stop trusting it.
 
 ### Production
 
@@ -146,6 +174,10 @@ pnpm --filter @aerolith/api dev
 | `POST /api/v1/production/work-orders/:id/release` | Release to the floor |
 | `POST /api/v1/production/work-orders/:id/scans` | Record a shop-floor scan |
 | `GET /api/v1/production/board` | The live queue at each work centre |
+| `POST /api/v1/estimating/tenders` | Open a tender |
+| `POST /api/v1/estimating/tenders/:id/estimates` | Price a BOQ from the rate library |
+| `POST /api/v1/estimating/estimates/:id/scenarios` | What-if margin analysis |
+| `POST /api/v1/estimating/estimates/:id/convert-to-work-order` | Won tender → work order |
 
 ## Layout
 
@@ -171,6 +203,9 @@ packages/
     production/        owns the `production` schema
       src/domain/      scheduling and WIP derivation: pure, no framework, no DB
       src/service/     work order lifecycle and scan handling
+    estimation/        owns the `estimation` schema
+      src/domain/      rate build-up, roll-up, margin scenarios: pure
+      src/service/     tender and estimate lifecycle
 docs/                  architecture and decisions
 ```
 

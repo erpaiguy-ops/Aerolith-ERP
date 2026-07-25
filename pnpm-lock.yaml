@@ -47,6 +47,9 @@ importers:
       '@aerolith/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@aerolith/module-estimation':
+        specifier: workspace:*
+        version: link:../../packages/modules/estimation
       '@aerolith/module-inventory':
         specifier: workspace:*
         version: link:../../packages/modules/inventory
@@ -87,6 +90,37 @@ importers:
 
   packages/kernel:
     dependencies:
+      drizzle-orm:
+        specifier: ^0.38.4
+        version: 0.38.4(@types/pg@8.20.0)(pg@8.22.0)
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+      drizzle-kit:
+        specifier: ^0.30.2
+        version: 0.30.6
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.2
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.1)
+
+  packages/modules/estimation:
+    dependencies:
+      '@aerolith/kernel':
+        specifier: workspace:*
+        version: link:../../kernel
       drizzle-orm:
         specifier: ^0.38.4
         version: 0.38.4(@types/pg@8.20.0)(pg@8.22.0)
