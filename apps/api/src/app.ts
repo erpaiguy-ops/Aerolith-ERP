@@ -13,6 +13,26 @@ import { localisationRoutes } from './routes/localisation';
 import { moduleRoutes } from './routes/modules';
 import { projectRoutes } from './routes/projects';
 
+/**
+ * Narrows an error thrown inside Fastify to a 4xx worth reporting verbatim.
+ *
+ * The handler's `error` is typed `unknown`, so this cannot simply read
+ * `.statusCode` — and it should not, because anything can be thrown. Returns
+ * null for 5xx and for anything unrecognisable, which the caller turns into a
+ * generic 500 rather than leaking an internal message.
+ */
+function clientError(error: unknown): { statusCode: number; message: string } | null {
+  if (typeof error !== 'object' || error === null) return null;
+
+  const { statusCode, message } = error as { statusCode?: unknown; message?: unknown };
+  if (typeof statusCode !== 'number' || statusCode < 400 || statusCode >= 500) return null;
+
+  return {
+    statusCode,
+    message: typeof message === 'string' && message ? message : 'Bad request.',
+  };
+}
+
 export interface BuildOptions {
   logger?: boolean;
   corsOrigin?: string;
@@ -43,10 +63,10 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
     // a JSON content-type, a payload over the limit, bad JSON. Those are the
     // caller's fault and must not be reported as 500: a client that sees a
     // server error retries, and a monitor that sees one pages somebody.
-    const status = typeof error.statusCode === 'number' ? error.statusCode : 500;
-    if (status >= 400 && status < 500) {
+    const client = clientError(error);
+    if (client) {
       request.log.info({ err: error }, 'client error');
-      return reply.code(status).send({ error: error.message });
+      return reply.code(client.statusCode).send({ error: client.message });
     }
 
     request.log.error({ err: error }, 'unhandled request error');
