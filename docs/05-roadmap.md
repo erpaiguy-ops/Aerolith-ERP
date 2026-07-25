@@ -42,6 +42,24 @@ with barcodes, becomes scanned progress, becomes a payment application. **Nobody
 else joins those dots.** At the end of phase 2 you have something a joinery
 business will pay for.
 
+### Cutlist optimiser — delivered, with a known gap
+
+`@aerolith/cutlist` is built and tested (57 tests). Two things to be honest about:
+
+- **Achieved yield depends on the parts, not the algorithm.** The optimiser
+  reaches the grid-optimal count per sheet on every shape tested. A mix with
+  large awkward panels has a low geometric ceiling nothing can beat — the
+  wardrobe test job tops out near 74% because a 2100x900 back leaves a 340mm
+  strip nothing else fits into.
+- **Known gap:** it does not find layouts combining a grid with a rotated part in
+  the leftover strip, worth roughly one sheet in twenty on mixes like that job.
+  Closing it needs a real search rather than a greedy pass. Recorded rather than
+  hidden; worth doing once there is a customer whose material bill justifies it.
+
+Next in the wedge: the Production module proper — work orders, BOM explosion,
+routing through work centres, and shop-floor barcode scanning. The optimiser is
+the hard part and it is done; Production wires it to jobs and to the factory.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

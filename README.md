@@ -9,7 +9,7 @@ not code** — see [`docs/06-localisation.md`](docs/06-localisation.md).
 
 ## Status
 
-Kernel, API and the first business module (Inventory).
+Kernel, API, the first business module (Inventory), and the cutlist optimiser.
 
 **Built and working**
 
@@ -31,8 +31,11 @@ Kernel, API and the first business module (Inventory).
 - **Inventory module** — multi-warehouse stock, moving-average costing, batch and
   grain tracking, reorder alerts, and the **offcut register** with dimensional
   matching (see below)
-- **274 tests**, including integration suites that prove tenant isolation holds and
-  drive the approval engine, the API and stock posting end to end
+- **Cutlist optimiser** (`@aerolith/cutlist`) — 2D guillotine bin-packing that
+  plans against the live offcut register before opening a new sheet, with SVG
+  cutting diagrams and edge-banding schedules
+- **347 tests**, including integration suites that prove tenant isolation holds and
+  drive the approval engine, the API, stock posting and cutlist planning end to end
 
 **Not built yet** — the web app, and every module after Inventory.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
@@ -51,6 +54,27 @@ mix grain or colour batches, and accounts for saw kerf.
 
 Remnants are costed by their share of the parent sheet, so the job that creates
 them is not over-credited and the job that consumes them is not under-charged.
+
+### The cutlist optimiser
+
+`POST /api/v1/inventory/cutlist/optimise` takes a cutting list and plans it
+against **live stock** — the offcut rack first, then new sheets. It returns board
+layouts with part positions, SVG cutting diagrams for the saw, an edge-banding
+schedule in metres per tape, and what the register saved.
+
+Guillotine, not free-form nesting: every cut runs the full width of the piece,
+because that is what a panel saw physically does. A layout that ignores this is
+undeliverable however good its yield looks.
+
+Two yield figures are reported, deliberately:
+
+- **Gross** — parts area over all board area opened. Treats a large reusable
+  remnant as waste.
+- **Net** — parts area over board area actually consumed, excluding remnants big
+  enough to go back on the rack. The economically honest number.
+
+On the sample wardrobe job those read 51.6% and 75.2%: opening a sheet to cut one
+plinth is not 84% waste, it is 3.2 m² of material back on the rack.
 
 ## Getting started
 

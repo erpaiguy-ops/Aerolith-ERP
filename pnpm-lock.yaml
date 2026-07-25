@@ -41,6 +41,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@aerolith/cutlist':
+        specifier: workspace:*
+        version: link:../../packages/cutlist
       '@aerolith/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
@@ -63,6 +66,15 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.23.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.2
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.1)
+
+  packages/cutlist:
+    devDependencies:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
