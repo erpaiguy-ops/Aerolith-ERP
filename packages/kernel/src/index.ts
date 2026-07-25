@@ -167,3 +167,31 @@ export {
   redactChanges,
   tryRecordAudit,
 } from './audit/service';
+
+// Authentication
+export {
+  type ParsedHash,
+  type ScryptParams,
+  DEFAULT_PARAMS,
+  MIN_PASSWORD_LENGTH,
+  PasswordError,
+  assertPasswordAcceptable,
+  hashPassword,
+  needsRehash,
+  parseHash,
+  verifyPassword,
+} from './auth/password';
+export {
+  type LoginInput,
+  type LoginResult,
+  AuthError,
+  LOCKOUT_MINUTES,
+  MAX_FAILED_ATTEMPTS,
+  SESSION_DAYS,
+  login,
+  logout,
+  pruneSessions,
+  safeEqual,
+  setPassword,
+  switchTenant,
+} from './auth/service';

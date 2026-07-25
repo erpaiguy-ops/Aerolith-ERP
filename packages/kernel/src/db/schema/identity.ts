@@ -33,7 +33,7 @@ export const appUser = kernel.table(
     id: uuid('id').primaryKey().defaultRandom(),
     email: varchar('email', { length: 320 }).notNull().unique(),
     emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
-    /** Argon2id. Null for SSO-only users. */
+    /** PHC string — scrypt today, argon2id still verifiable. Null for SSO-only. */
     passwordHash: text('password_hash'),
     name: text('name').notNull(),
     avatarUrl: text('avatar_url'),

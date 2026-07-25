@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { ForbiddenError, UnauthorizedError } from './context';
 import { approvalRoutes } from './routes/approvals';
+import { authRoutes } from './routes/auth';
 import { contractRoutes } from './routes/contracts';
 import { cutlistRoutes } from './routes/cutlist';
 import { estimationRoutes } from './routes/estimation';
@@ -45,6 +46,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
 
   app.get('/health', async () => ({ status: 'ok', at: new Date().toISOString() }));
 
+  await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(moduleRoutes, { prefix: '/api/v1' });
   await app.register(localisationRoutes, { prefix: '/api/v1' });
   await app.register(approvalRoutes, { prefix: '/api/v1' });
