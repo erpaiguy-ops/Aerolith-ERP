@@ -37,8 +37,11 @@ export {
   APPEND_ONLY_TABLES,
   APP_ROLE,
   TENANT_SCOPED_TABLES,
+  type RlsOptions,
   buildGrantStatements,
+  buildGrantStatementsFor,
   buildRlsStatements,
+  buildRlsStatementsFor,
   clearTenantGuard,
   setTenantGuard,
 } from './db/rls';

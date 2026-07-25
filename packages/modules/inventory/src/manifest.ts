@@ -1,9 +1,6 @@
 /**
  * Inventory / Stores — the reference module.
  *
- * This is manifest-only for now. It exists to pin down the shape every other
- * module follows, and to give the boundary checker something real to check.
- *
  * Note what it demonstrates:
  *
  *  - `standalone: true` — this is sellable as "Aerolith Inventory" on its own.
@@ -115,13 +112,52 @@ export const inventoryModule = defineModule({
       unit: 'm2',
       tenantOverridable: true,
     },
+    {
+      key: 'inventory.offcut.minimum_usable_dimension_mm',
+      domain: 'inventory',
+      label: 'Minimum offcut dimension worth registering',
+      description:
+        'Below this on either side a remnant cannot be handled safely on a panel saw.',
+      valueType: 'number',
+      defaultValue: 150,
+      unit: 'mm',
+      tenantOverridable: true,
+    },
+    {
+      key: 'inventory.cutting.kerf_mm',
+      domain: 'inventory',
+      label: 'Saw kerf',
+      description: 'Blade width removed on every cut. Feeds offcut matching and the cutlist.',
+      valueType: 'number',
+      defaultValue: 3.2,
+      unit: 'mm',
+      tenantOverridable: true,
+    },
+    {
+      key: 'inventory.stock.allow_negative',
+      domain: 'inventory',
+      label: 'Allow stock to go negative',
+      description:
+        'Lets issues run ahead of paperwork. Convenient on site, and a reliable way to ' +
+        'end up with stock that does not reconcile.',
+      valueType: 'boolean',
+      defaultValue: false,
+      tenantOverridable: true,
+    },
   ],
 
   approvableEntities: ['inventory.stock_transfer', 'inventory.stock_write_off'],
 
+  // These entity types must match what postMovement() allocates against —
+  // `inventory.${movementType}`. A mismatch means the series is silently never
+  // found and every posting fails.
   numberSeries: [
-    { entityType: 'inventory.goods_receipt', code: 'GRN', pattern: 'GRN-{YYYY}-{SEQ}' },
-    { entityType: 'inventory.stock_transfer', code: 'STR', pattern: 'STR-{YYYY}-{SEQ}' },
-    { entityType: 'inventory.stock_issue', code: 'ISS', pattern: 'ISS-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.receipt', code: 'GRN', pattern: 'GRN-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.issue', code: 'ISS', pattern: 'ISS-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.transfer', code: 'STR', pattern: 'STR-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.adjustment', code: 'ADJ', pattern: 'ADJ-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.return', code: 'RTN', pattern: 'RTN-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.scrap', code: 'SCR', pattern: 'SCR-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.production_output', code: 'PRO', pattern: 'PRO-{YYYY}-{SEQ}' },
   ],
 });

@@ -15,8 +15,8 @@
     "boundaries": "depcruise packages --config .dependency-cruiser.cjs",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:generate": "pnpm --filter @aerolith/kernel db:generate",
-    "db:migrate": "pnpm --filter @aerolith/kernel db:migrate",
+    "db:generate": "pnpm --filter @aerolith/kernel db:generate && pnpm --filter \"./packages/modules/*\" db:generate",
+    "db:migrate": "pnpm --filter @aerolith/kernel db:migrate && pnpm --filter \"./packages/modules/*\" db:migrate",
     "db:seed": "pnpm --filter @aerolith/kernel db:seed",
     "verify": "pnpm typecheck && pnpm lint && pnpm boundaries && pnpm test"
   },

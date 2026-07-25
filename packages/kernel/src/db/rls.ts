@@ -72,20 +72,35 @@ export const TENANT_SCOPED_TABLES = [
  */
 export const APPEND_ONLY_TABLES = new Set(['audit_log', 'approval_action']);
 
-/**
- * `tenant` itself is special: a row is visible when its own id matches the
- * session tenant.
- */
-const SELF_KEYED_TABLES: Record<string, string> = { tenant: 'id' };
-
 export const APP_ROLE = 'aerolith_app';
 
-export function buildRlsStatements(): string[] {
+export interface RlsOptions {
+  /** Postgres schema the tables live in. */
+  schemaName: string;
+  /** Tables carrying `tenant_id` (or a self-key, see `selfKeyed`). */
+  tables: readonly string[];
+  /** Tables that accept INSERT and SELECT only. */
+  appendOnly?: ReadonlySet<string>;
+  /** Tables keyed on something other than `tenant_id`, e.g. `tenant.id`. */
+  selfKeyed?: Record<string, string>;
+}
+
+/**
+ * Generates the isolation policies for one schema.
+ *
+ * Exported generically so a business module can secure its own schema with the
+ * same policy shape as the kernel — one implementation, so `inventory` cannot
+ * accidentally get weaker isolation than `kernel`.
+ */
+export function buildRlsStatementsFor(options: RlsOptions): string[] {
+  const { schemaName, tables } = options;
+  const appendOnly = options.appendOnly ?? new Set<string>();
+  const selfKeyed = options.selfKeyed ?? {};
   const statements: string[] = [];
 
-  for (const table of TENANT_SCOPED_TABLES) {
-    const qualified = `kernel."${table}"`;
-    const keyColumn = SELF_KEYED_TABLES[table] ?? 'tenant_id';
+  for (const table of tables) {
+    const qualified = `${schemaName}."${table}"`;
+    const keyColumn = selfKeyed[table] ?? 'tenant_id';
     // nullif(..., '') matters: a custom GUC that has been set transaction-locally
     // reverts to the EMPTY STRING at commit, not to NULL. Without this, the first
     // query on a recycled pooled connection fails with "invalid input syntax for
@@ -106,7 +121,7 @@ export function buildRlsStatements(): string[] {
     statements.push(`DROP POLICY IF EXISTS tenant_isolation_update ON ${qualified};`);
     statements.push(`DROP POLICY IF EXISTS tenant_isolation_delete ON ${qualified};`);
 
-    if (!APPEND_ONLY_TABLES.has(table)) {
+    if (!appendOnly.has(table)) {
       statements.push(
         `CREATE POLICY tenant_isolation_update ON ${qualified} FOR UPDATE TO ${APP_ROLE} ` +
           `USING (${predicate}) WITH CHECK (${predicate});`,
@@ -120,18 +135,38 @@ export function buildRlsStatements(): string[] {
   return statements;
 }
 
-/** Grants for the non-owner application role. */
-export function buildGrantStatements(): string[] {
+/** Grants for the non-owner application role, for one schema. */
+export function buildGrantStatementsFor(options: RlsOptions): string[] {
+  const { schemaName } = options;
+  const appendOnly = options.appendOnly ?? new Set<string>();
+
   return [
-    `GRANT USAGE ON SCHEMA kernel TO ${APP_ROLE};`,
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA kernel TO ${APP_ROLE};`,
-    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA kernel TO ${APP_ROLE};`,
-    `ALTER DEFAULT PRIVILEGES IN SCHEMA kernel GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${APP_ROLE};`,
-    // Audit and approval history are append-only even for the app role.
-    ...[...APPEND_ONLY_TABLES].map(
-      (table) => `REVOKE UPDATE, DELETE ON kernel."${table}" FROM ${APP_ROLE};`,
+    `GRANT USAGE ON SCHEMA ${schemaName} TO ${APP_ROLE};`,
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schemaName} TO ${APP_ROLE};`,
+    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schemaName} TO ${APP_ROLE};`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schemaName} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${APP_ROLE};`,
+    ...[...appendOnly].map(
+      (table) => `REVOKE UPDATE, DELETE ON ${schemaName}."${table}" FROM ${APP_ROLE};`,
     ),
   ];
+}
+
+const KERNEL_RLS: RlsOptions = {
+  schemaName: 'kernel',
+  tables: TENANT_SCOPED_TABLES,
+  appendOnly: APPEND_ONLY_TABLES,
+  // `tenant` itself is special: a row is visible when its own id matches the
+  // session tenant.
+  selfKeyed: { tenant: 'id' },
+};
+
+export function buildRlsStatements(): string[] {
+  return buildRlsStatementsFor(KERNEL_RLS);
+}
+
+/** Grants for the non-owner application role. */
+export function buildGrantStatements(): string[] {
+  return buildGrantStatementsFor(KERNEL_RLS);
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

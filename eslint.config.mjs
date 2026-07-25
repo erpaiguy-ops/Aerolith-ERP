@@ -16,7 +16,9 @@ export default tseslint.config(
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
       '@typescript-eslint/no-explicit-any': 'warn',
-      eqeqeq: ['error', 'always'],
+      // `== null` is the idiomatic way to catch null and undefined together;
+      // everything else must be strict.
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
     },
   },
   {

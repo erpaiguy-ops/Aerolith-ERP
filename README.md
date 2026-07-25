@@ -9,8 +9,7 @@ not code** — see [`docs/06-localisation.md`](docs/06-localisation.md).
 
 ## Status
 
-Kernel and API. The platform layer every module depends on is built, running and
-tested. No business modules yet.
+Kernel, API and the first business module (Inventory).
 
 **Built and working**
 
@@ -28,12 +27,30 @@ tested. No business modules yet.
 - Typed event bus over a transactional outbox
 - Data-driven localisation with country packs for **AE, QA, SA, OM, BH, KW**
 - **HTTP API** (Fastify) — auth, module/navigation resolution, localisation admin,
-  approval inbox
-- **182 tests**, including integration tests that prove tenant isolation holds and
-  drive the approval engine and API end to end
+  approval inbox, inventory
+- **Inventory module** — multi-warehouse stock, moving-average costing, batch and
+  grain tracking, reorder alerts, and the **offcut register** with dimensional
+  matching (see below)
+- **274 tests**, including integration suites that prove tenant isolation holds and
+  drive the approval engine, the API and stock posting end to end
 
-**Not built yet** — the web app and every business module.
+**Not built yet** — the web app, and every module after Inventory.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+
+### The offcut register
+
+The piece no generic ERP has. A remnant is tracked by real dimensions, grain
+direction and batch — not as "0.4 sheets of 18mm MDF", which is not something you
+can cut anything out of.
+
+`POST /api/v1/inventory/offcuts/match` takes a required part and returns the
+**smallest** offcut it can be cut from, with the orientation. Deliberately the
+smallest: consuming a full sheet for a small part is what destroys the value of
+the register. It refuses to rotate a grained part just to make it fit, refuses to
+mix grain or colour batches, and accounts for saw kerf.
+
+Remnants are costed by their share of the parent sheet, so the job that creates
+them is not over-credited and the job that consumes them is not under-charged.
 
 ## Getting started
 
@@ -71,6 +88,10 @@ pnpm --filter @aerolith/api dev
 | `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
+| `GET /api/v1/inventory/stock` | Stock on hand and value |
+| `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
+| `GET /api/v1/inventory/offcuts` | The offcut rack, with its total area and value |
+| `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 
 ## Layout
 
@@ -89,7 +110,9 @@ packages/
     src/localisation/  country-as-data: packs, rule resolution, adoption
     packs/             AE, QA, SA, OM, BH, KW — adding a country is a JSON file
   modules/
-    inventory/         reference module (manifest only, for now)
+    inventory/         first business module — owns the `inventory` schema
+      src/domain/      costing and offcut matching: pure, no framework, no DB
+      src/service/     movement posting (atomic: stock, cost, number, event)
 docs/                  architecture and decisions
 ```
 
