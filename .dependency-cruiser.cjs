@@ -53,7 +53,7 @@ module.exports = {
           '(^|/)\\.[^/]+\\.(js|cjs|mjs|ts)$',
           '(^|/)tsconfig\\.json$',
           // Tool configs are entry points for their own tooling, not orphans.
-          '(^|/)(drizzle|vitest|eslint|next)\\.config\\.(ts|js|mjs|cjs)$',
+          '(^|/)(drizzle|vitest|eslint|next|postcss|tailwind)\\.config\\.(ts|js|mjs|cjs)$',
         ],
       },
       to: {},

@@ -69,3 +69,12 @@ describe('production manifest', () => {
     expect(dangerous).toContain('production.scan.override');
   });
 });
+
+describe('menu placement', () => {
+  it('sits between Estimating and Projects, matching the workflow', () => {
+    // The top-level `order` is sorted ACROSS modules, so these values are a
+    // shared namespace rather than a per-module preference. Production shared
+    // 30 with Contracts until the web shell rendered them and the tie showed.
+    expect(productionModule.nav[0]!.order).toBe(20);
+  });
+});

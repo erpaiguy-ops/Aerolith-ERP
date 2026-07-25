@@ -32,8 +32,8 @@ const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
 
 const TENANT = 'cccc2222-2222-4222-8222-222222222222';
-const OWNER = 'dddddddd-0000-4000-8000-000000000001';
-const ENGINEER = 'dddddddd-0000-4000-8000-000000000002';
+const OWNER = 'cccc2222-0000-4000-8000-000000000001';
+const ENGINEER = 'cccc2222-0000-4000-8000-000000000002';
 const OWNER_TOKEN = 'delivery-owner-token';
 const ENGINEER_TOKEN = 'delivery-engineer-token';
 

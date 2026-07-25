@@ -84,6 +84,47 @@ Remaining in phase 2, deliberately deferred rather than forgotten: shop drawing
 and submittal registers (the fit-out approval clock), certificate PDF generation,
 and the cutlist gap recorded above.
 
+### The web shell — delivered
+
+`apps/web` is a Next.js 15 App Router shell, and the thing worth stating about
+it is what it does **not** contain: **no module names anywhere.** The sidebar is
+whatever `/me` returned — the tenant's entitled modules, filtered by the user's
+permissions. A tenant who bought only Estimating sees a focused estimating
+product; a tenant who bought everything sees an ERP. Same binary, same code path.
+That is requirement 19 made visible rather than merely argued.
+
+Built so far: sign-in, the shell and navigation, the project screen (WBS with
+rules of credit, earned value, forecast, margin gated behind
+`projects.margin.view`), and the contract screen (position, variation register,
+and the time-bar warning above everything else because it is the one fact on the
+page with a deadline attached).
+
+Inventory, Estimating and Production have working, tested APIs and no UI yet.
+Their nav links render a "not built yet" page **inside the shell** rather than a
+404, so the gap is explicit instead of looking broken.
+
+Security posture: the session token is an httpOnly cookie, every API call is made
+from the server, and no credential ever reaches client JavaScript. Verified in a
+real browser, not asserted — `document.cookie` is checked to be empty of it.
+
+Run it:
+
+```
+pnpm db:migrate && pnpm db:seed && pnpm db:seed:demo
+pnpm --filter @aerolith/api start          # :3001
+pnpm --filter @aerolith/web dev            # :3000
+# demo@aerolith.test / demo-passphrase-2026
+```
+
+The demo seed builds one continuous story rather than disconnected rows — budget
+→ progress → payment application → certificate, plus a variation instructed on
+site and now past its notice deadline, so the screens have something true to show.
+
+Still missing before this is a usable product: list endpoints (every screen
+reaches an entity by id), write flows in the UI (everything is read-only so far),
+Arabic translations to exercise the RTL support that is wired but untested, and
+PDF output for certificates and applications.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

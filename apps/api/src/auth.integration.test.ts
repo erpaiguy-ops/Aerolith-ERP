@@ -180,6 +180,41 @@ suite('auth over HTTP', () => {
     expect(statuses).toContain(429);
   });
 
+  it('accepts a logout with no body at all', async () => {
+    // The web client sends POST /auth/logout with no body. Declaring a JSON
+    // content-type and sending nothing makes Fastify reject the request, which
+    // silently broke sign-out end to end: the cookie cleared, the caller
+    // swallowed the error, and the session stayed live on the server.
+    const { token } = (
+      await post('/api/v1/auth/login', { email: 'user@http.test', password: PASSWORD })
+    ).json();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(204);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(after.statusCode).toBe(401);
+  });
+
+  it('reports a malformed request as a client error, not a server error', async () => {
+    // A 500 makes clients retry and monitors page somebody.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: { authorization: 'Bearer x', 'content-type': 'application/json' },
+      payload: '',
+    });
+    expect(response.statusCode).toBeLessThan(500);
+  });
+
   it('revokes on logout, and says nothing about whether the token was real', async () => {
     const { token } = (
       await post('/api/v1/auth/login', { email: 'user@http.test', password: PASSWORD })

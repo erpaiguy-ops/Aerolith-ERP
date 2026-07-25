@@ -39,6 +39,16 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
       return reply.code(403).send({ error: error.message });
     }
 
+    // Fastify raises its own 4xx for malformed requests — an empty body against
+    // a JSON content-type, a payload over the limit, bad JSON. Those are the
+    // caller's fault and must not be reported as 500: a client that sees a
+    // server error retries, and a monitor that sees one pages somebody.
+    const status = typeof error.statusCode === 'number' ? error.statusCode : 500;
+    if (status >= 400 && status < 500) {
+      request.log.info({ err: error }, 'client error');
+      return reply.code(status).send({ error: error.message });
+    }
+
     request.log.error({ err: error }, 'unhandled request error');
     // Never leak internals to the client; the detail is in the log.
     return reply.code(500).send({ error: 'Internal server error.' });

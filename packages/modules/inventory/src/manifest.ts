@@ -60,7 +60,7 @@ export const inventoryModule = defineModule({
       key: 'inventory',
       label: 'Inventory',
       icon: 'package',
-      order: 20,
+      order: 10,
       children: [
         { key: 'inventory.items', label: 'Items', path: '/inventory/items', permission: 'inventory.item.read', order: 10 },
         { key: 'inventory.stock', label: 'Stock on Hand', path: '/inventory/stock', permission: 'inventory.stock.read', order: 20 },

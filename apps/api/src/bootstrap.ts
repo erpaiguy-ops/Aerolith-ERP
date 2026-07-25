@@ -149,5 +149,13 @@ export function navigationFor(
       .filter((item) => item.path || (item.children && item.children.length > 0))
       .sort((a, b) => a.order - b.order);
 
-  return modules.ordered.flatMap((module) => visible(module.nav));
+  // Sorted ACROSS modules, not only within each one. `modules.ordered` is
+  // dependency order, which is the right order to boot modules in and the wrong
+  // order to show a menu in — it put Contracts above Estimating, reversing the
+  // workflow the whole product is arranged around. The `order` field on a
+  // top-level nav item exists to express that intent; honouring it only inside
+  // a module silently ignored it.
+  return modules.ordered
+    .flatMap((module) => visible(module.nav))
+    .sort((a, b) => a.order - b.order);
 }

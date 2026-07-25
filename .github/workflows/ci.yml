@@ -62,3 +62,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Catches what typecheck cannot: Next's own build-time checks on server
+      # components, route handlers and metadata.
+      - name: Build
+        run: pnpm build

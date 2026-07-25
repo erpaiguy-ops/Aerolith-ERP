@@ -58,7 +58,7 @@ export const productionModule = defineModule({
       key: 'production',
       label: 'Production',
       icon: 'factory',
-      order: 30,
+      order: 20,
       children: [
         { key: 'production.orders', label: 'Work Orders', path: '/production/orders', permission: 'production.work_order.read', order: 10 },
         { key: 'production.board', label: 'Shop Floor', path: '/production/board', permission: 'production.work_order.read', order: 20 },

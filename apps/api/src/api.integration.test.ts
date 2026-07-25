@@ -10,7 +10,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { closeDatabase, createDatabase, getDatabase, schema } from '@aerolith/kernel';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -180,6 +180,48 @@ suite('API', () => {
       expect(body.modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
       expect(body.navigation[0].key).toBe('inventory');
       expect(body.unavailableModules).toEqual([]);
+    });
+
+    it('orders the menu by intent, not by module dependency order', async () => {
+      const db = getDatabase();
+      await db.insert(schema.tenantModule).values(
+        ['estimation', 'production', 'projects', 'contracts'].map((moduleKey) => ({
+          tenantId: TENANT_FULL,
+          moduleKey,
+          status: 'enabled' as const,
+        })),
+      );
+      invalidateTenantModules(TENANT_FULL);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/me',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      const keys = response.json().navigation.map((n: { key: string }) => n.key);
+
+      // Dependency order is the right order to BOOT modules in and the wrong
+      // order to show a menu in — it put Contracts above Estimating, reversing
+      // the workflow the product is arranged around.
+      expect(keys.indexOf('estimation')).toBeLessThan(keys.indexOf('production'));
+      expect(keys.indexOf('production')).toBeLessThan(keys.indexOf('projects'));
+      expect(keys.indexOf('projects')).toBeLessThan(keys.indexOf('contracts'));
+
+      await db
+        .delete(schema.tenantModule)
+        .where(
+          and(
+            eq(schema.tenantModule.tenantId, TENANT_FULL),
+            inArray(schema.tenantModule.moduleKey, [
+              'estimation',
+              'production',
+              'projects',
+              'contracts',
+            ]),
+          ),
+        );
+      invalidateTenantModules(TENANT_FULL);
     });
 
     it('gives an owner every permission', async () => {

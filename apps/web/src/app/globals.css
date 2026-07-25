@@ -1,0 +1,37 @@
+@import 'tailwindcss';
+
+/*
+ * A small, deliberate palette rather than a component library import.
+ * Everything below is a CSS variable so a tenant theme becomes data later,
+ * which is the same reasoning as the country packs: configuration, not code.
+ */
+@theme {
+  --color-canvas: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-ink: #17181a;
+  --color-muted: #6b7280;
+  --color-line: #e5e5e2;
+  --color-accent: #1f5d50;
+  --color-accent-soft: #e8f1ee;
+  --color-good: #15803d;
+  --color-bad: #b91c1c;
+  --color-warn: #b45309;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Tabular figures everywhere a number can appear. Money in a proportional font
+ * does not line up in a column, and a payment application that does not line up
+ * looks wrong to the only people whose opinion matters.
+ */
+.numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
