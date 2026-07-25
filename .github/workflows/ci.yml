@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgres://aerolith:aerolith@localhost:5432/aerolith
+  TEST_DATABASE_URL: postgres://aerolith:aerolith@localhost:5432/aerolith
+  TEST_APP_DATABASE_URL: postgres://aerolith_app:aerolith_app@localhost:5432/aerolith
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: aerolith
+          POSTGRES_PASSWORD: aerolith
+          POSTGRES_DB: aerolith
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U aerolith"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # The boundary check is not optional. A modular monolith without
+      # mechanical enforcement is a monolith with good intentions.
+      - name: Module boundaries
+        run: pnpm boundaries
+
+      - name: Migrate
+        run: pnpm db:migrate
+
+      - name: Seed country packs
+        run: pnpm db:seed
+
+      - name: Test
+        run: pnpm test

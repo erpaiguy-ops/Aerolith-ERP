@@ -1,0 +1,509 @@
+{
+  "packVersion": "1.0.0",
+  "code": "AE",
+  "code3": "ARE",
+  "numericCode": "784",
+  "name": "United Arab Emirates",
+  "nativeName": "الإمارات العربية المتحدة",
+
+  "currencyCode": "AED",
+  "defaultLocale": "en",
+  "supportedLocales": ["en", "ar"],
+  "isRtlDefault": false,
+  "defaultTimezone": "Asia/Dubai",
+  "dateFormat": "dd/MM/yyyy",
+  "weekendDays": [6, 7],
+  "fiscalYearStartMonth": 1,
+
+  "adminDivisionLabel": "Emirate",
+  "adminDivisions": [
+    { "code": "AZ", "name": "Abu Dhabi", "nativeName": "أبوظبي", "sortOrder": 1 },
+    { "code": "DU", "name": "Dubai", "nativeName": "دبي", "sortOrder": 2 },
+    { "code": "SH", "name": "Sharjah", "nativeName": "الشارقة", "sortOrder": 3 },
+    { "code": "AJ", "name": "Ajman", "nativeName": "عجمان", "sortOrder": 4 },
+    { "code": "UQ", "name": "Umm Al Quwain", "nativeName": "أم القيوين", "sortOrder": 5 },
+    { "code": "RK", "name": "Ras Al Khaimah", "nativeName": "رأس الخيمة", "sortOrder": 6 },
+    { "code": "FU", "name": "Fujairah", "nativeName": "الفجيرة", "sortOrder": 7 }
+  ],
+
+  "addressFormat": [
+    { "key": "building", "label": "Building / Villa", "required": false, "order": 1 },
+    { "key": "street", "label": "Street", "required": false, "order": 2 },
+    { "key": "area", "label": "Area / District", "required": true, "order": 3 },
+    { "key": "poBox", "label": "P.O. Box", "required": false, "order": 4, "maxLength": 16 },
+    {
+      "key": "emirate",
+      "label": "Emirate",
+      "labelNative": "الإمارة",
+      "required": true,
+      "order": 5,
+      "source": "admin_division"
+    }
+  ],
+
+  "phoneCode": "+971",
+  "phoneFormat": "+971 ## ### ####",
+
+  "requirements": [
+    {
+      "code": "PASSPORT",
+      "name": "Passport",
+      "nativeName": "جواز السفر",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [180, 90, 60, 30],
+      "renewalLeadDays": 60,
+      "blocksOnboarding": true,
+      "issuingAuthority": "Country of nationality",
+      "sortOrder": 1
+    },
+    {
+      "code": "EMIRATES_ID",
+      "name": "Emirates ID",
+      "nativeName": "الهوية الإماراتية",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7],
+      "renewalLeadDays": 30,
+      "numberFormatRegex": "^784-\\d{4}-\\d{7}-\\d$",
+      "numberFormatHint": "784-YYYY-NNNNNNN-C",
+      "issuingAuthority": "Federal Authority for Identity, Citizenship, Customs and Port Security",
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 2
+    },
+    {
+      "code": "RESIDENCE_VISA",
+      "name": "Residence Visa",
+      "nativeName": "تأشيرة الإقامة",
+      "subject": "employee",
+      "category": "immigration",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7, 1],
+      "renewalLeadDays": 45,
+      "typicalValidityMonths": 24,
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 3
+    },
+    {
+      "code": "LABOUR_CARD",
+      "name": "Labour Card / Work Permit",
+      "nativeName": "بطاقة العمل",
+      "subject": "employee",
+      "category": "permit",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14],
+      "renewalLeadDays": 45,
+      "issuingAuthority": "Ministry of Human Resources and Emiratisation",
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 4
+    },
+    {
+      "code": "LABOUR_CONTRACT",
+      "name": "MOHRE Labour Contract",
+      "subject": "employee",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "renewalLeadDays": 45,
+      "issuingAuthority": "Ministry of Human Resources and Emiratisation",
+      "sortOrder": 5
+    },
+    {
+      "code": "MEDICAL_INSURANCE",
+      "name": "Medical Insurance",
+      "subject": "employee",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14],
+      "renewalLeadDays": 30,
+      "typicalValidityMonths": 12,
+      "sortOrder": 6
+    },
+    {
+      "code": "WORKER_PROTECTION_INSURANCE",
+      "name": "Workers' Protection Insurance",
+      "description": "Replaced the bank guarantee requirement for private sector workers.",
+      "subject": "employee",
+      "category": "insurance",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 7
+    },
+    {
+      "code": "OCCUPATIONAL_HEALTH_CARD",
+      "name": "Occupational Health Card",
+      "description": "Required for certain trades and for food-handling or high-risk work.",
+      "subject": "employee",
+      "category": "health",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "sortOrder": 8
+    },
+    {
+      "code": "DRIVING_LICENCE",
+      "name": "UAE Driving Licence",
+      "subject": "employee",
+      "category": "licence",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "sortOrder": 9
+    },
+
+    {
+      "code": "TRADE_LICENCE",
+      "name": "Trade Licence",
+      "nativeName": "الرخصة التجارية",
+      "subject": "company",
+      "category": "licence",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7],
+      "renewalLeadDays": 30,
+      "typicalValidityMonths": 12,
+      "issuingAuthority": "Department of Economic Development (per Emirate)",
+      "sortOrder": 20
+    },
+    {
+      "code": "ESTABLISHMENT_CARD",
+      "name": "Establishment Card",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "renewalLeadDays": 30,
+      "issuingAuthority": "General Directorate of Residency and Foreigners Affairs",
+      "sortOrder": 21
+    },
+    {
+      "code": "MOHRE_ESTABLISHMENT",
+      "name": "MOHRE Establishment Registration",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "issuingAuthority": "Ministry of Human Resources and Emiratisation",
+      "sortOrder": 22
+    },
+    {
+      "code": "VAT_REGISTRATION",
+      "name": "VAT Registration (TRN)",
+      "subject": "company",
+      "category": "tax",
+      "isMandatory": false,
+      "hasExpiry": false,
+      "numberFormatRegex": "^\\d{15}$",
+      "numberFormatHint": "15 digits",
+      "issuingAuthority": "Federal Tax Authority",
+      "sortOrder": 23
+    },
+    {
+      "code": "CORPORATE_TAX_REGISTRATION",
+      "name": "Corporate Tax Registration",
+      "subject": "company",
+      "category": "tax",
+      "isMandatory": true,
+      "hasExpiry": false,
+      "issuingAuthority": "Federal Tax Authority",
+      "sortOrder": 24
+    },
+    {
+      "code": "CHAMBER_OF_COMMERCE",
+      "name": "Chamber of Commerce Membership",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 25
+    },
+    {
+      "code": "MUNICIPALITY_APPROVAL",
+      "name": "Municipality Contractor Registration",
+      "description": "Required to carry out fit-out and joinery works in most Emirates.",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "sortOrder": 26
+    },
+    {
+      "code": "CIVIL_DEFENCE_APPROVAL",
+      "name": "Civil Defence Approval",
+      "description": "Fire-rated joinery and fit-out works require Civil Defence sign-off.",
+      "subject": "project",
+      "category": "permit",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "sortOrder": 27
+    },
+
+    {
+      "code": "VEHICLE_REGISTRATION",
+      "name": "Vehicle Registration (Mulkiya)",
+      "nativeName": "ملكية المركبة",
+      "subject": "vehicle",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "renewalLeadDays": 30,
+      "typicalValidityMonths": 12,
+      "sortOrder": 40
+    },
+    {
+      "code": "VEHICLE_INSURANCE",
+      "name": "Vehicle Insurance",
+      "subject": "vehicle",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "typicalValidityMonths": 13,
+      "sortOrder": 41
+    },
+    {
+      "code": "ACCOMMODATION_PERMIT",
+      "name": "Labour Accommodation Permit",
+      "subject": "accommodation",
+      "category": "permit",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 50
+    }
+  ],
+
+  "taxRegimes": [
+    {
+      "code": "AE_VAT",
+      "name": "UAE Value Added Tax",
+      "type": "vat",
+      "registrationLabel": "TRN",
+      "registrationRegex": "^\\d{15}$",
+      "registrationHint": "15-digit Tax Registration Number",
+      "filingFrequency": "quarterly",
+      "supportsReverseCharge": true,
+      "supportsDesignatedZones": true,
+      "registrationThreshold": 375000,
+      "einvoicingScheme": "PEPPOL_PINT_AE",
+      "einvoicingConfig": {
+        "model": "five_corner",
+        "note": "Phased rollout. Confirm the current FTA timeline and accredited service provider requirements before enabling."
+      },
+      "effectiveFrom": "2018-01-01",
+      "taxCodes": [
+        {
+          "code": "SR",
+          "name": "Standard Rated 5%",
+          "rate": 5,
+          "applicability": "both",
+          "isDefault": true,
+          "sortOrder": 1
+        },
+        { "code": "ZR", "name": "Zero Rated", "rate": 0, "applicability": "both", "sortOrder": 2 },
+        {
+          "code": "EX",
+          "name": "Exempt",
+          "rate": 0,
+          "applicability": "both",
+          "isRecoverable": false,
+          "sortOrder": 3
+        },
+        {
+          "code": "RC",
+          "name": "Reverse Charge",
+          "rate": 5,
+          "applicability": "purchase",
+          "isReverseCharge": true,
+          "sortOrder": 4
+        },
+        {
+          "code": "OS",
+          "name": "Out of Scope",
+          "rate": 0,
+          "applicability": "both",
+          "isRecoverable": false,
+          "sortOrder": 5
+        },
+        {
+          "code": "DZ",
+          "name": "Designated Zone",
+          "rate": 0,
+          "applicability": "both",
+          "sortOrder": 6
+        }
+      ]
+    }
+  ],
+
+  "holidays": [
+    {
+      "code": "NEW_YEAR",
+      "name": "New Year's Day",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 1, "day": 1 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "EID_AL_FITR",
+      "name": "Eid Al Fitr",
+      "nativeName": "عيد الفطر",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 10, "hijriDay": 1 },
+      "defaultDurationDays": 3
+    },
+    {
+      "code": "ARAFAT_DAY",
+      "name": "Arafat Day",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 12, "hijriDay": 9 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "EID_AL_ADHA",
+      "name": "Eid Al Adha",
+      "nativeName": "عيد الأضحى",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 12, "hijriDay": 10 },
+      "defaultDurationDays": 3
+    },
+    {
+      "code": "HIJRI_NEW_YEAR",
+      "name": "Islamic New Year",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 1, "hijriDay": 1 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "PROPHET_BIRTHDAY",
+      "name": "Prophet Muhammad's Birthday",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 3, "hijriDay": 12 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "COMMEMORATION_DAY",
+      "name": "Commemoration Day",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 12, "day": 1 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "NATIONAL_DAY",
+      "name": "UAE National Day",
+      "nativeName": "اليوم الوطني",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 12, "day": 2 },
+      "defaultDurationDays": 2
+    }
+  ],
+
+  "rules": {
+    "hr.working_time.standard_daily_hours": 8,
+    "hr.working_time.standard_weekly_hours": 48,
+    "hr.working_time.ramadan_daily_hours": 6,
+    "hr.working_time.midday_break": {
+      "startTime": "12:30",
+      "endTime": "15:00",
+      "fromMonthDay": "06-15",
+      "toMonthDay": "09-15",
+      "appliesTo": "outdoor_work"
+    },
+
+    "payroll.overtime.weekday_multiplier": 1.25,
+    "payroll.overtime.night_multiplier": 1.5,
+    "payroll.overtime.rest_day_multiplier": 1.5,
+    "payroll.overtime.holiday_multiplier": 1.5,
+
+    "hr.leave.annual_days": 30,
+    "hr.leave.annual_accrual_basis": "calendar",
+    "hr.leave.sick_leave_scale": [
+      { "days": 15, "payPercent": 100 },
+      { "days": 30, "payPercent": 50 },
+      { "days": 45, "payPercent": 0 }
+    ],
+    "hr.leave.maternity_days": 60,
+    "hr.probation.max_months": 6,
+    "hr.notice.minimum_days": 30,
+
+    "payroll.end_of_service.scheme": {
+      "basis": "basic_salary",
+      "bands": [
+        { "fromYears": 0, "toYears": 5, "daysPerYear": 21 },
+        { "fromYears": 5, "toYears": null, "daysPerYear": 30 }
+      ],
+      "minimumServiceYears": 1
+    },
+    "payroll.end_of_service.cap_years": 2,
+
+    "payroll.wps.enabled": true,
+    "payroll.wps.file_format": "AE_SIF",
+    "payroll.wps.deadline_days": 15,
+    "payroll.social_insurance": {
+      "appliesTo": ["national", "gcc"],
+      "employerPercent": 12.5,
+      "employeePercent": 5,
+      "basis": "contribution_salary"
+    },
+
+    "contract.retention.default_percent": 10,
+    "contract.retention.release_schedule": { "practicalCompletion": 50, "endOfDlp": 50 },
+    "contract.dlp.default_months": 12,
+    "contract.payment_terms.default_days": 60,
+
+    "document.retention.statutory_years": 7,
+    "tax.invoice.required_fields": [
+      "supplierName",
+      "supplierAddress",
+      "supplierTrn",
+      "customerName",
+      "customerTrn",
+      "invoiceNumber",
+      "invoiceDate",
+      "supplyDate",
+      "lineDescription",
+      "lineQuantity",
+      "lineUnitPrice",
+      "lineTaxRate",
+      "taxAmountAed",
+      "totalExcludingTax",
+      "totalIncludingTax"
+    ],
+    "tax.invoice.language_requirement": ["en", "ar"],
+
+    "accommodation.max_occupants_per_room": 8,
+    "accommodation.min_area_per_occupant_sqm": 3
+  },
+
+  "ruleSources": {
+    "hr.leave.annual_days": "Federal Decree-Law No. 33 of 2021 (UAE Labour Law)",
+    "payroll.end_of_service.scheme": "Federal Decree-Law No. 33 of 2021, end-of-service gratuity",
+    "hr.working_time.midday_break": "MOHRE annual midday break resolution",
+    "payroll.wps.enabled": "MOHRE Wage Protection System"
+  },
+
+  "notes": "Statutory values are seeded as a starting point and must be verified against current law and the tenant's own contracts before payroll or tax is run in production. Ministerial resolutions change these numbers; the pack version is how corrections are shipped."
+}

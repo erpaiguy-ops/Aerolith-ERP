@@ -1,0 +1,114 @@
+{
+  "packVersion": "1.0.0",
+  "code": "KW",
+  "code3": "KWT",
+  "numericCode": "414",
+  "name": "Kuwait",
+  "nativeName": "الكويت",
+
+  "currencyCode": "KWD",
+  "defaultLocale": "en",
+  "supportedLocales": ["en", "ar"],
+  "defaultTimezone": "Asia/Kuwait",
+  "dateFormat": "dd/MM/yyyy",
+  "weekendDays": [5, 6],
+  "fiscalYearStartMonth": 1,
+
+  "adminDivisionLabel": "Governorate",
+  "adminDivisions": [
+    { "code": "KU", "name": "Al Asimah (Capital)", "nativeName": "العاصمة", "sortOrder": 1 },
+    { "code": "HA", "name": "Hawalli", "nativeName": "حولي", "sortOrder": 2 },
+    { "code": "FA", "name": "Farwaniya", "nativeName": "الفروانية", "sortOrder": 3 },
+    { "code": "AH", "name": "Ahmadi", "nativeName": "الأحمدي", "sortOrder": 4 },
+    { "code": "JA", "name": "Jahra", "nativeName": "الجهراء", "sortOrder": 5 },
+    { "code": "MU", "name": "Mubarak Al-Kabeer", "nativeName": "مبارك الكبير", "sortOrder": 6 }
+  ],
+
+  "addressFormat": [
+    { "key": "building", "label": "Building", "required": false, "order": 1 },
+    { "key": "street", "label": "Street", "required": true, "order": 2 },
+    { "key": "block", "label": "Block", "required": true, "order": 3 },
+    { "key": "area", "label": "Area", "required": true, "order": 4 },
+    { "key": "governorate", "label": "Governorate", "required": true, "order": 5, "source": "admin_division" }
+  ],
+
+  "phoneCode": "+965",
+  "phoneFormat": "+965 #### ####",
+
+  "requirements": [
+    { "code": "PASSPORT", "name": "Passport", "subject": "employee", "category": "identity", "hasExpiry": true, "expiryNoticeDays": [180, 90, 60, 30], "blocksOnboarding": true, "sortOrder": 1 },
+    { "code": "CIVIL_ID", "name": "Civil ID", "nativeName": "البطاقة المدنية", "subject": "employee", "category": "identity", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30, 14], "numberFormatRegex": "^\\d{12}$", "numberFormatHint": "12 digits", "issuingAuthority": "Public Authority for Civil Information", "blocksOnboarding": true, "blocksSiteAccess": true, "sortOrder": 2 },
+    { "code": "RESIDENCE_PERMIT", "name": "Residence Permit (Iqama)", "subject": "employee", "category": "immigration", "appliesTo": { "nationality": "expatriate" }, "hasExpiry": true, "expiryNoticeDays": [90, 60, 30, 14], "blocksOnboarding": true, "blocksSiteAccess": true, "sortOrder": 3 },
+    { "code": "WORK_PERMIT", "name": "Work Permit", "subject": "employee", "category": "permit", "appliesTo": { "nationality": "expatriate" }, "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "issuingAuthority": "Public Authority for Manpower", "blocksOnboarding": true, "sortOrder": 4 },
+    { "code": "MEDICAL_INSURANCE", "name": "Health Insurance", "subject": "employee", "category": "insurance", "hasExpiry": true, "expiryNoticeDays": [60, 30], "typicalValidityMonths": 12, "sortOrder": 5 },
+    { "code": "COMMERCIAL_LICENCE", "name": "Commercial Licence", "subject": "company", "category": "licence", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "typicalValidityMonths": 12, "issuingAuthority": "Ministry of Commerce and Industry", "sortOrder": 20 },
+    { "code": "COMMERCIAL_REGISTRATION", "name": "Commercial Registration", "subject": "company", "category": "registration", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "sortOrder": 21 },
+    { "code": "MANPOWER_FILE", "name": "PAM Manpower File", "subject": "company", "category": "registration", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "issuingAuthority": "Public Authority for Manpower", "sortOrder": 22 },
+    { "code": "VEHICLE_REGISTRATION", "name": "Vehicle Registration", "subject": "vehicle", "category": "registration", "hasExpiry": true, "expiryNoticeDays": [60, 30, 14], "sortOrder": 40 },
+    { "code": "VEHICLE_INSURANCE", "name": "Vehicle Insurance", "subject": "vehicle", "category": "insurance", "hasExpiry": true, "expiryNoticeDays": [60, 30, 14], "sortOrder": 41 },
+    { "code": "ACCOMMODATION_PERMIT", "name": "Labour Accommodation Permit", "subject": "accommodation", "category": "permit", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "sortOrder": 50 }
+  ],
+
+  "taxRegimes": [
+    {
+      "code": "KW_NONE",
+      "name": "No general consumption tax",
+      "type": "none",
+      "registrationLabel": "Tax File No.",
+      "filingFrequency": "annual",
+      "einvoicingConfig": {
+        "note": "Kuwait has no general VAT at the time of this pack. When one commences, add a VAT regime here and switch the tenant's regime code — no application code changes."
+      },
+      "taxCodes": [
+        { "code": "NA", "name": "Not Applicable", "rate": 0, "applicability": "both", "isDefault": true, "sortOrder": 1 }
+      ]
+    }
+  ],
+
+  "holidays": [
+    { "code": "NEW_YEAR", "name": "New Year's Day", "calculation": "fixed_gregorian", "rule": { "month": 1, "day": 1 }, "defaultDurationDays": 1 },
+    { "code": "NATIONAL_DAY", "name": "National Day", "calculation": "fixed_gregorian", "rule": { "month": 2, "day": 25 }, "defaultDurationDays": 1 },
+    { "code": "LIBERATION_DAY", "name": "Liberation Day", "calculation": "fixed_gregorian", "rule": { "month": 2, "day": 26 }, "defaultDurationDays": 1 },
+    { "code": "EID_AL_FITR", "name": "Eid Al Fitr", "calculation": "hijri", "rule": { "hijriMonth": 10, "hijriDay": 1 }, "defaultDurationDays": 3 },
+    { "code": "EID_AL_ADHA", "name": "Eid Al Adha", "calculation": "hijri", "rule": { "hijriMonth": 12, "hijriDay": 10 }, "defaultDurationDays": 3 },
+    { "code": "HIJRI_NEW_YEAR", "name": "Islamic New Year", "calculation": "hijri", "rule": { "hijriMonth": 1, "hijriDay": 1 }, "defaultDurationDays": 1 },
+    { "code": "ISRA_MIRAJ", "name": "Isra and Miraj", "calculation": "hijri", "rule": { "hijriMonth": 7, "hijriDay": 27 }, "defaultDurationDays": 1 }
+  ],
+
+  "rules": {
+    "hr.working_time.standard_daily_hours": 8,
+    "hr.working_time.standard_weekly_hours": 48,
+    "hr.working_time.ramadan_daily_hours": 6,
+    "hr.working_time.midday_break": { "startTime": "11:00", "endTime": "16:00", "fromMonthDay": "06-01", "toMonthDay": "08-31", "appliesTo": "outdoor_work" },
+    "payroll.overtime.weekday_multiplier": 1.25,
+    "payroll.overtime.night_multiplier": 1.5,
+    "payroll.overtime.rest_day_multiplier": 1.5,
+    "payroll.overtime.holiday_multiplier": 2,
+    "hr.leave.annual_days": 30,
+    "hr.leave.annual_accrual_basis": "working",
+    "hr.leave.maternity_days": 70,
+    "hr.probation.max_months": 3,
+    "hr.notice.minimum_days": 90,
+    "payroll.end_of_service.scheme": {
+      "basis": "total_salary",
+      "bands": [
+        { "fromYears": 0, "toYears": 5, "daysPerYear": 15 },
+        { "fromYears": 5, "toYears": null, "daysPerYear": 30 }
+      ],
+      "minimumServiceYears": 1
+    },
+    "payroll.end_of_service.cap_years": 1.5,
+    "payroll.wps.enabled": true,
+    "payroll.wps.file_format": "KW_WPS",
+    "payroll.wps.deadline_days": 7,
+    "contract.retention.default_percent": 10,
+    "contract.dlp.default_months": 12,
+    "contract.payment_terms.default_days": 60,
+    "document.retention.statutory_years": 5,
+    "tax.invoice.language_requirement": ["en", "ar"],
+    "accommodation.max_occupants_per_room": 4,
+    "accommodation.min_area_per_occupant_sqm": 4
+  },
+
+  "notes": "Statutory values are seeded as a starting point and must be verified against current Kuwaiti law before payroll is run in production."
+}

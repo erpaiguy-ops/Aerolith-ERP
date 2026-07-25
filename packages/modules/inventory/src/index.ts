@@ -1,0 +1,1 @@
+export { inventoryModule } from './manifest';

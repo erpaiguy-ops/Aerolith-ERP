@@ -1,0 +1,410 @@
+{
+  "packVersion": "1.0.0",
+  "code": "QA",
+  "code3": "QAT",
+  "numericCode": "634",
+  "name": "Qatar",
+  "nativeName": "قطر",
+
+  "currencyCode": "QAR",
+  "defaultLocale": "en",
+  "supportedLocales": ["en", "ar"],
+  "isRtlDefault": false,
+  "defaultTimezone": "Asia/Qatar",
+  "dateFormat": "dd/MM/yyyy",
+  "weekendDays": [5, 6],
+  "fiscalYearStartMonth": 1,
+
+  "adminDivisionLabel": "Municipality",
+  "adminDivisions": [
+    { "code": "DA", "name": "Ad Dawhah (Doha)", "nativeName": "الدوحة", "sortOrder": 1 },
+    { "code": "RA", "name": "Al Rayyan", "nativeName": "الريان", "sortOrder": 2 },
+    { "code": "WA", "name": "Al Wakrah", "nativeName": "الوكرة", "sortOrder": 3 },
+    { "code": "KH", "name": "Al Khor", "nativeName": "الخور", "sortOrder": 4 },
+    { "code": "SH", "name": "Al Shamal", "nativeName": "الشمال", "sortOrder": 5 },
+    { "code": "DY", "name": "Al Daayen", "nativeName": "الضعاين", "sortOrder": 6 },
+    { "code": "US", "name": "Umm Salal", "nativeName": "أم صلال", "sortOrder": 7 },
+    { "code": "SN", "name": "Al Sheehaniya", "nativeName": "الشحانية", "sortOrder": 8 }
+  ],
+
+  "addressFormat": [
+    { "key": "building", "label": "Building No.", "required": false, "order": 1 },
+    { "key": "street", "label": "Street No.", "required": false, "order": 2 },
+    { "key": "zone", "label": "Zone No.", "required": true, "order": 3 },
+    { "key": "poBox", "label": "P.O. Box", "required": false, "order": 4, "maxLength": 16 },
+    {
+      "key": "municipality",
+      "label": "Municipality",
+      "labelNative": "البلدية",
+      "required": true,
+      "order": 5,
+      "source": "admin_division"
+    }
+  ],
+
+  "phoneCode": "+974",
+  "phoneFormat": "+974 #### ####",
+
+  "requirements": [
+    {
+      "code": "PASSPORT",
+      "name": "Passport",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [180, 90, 60, 30],
+      "renewalLeadDays": 60,
+      "blocksOnboarding": true,
+      "sortOrder": 1
+    },
+    {
+      "code": "QATAR_ID",
+      "name": "Qatar ID (QID)",
+      "nativeName": "البطاقة الشخصية",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7],
+      "renewalLeadDays": 30,
+      "numberFormatRegex": "^\\d{11}$",
+      "numberFormatHint": "11 digits",
+      "issuingAuthority": "Ministry of Interior",
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 2
+    },
+    {
+      "code": "RESIDENCE_PERMIT",
+      "name": "Residence Permit",
+      "subject": "employee",
+      "category": "immigration",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7],
+      "renewalLeadDays": 45,
+      "typicalValidityMonths": 12,
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 3
+    },
+    {
+      "code": "WORK_PERMIT",
+      "name": "Work Permit",
+      "subject": "employee",
+      "category": "permit",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14],
+      "renewalLeadDays": 45,
+      "issuingAuthority": "Ministry of Labour",
+      "blocksOnboarding": true,
+      "sortOrder": 4
+    },
+    {
+      "code": "LABOUR_CONTRACT",
+      "name": "Attested Labour Contract",
+      "subject": "employee",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "issuingAuthority": "Ministry of Labour",
+      "sortOrder": 5
+    },
+    {
+      "code": "HEALTH_CARD",
+      "name": "Health Card",
+      "subject": "employee",
+      "category": "health",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14],
+      "typicalValidityMonths": 12,
+      "sortOrder": 6
+    },
+    {
+      "code": "MEDICAL_INSURANCE",
+      "name": "Health Insurance",
+      "subject": "employee",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14],
+      "typicalValidityMonths": 12,
+      "sortOrder": 7
+    },
+    {
+      "code": "DRIVING_LICENCE",
+      "name": "Qatar Driving Licence",
+      "subject": "employee",
+      "category": "licence",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "sortOrder": 8
+    },
+
+    {
+      "code": "COMMERCIAL_REGISTRATION",
+      "name": "Commercial Registration (CR)",
+      "nativeName": "السجل التجاري",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14],
+      "renewalLeadDays": 30,
+      "typicalValidityMonths": 12,
+      "issuingAuthority": "Ministry of Commerce and Industry",
+      "sortOrder": 20
+    },
+    {
+      "code": "TRADE_LICENCE",
+      "name": "Trade Licence",
+      "subject": "company",
+      "category": "licence",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "typicalValidityMonths": 12,
+      "issuingAuthority": "Ministry of Municipality",
+      "sortOrder": 21
+    },
+    {
+      "code": "ESTABLISHMENT_CARD",
+      "name": "Establishment Card",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "issuingAuthority": "Ministry of Interior",
+      "sortOrder": 22
+    },
+    {
+      "code": "COMPUTER_CARD",
+      "name": "Computer Card (Immigration Card)",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "sortOrder": 23
+    },
+    {
+      "code": "TAX_CARD",
+      "name": "Tax Card",
+      "subject": "company",
+      "category": "tax",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "issuingAuthority": "General Tax Authority",
+      "sortOrder": 24
+    },
+    {
+      "code": "CHAMBER_OF_COMMERCE",
+      "name": "Qatar Chamber Membership",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 25
+    },
+    {
+      "code": "CIVIL_DEFENCE_APPROVAL",
+      "name": "Civil Defence Approval",
+      "subject": "project",
+      "category": "permit",
+      "isMandatory": false,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "sortOrder": 26
+    },
+
+    {
+      "code": "VEHICLE_REGISTRATION",
+      "name": "Vehicle Registration (Istimara)",
+      "nativeName": "استمارة",
+      "subject": "vehicle",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "typicalValidityMonths": 12,
+      "sortOrder": 40
+    },
+    {
+      "code": "VEHICLE_INSURANCE",
+      "name": "Vehicle Insurance",
+      "subject": "vehicle",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "typicalValidityMonths": 12,
+      "sortOrder": 41
+    },
+    {
+      "code": "ACCOMMODATION_PERMIT",
+      "name": "Labour Accommodation Licence",
+      "subject": "accommodation",
+      "category": "permit",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 50
+    }
+  ],
+
+  "taxRegimes": [
+    {
+      "code": "QA_NONE",
+      "name": "No general consumption tax",
+      "type": "none",
+      "registrationLabel": "TIN",
+      "registrationHint": "Tax Identification Number issued by the General Tax Authority",
+      "filingFrequency": "annual",
+      "einvoicingConfig": {
+        "note": "Qatar has announced but, at the time of this pack, not implemented a general VAT. Withholding tax and corporate income tax still apply. Add a VAT regime and switch the tenant's regime code when it commences — no code change is required."
+      },
+      "taxCodes": [
+        {
+          "code": "NA",
+          "name": "Not Applicable",
+          "rate": 0,
+          "applicability": "both",
+          "isDefault": true,
+          "sortOrder": 1
+        },
+        {
+          "code": "WHT5",
+          "name": "Withholding Tax 5%",
+          "rate": 5,
+          "applicability": "purchase",
+          "isRecoverable": false,
+          "sortOrder": 2
+        }
+      ]
+    }
+  ],
+
+  "holidays": [
+    {
+      "code": "EID_AL_FITR",
+      "name": "Eid Al Fitr",
+      "nativeName": "عيد الفطر",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 10, "hijriDay": 1 },
+      "defaultDurationDays": 4
+    },
+    {
+      "code": "EID_AL_ADHA",
+      "name": "Eid Al Adha",
+      "nativeName": "عيد الأضحى",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 12, "hijriDay": 10 },
+      "defaultDurationDays": 4
+    },
+    {
+      "code": "NATIONAL_SPORTS_DAY",
+      "name": "National Sports Day",
+      "calculation": "announced",
+      "rule": { "month": 2, "typicalWeek": 2 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "NATIONAL_DAY",
+      "name": "Qatar National Day",
+      "nativeName": "اليوم الوطني",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 12, "day": 18 },
+      "defaultDurationDays": 1
+    }
+  ],
+
+  "rules": {
+    "hr.working_time.standard_daily_hours": 8,
+    "hr.working_time.standard_weekly_hours": 48,
+    "hr.working_time.ramadan_daily_hours": 6,
+    "hr.working_time.midday_break": {
+      "startTime": "10:00",
+      "endTime": "15:30",
+      "fromMonthDay": "06-01",
+      "toMonthDay": "09-15",
+      "appliesTo": "outdoor_work"
+    },
+
+    "payroll.overtime.weekday_multiplier": 1.25,
+    "payroll.overtime.night_multiplier": 1.5,
+    "payroll.overtime.rest_day_multiplier": 1.5,
+    "payroll.overtime.holiday_multiplier": 1.5,
+
+    "hr.leave.annual_days": 21,
+    "hr.leave.annual_accrual_basis": "calendar",
+    "hr.leave.sick_leave_scale": [
+      { "days": 14, "payPercent": 100 },
+      { "days": 28, "payPercent": 50 },
+      { "days": 42, "payPercent": 0 }
+    ],
+    "hr.leave.maternity_days": 50,
+    "hr.probation.max_months": 6,
+    "hr.notice.minimum_days": 30,
+
+    "payroll.end_of_service.scheme": {
+      "basis": "basic_salary",
+      "bands": [{ "fromYears": 0, "toYears": null, "daysPerYear": 21 }],
+      "minimumServiceYears": 1,
+      "note": "Statutory minimum is three weeks' basic pay per year of service; many contracts improve on it."
+    },
+    "payroll.end_of_service.cap_years": null,
+
+    "payroll.wps.enabled": true,
+    "payroll.wps.file_format": "QA_WPS",
+    "payroll.wps.deadline_days": 7,
+    "payroll.social_insurance": {
+      "appliesTo": ["national"],
+      "employerPercent": 14,
+      "employeePercent": 7,
+      "basis": "contribution_salary"
+    },
+
+    "contract.retention.default_percent": 10,
+    "contract.retention.release_schedule": { "practicalCompletion": 50, "endOfDlp": 50 },
+    "contract.dlp.default_months": 12,
+    "contract.payment_terms.default_days": 60,
+
+    "document.retention.statutory_years": 10,
+    "tax.invoice.required_fields": [
+      "supplierName",
+      "supplierAddress",
+      "supplierTin",
+      "customerName",
+      "invoiceNumber",
+      "invoiceDate",
+      "lineDescription",
+      "lineQuantity",
+      "lineUnitPrice",
+      "totalAmount"
+    ],
+    "tax.invoice.language_requirement": ["en", "ar"],
+
+    "accommodation.max_occupants_per_room": 4,
+    "accommodation.min_area_per_occupant_sqm": 4
+  },
+
+  "ruleSources": {
+    "hr.leave.annual_days": "Law No. 14 of 2004 (Qatar Labour Law)",
+    "payroll.end_of_service.scheme": "Law No. 14 of 2004, end-of-service gratuity",
+    "accommodation.min_area_per_occupant_sqm": "Qatar labour accommodation standards"
+  },
+
+  "notes": "Statutory values are seeded as a starting point and must be verified against current law before payroll is run in production. Qatar has announced but not yet implemented a general VAT — when it commences, add a VAT regime to this pack and switch the tenant's regime code. No application code changes."
+}

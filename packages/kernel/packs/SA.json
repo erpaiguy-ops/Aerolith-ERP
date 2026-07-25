@@ -1,0 +1,394 @@
+{
+  "packVersion": "1.0.0",
+  "code": "SA",
+  "code3": "SAU",
+  "numericCode": "682",
+  "name": "Saudi Arabia",
+  "nativeName": "المملكة العربية السعودية",
+
+  "currencyCode": "SAR",
+  "defaultLocale": "en",
+  "supportedLocales": ["en", "ar"],
+  "isRtlDefault": true,
+  "defaultTimezone": "Asia/Riyadh",
+  "dateFormat": "dd/MM/yyyy",
+  "weekendDays": [5, 6],
+  "fiscalYearStartMonth": 1,
+
+  "adminDivisionLabel": "Province",
+  "adminDivisions": [
+    { "code": "RI", "name": "Riyadh", "nativeName": "الرياض", "sortOrder": 1 },
+    { "code": "MK", "name": "Makkah", "nativeName": "مكة المكرمة", "sortOrder": 2 },
+    { "code": "MD", "name": "Madinah", "nativeName": "المدينة المنورة", "sortOrder": 3 },
+    { "code": "EP", "name": "Eastern Province", "nativeName": "المنطقة الشرقية", "sortOrder": 4 },
+    { "code": "AS", "name": "Asir", "nativeName": "عسير", "sortOrder": 5 },
+    { "code": "TB", "name": "Tabuk", "nativeName": "تبوك", "sortOrder": 6 },
+    { "code": "HA", "name": "Hail", "nativeName": "حائل", "sortOrder": 7 },
+    { "code": "NB", "name": "Northern Borders", "nativeName": "الحدود الشمالية", "sortOrder": 8 },
+    { "code": "JZ", "name": "Jazan", "nativeName": "جازان", "sortOrder": 9 },
+    { "code": "NJ", "name": "Najran", "nativeName": "نجران", "sortOrder": 10 },
+    { "code": "BH", "name": "Al Bahah", "nativeName": "الباحة", "sortOrder": 11 },
+    { "code": "JF", "name": "Al Jawf", "nativeName": "الجوف", "sortOrder": 12 },
+    { "code": "QS", "name": "Qassim", "nativeName": "القصيم", "sortOrder": 13 }
+  ],
+
+  "addressFormat": [
+    { "key": "buildingNumber", "label": "Building Number", "required": true, "order": 1, "maxLength": 4 },
+    { "key": "street", "label": "Street", "required": true, "order": 2 },
+    { "key": "district", "label": "District", "required": true, "order": 3 },
+    { "key": "city", "label": "City", "required": true, "order": 4 },
+    { "key": "postalCode", "label": "Postal Code", "required": true, "order": 5, "maxLength": 5 },
+    { "key": "additionalNumber", "label": "Additional Number", "required": false, "order": 6, "maxLength": 4 },
+    { "key": "province", "label": "Province", "required": true, "order": 7, "source": "admin_division" }
+  ],
+
+  "phoneCode": "+966",
+  "phoneFormat": "+966 ## ### ####",
+
+  "requirements": [
+    {
+      "code": "PASSPORT",
+      "name": "Passport",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [180, 90, 60, 30],
+      "renewalLeadDays": 60,
+      "blocksOnboarding": true,
+      "sortOrder": 1
+    },
+    {
+      "code": "IQAMA",
+      "name": "Residence Permit (Iqama)",
+      "nativeName": "الإقامة",
+      "subject": "employee",
+      "category": "immigration",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14, 7],
+      "renewalLeadDays": 30,
+      "numberFormatRegex": "^[12]\\d{9}$",
+      "numberFormatHint": "10 digits, starting 1 (national) or 2 (resident)",
+      "issuingAuthority": "General Directorate of Passports (Jawazat)",
+      "blocksOnboarding": true,
+      "blocksSiteAccess": true,
+      "sortOrder": 2
+    },
+    {
+      "code": "NATIONAL_ID",
+      "name": "National ID",
+      "subject": "employee",
+      "category": "identity",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "national" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "numberFormatRegex": "^1\\d{9}$",
+      "blocksOnboarding": true,
+      "sortOrder": 3
+    },
+    {
+      "code": "WORK_PERMIT",
+      "name": "Work Permit",
+      "subject": "employee",
+      "category": "permit",
+      "isMandatory": true,
+      "appliesTo": { "nationality": "expatriate" },
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14],
+      "renewalLeadDays": 45,
+      "issuingAuthority": "Ministry of Human Resources and Social Development",
+      "blocksOnboarding": true,
+      "sortOrder": 4
+    },
+    {
+      "code": "MEDICAL_INSURANCE",
+      "name": "Medical Insurance",
+      "subject": "employee",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14],
+      "typicalValidityMonths": 12,
+      "sortOrder": 5
+    },
+    {
+      "code": "GOSI_REGISTRATION",
+      "name": "GOSI Registration",
+      "subject": "employee",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": false,
+      "issuingAuthority": "General Organization for Social Insurance",
+      "sortOrder": 6
+    },
+    {
+      "code": "COMMERCIAL_REGISTRATION",
+      "name": "Commercial Registration (CR)",
+      "subject": "company",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30, 14],
+      "typicalValidityMonths": 12,
+      "issuingAuthority": "Ministry of Commerce",
+      "sortOrder": 20
+    },
+    {
+      "code": "VAT_REGISTRATION",
+      "name": "VAT Registration",
+      "subject": "company",
+      "category": "tax",
+      "isMandatory": false,
+      "hasExpiry": false,
+      "numberFormatRegex": "^3\\d{14}$",
+      "numberFormatHint": "15 digits, starting and ending with 3",
+      "issuingAuthority": "Zakat, Tax and Customs Authority",
+      "sortOrder": 21
+    },
+    {
+      "code": "ZAKAT_CERTIFICATE",
+      "name": "Zakat Certificate",
+      "subject": "company",
+      "category": "tax",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "typicalValidityMonths": 12,
+      "issuingAuthority": "Zakat, Tax and Customs Authority",
+      "sortOrder": 22
+    },
+    {
+      "code": "SAUDIZATION_CERTIFICATE",
+      "name": "Saudization (Nitaqat) Certificate",
+      "subject": "company",
+      "category": "certification",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30],
+      "issuingAuthority": "Ministry of Human Resources and Social Development",
+      "sortOrder": 23
+    },
+    {
+      "code": "MUNICIPALITY_LICENCE",
+      "name": "Municipality Licence (Baladiya)",
+      "subject": "company",
+      "category": "licence",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "typicalValidityMonths": 12,
+      "sortOrder": 24
+    },
+    {
+      "code": "VEHICLE_REGISTRATION",
+      "name": "Vehicle Registration (Istimara)",
+      "subject": "vehicle",
+      "category": "registration",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "sortOrder": 40
+    },
+    {
+      "code": "VEHICLE_INSURANCE",
+      "name": "Vehicle Insurance",
+      "subject": "vehicle",
+      "category": "insurance",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [60, 30, 14, 7],
+      "typicalValidityMonths": 12,
+      "sortOrder": 41
+    },
+    {
+      "code": "ACCOMMODATION_PERMIT",
+      "name": "Labour Accommodation Permit",
+      "subject": "accommodation",
+      "category": "permit",
+      "isMandatory": true,
+      "hasExpiry": true,
+      "expiryNoticeDays": [90, 60, 30],
+      "sortOrder": 50
+    }
+  ],
+
+  "taxRegimes": [
+    {
+      "code": "SA_VAT",
+      "name": "Saudi Value Added Tax",
+      "type": "vat",
+      "registrationLabel": "VAT Number",
+      "registrationRegex": "^3\\d{14}$",
+      "registrationHint": "15-digit VAT registration number",
+      "filingFrequency": "monthly",
+      "supportsReverseCharge": true,
+      "supportsDesignatedZones": false,
+      "registrationThreshold": 375000,
+      "einvoicingScheme": "ZATCA_FATOORA",
+      "einvoicingConfig": {
+        "phase": 2,
+        "note": "Phase 2 integration applies in waves by taxpayer revenue. Confirm the tenant's wave and onboarding deadline with ZATCA. Requires cryptographic stamping, UUID, hash chaining and a QR code."
+      },
+      "effectiveFrom": "2020-07-01",
+      "taxCodes": [
+        {
+          "code": "SR",
+          "name": "Standard Rated 15%",
+          "rate": 15,
+          "applicability": "both",
+          "isDefault": true,
+          "sortOrder": 1
+        },
+        { "code": "ZR", "name": "Zero Rated", "rate": 0, "applicability": "both", "sortOrder": 2 },
+        {
+          "code": "EX",
+          "name": "Exempt",
+          "rate": 0,
+          "applicability": "both",
+          "isRecoverable": false,
+          "sortOrder": 3
+        },
+        {
+          "code": "RC",
+          "name": "Reverse Charge",
+          "rate": 15,
+          "applicability": "purchase",
+          "isReverseCharge": true,
+          "sortOrder": 4
+        },
+        {
+          "code": "OS",
+          "name": "Out of Scope",
+          "rate": 0,
+          "applicability": "both",
+          "isRecoverable": false,
+          "sortOrder": 5
+        }
+      ]
+    }
+  ],
+
+  "holidays": [
+    {
+      "code": "EID_AL_FITR",
+      "name": "Eid Al Fitr",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 10, "hijriDay": 1 },
+      "defaultDurationDays": 4
+    },
+    {
+      "code": "EID_AL_ADHA",
+      "name": "Eid Al Adha",
+      "calculation": "hijri",
+      "rule": { "hijriMonth": 12, "hijriDay": 10 },
+      "defaultDurationDays": 4
+    },
+    {
+      "code": "FOUNDING_DAY",
+      "name": "Founding Day",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 2, "day": 22 },
+      "defaultDurationDays": 1
+    },
+    {
+      "code": "NATIONAL_DAY",
+      "name": "Saudi National Day",
+      "calculation": "fixed_gregorian",
+      "rule": { "month": 9, "day": 23 },
+      "defaultDurationDays": 1
+    }
+  ],
+
+  "rules": {
+    "hr.working_time.standard_daily_hours": 8,
+    "hr.working_time.standard_weekly_hours": 48,
+    "hr.working_time.ramadan_daily_hours": 6,
+    "hr.working_time.midday_break": {
+      "startTime": "12:00",
+      "endTime": "15:00",
+      "fromMonthDay": "06-15",
+      "toMonthDay": "09-15",
+      "appliesTo": "outdoor_work"
+    },
+
+    "payroll.overtime.weekday_multiplier": 1.5,
+    "payroll.overtime.night_multiplier": 1.5,
+    "payroll.overtime.rest_day_multiplier": 1.5,
+    "payroll.overtime.holiday_multiplier": 1.5,
+
+    "hr.leave.annual_days": 21,
+    "hr.leave.annual_accrual_basis": "calendar",
+    "hr.leave.sick_leave_scale": [
+      { "days": 30, "payPercent": 100 },
+      { "days": 60, "payPercent": 75 },
+      { "days": 30, "payPercent": 0 }
+    ],
+    "hr.leave.maternity_days": 70,
+    "hr.probation.max_months": 6,
+    "hr.notice.minimum_days": 60,
+
+    "payroll.end_of_service.scheme": {
+      "basis": "total_salary",
+      "bands": [
+        { "fromYears": 0, "toYears": 5, "daysPerYear": 15 },
+        { "fromYears": 5, "toYears": null, "daysPerYear": 30 }
+      ],
+      "minimumServiceYears": 2
+    },
+    "payroll.end_of_service.cap_years": null,
+
+    "payroll.wps.enabled": true,
+    "payroll.wps.file_format": "SA_WPS",
+    "payroll.wps.deadline_days": 10,
+    "payroll.social_insurance": {
+      "appliesTo": ["national", "gcc", "expatriate"],
+      "note": "GOSI: nationals pay pension plus occupational hazard; expatriates occupational hazard only. Confirm current rates.",
+      "nationalEmployerPercent": 11.75,
+      "nationalEmployeePercent": 9.75,
+      "expatriateEmployerPercent": 2,
+      "expatriateEmployeePercent": 0,
+      "basis": "contribution_salary"
+    },
+
+    "contract.retention.default_percent": 10,
+    "contract.retention.release_schedule": { "practicalCompletion": 50, "endOfDlp": 50 },
+    "contract.dlp.default_months": 12,
+    "contract.payment_terms.default_days": 60,
+
+    "document.retention.statutory_years": 10,
+    "tax.invoice.required_fields": [
+      "supplierName",
+      "supplierAddress",
+      "supplierVatNumber",
+      "customerName",
+      "customerVatNumber",
+      "invoiceNumber",
+      "invoiceUuid",
+      "invoiceDate",
+      "lineDescription",
+      "lineQuantity",
+      "lineUnitPrice",
+      "lineTaxRate",
+      "totalExcludingTax",
+      "taxAmount",
+      "totalIncludingTax",
+      "qrCode",
+      "previousInvoiceHash"
+    ],
+    "tax.invoice.language_requirement": ["ar"],
+
+    "accommodation.max_occupants_per_room": 4,
+    "accommodation.min_area_per_occupant_sqm": 4
+  },
+
+  "ruleSources": {
+    "hr.leave.annual_days": "Saudi Labour Law",
+    "payroll.end_of_service.scheme": "Saudi Labour Law, end-of-service award",
+    "tax.invoice.required_fields": "ZATCA e-invoicing (Fatoora) Phase 2 requirements"
+  },
+
+  "notes": "Statutory values are seeded as a starting point and must be verified against current law before payroll or tax is run in production. ZATCA Phase 2 requires accredited integration; the invoice fields above are the data model requirement, not the full integration."
+}

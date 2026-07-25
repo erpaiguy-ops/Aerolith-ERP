@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: aerolith-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aerolith
+      POSTGRES_PASSWORD: aerolith
+      POSTGRES_DB: aerolith
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U aerolith -d aerolith']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Optional. The kernel uses pg-boss (Postgres-backed) for jobs, so Valkey is
+  # only needed once throughput justifies BullMQ. See docs/01-tech-stack.md.
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: aerolith-valkey
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    profiles: ['full']
+
+volumes:
+  postgres-data:
