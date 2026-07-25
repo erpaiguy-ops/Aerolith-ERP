@@ -19,10 +19,11 @@ import {
   type ResolvedModules,
 } from '@aerolith/kernel';
 import { inventoryModule } from '@aerolith/module-inventory';
+import { productionModule } from '@aerolith/module-production';
 import { eq } from 'drizzle-orm';
 
 /** Every module compiled into this binary. */
-export const MODULES: ModuleManifest[] = [inventoryModule];
+export const MODULES: ModuleManifest[] = [inventoryModule, productionModule];
 
 export const registry = new ModuleRegistry().registerAll(MODULES);
 

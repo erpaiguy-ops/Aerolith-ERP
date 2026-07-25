@@ -9,7 +9,8 @@ not code** — see [`docs/06-localisation.md`](docs/06-localisation.md).
 
 ## Status
 
-Kernel, API, the first business module (Inventory), and the cutlist optimiser.
+Kernel, API, two business modules (Inventory and Production), and the cutlist
+optimiser.
 
 **Built and working**
 
@@ -34,11 +35,35 @@ Kernel, API, the first business module (Inventory), and the cutlist optimiser.
 - **Cutlist optimiser** (`@aerolith/cutlist`) — 2D guillotine bin-packing that
   plans against the live offcut register before opening a new sheet, with SVG
   cutting diagrams and edge-banding schedules
-- **347 tests**, including integration suites that prove tenant isolation holds and
-  drive the approval engine, the API, stock posting and cutlist planning end to end
+- **Production module** — work orders, routings through work centres, batch
+  finishing with cure time, and barcode shop-floor tracking
+- **435 tests**, including integration suites that prove tenant isolation holds and
+  drive the approval engine, the API, stock posting, cutlist planning and the
+  full factory flow end to end
 
-**Not built yet** — the web app, and every module after Inventory.
-See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+**Not built yet** — the web app, and the rest of the wedge (Estimation, Projects,
+Contract Administration). See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+
+### Production
+
+Work orders carry their own parts, each with a scannable barcode derived from the
+order number. A routing is instantiated onto the order with its **rates
+snapshotted**, so editing a routing next month does not rewrite the planned times
+of jobs already on the floor.
+
+Two things generic MRP gets wrong and this does not:
+
+- **Finishing is a batch process.** Forty doors through a booth that holds forty
+  is *one* load, not forty run-times — and the cure clock then runs regardless of
+  load. Scheduling it per unit either quotes a week for an afternoon's work or
+  ignores the cure entirely, and cure is where joinery jobs lose days.
+- **Cure runs overnight; machining does not.** Paint does not stop drying at five
+  o'clock. Both behaviours are configurable per tenant.
+
+WIP position, machine utilisation, operator productivity and real labour cost are
+all **derived from barcode scans**, never from a timesheet. Scans are append-only
+and enforced as such in the database; a mis-scan is corrected by a compensating
+scan, exactly as a ledger is corrected by reversal.
 
 ### The offcut register
 
@@ -116,6 +141,11 @@ pnpm --filter @aerolith/api dev
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
 | `GET /api/v1/inventory/offcuts` | The offcut rack, with its total area and value |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
+| `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |
+| `POST /api/v1/production/work-orders/:id/cutlist` | Plan against live stock, reserve the offcuts |
+| `POST /api/v1/production/work-orders/:id/release` | Release to the floor |
+| `POST /api/v1/production/work-orders/:id/scans` | Record a shop-floor scan |
+| `GET /api/v1/production/board` | The live queue at each work centre |
 
 ## Layout
 
@@ -133,10 +163,14 @@ packages/
     src/events/        typed event bus over the outbox
     src/localisation/  country-as-data: packs, rule resolution, adoption
     packs/             AE, QA, SA, OM, BH, KW — adding a country is a JSON file
+  cutlist/             panel optimisation engine — zero dependencies, runs anywhere
   modules/
-    inventory/         first business module — owns the `inventory` schema
+    inventory/         owns the `inventory` schema
       src/domain/      costing and offcut matching: pure, no framework, no DB
       src/service/     movement posting (atomic: stock, cost, number, event)
+    production/        owns the `production` schema
+      src/domain/      scheduling and WIP derivation: pure, no framework, no DB
+      src/service/     work order lifecycle and scan handling
 docs/                  architecture and decisions
 ```
 
