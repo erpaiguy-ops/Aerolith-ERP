@@ -11,13 +11,18 @@
 import {
   allocateNumber,
   emit,
+  listResult,
   loadRuleSnapshot,
   recordAudit,
   requireTenantContext,
   ruleValue,
+  schema,
+  searchPattern,
+  type ListParams,
+  type ListResult,
   type Transaction,
 } from '@aerolith/kernel';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import {
   backCharge,
@@ -1257,4 +1262,125 @@ export async function recordPracticalCompletion(
   });
 
   return { defectsLiabilityEndsOn };
+}
+
+// ---------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------
+
+export interface ContractListRow {
+  id: string;
+  number: string | null;
+  name: string;
+  side: string;
+  status: string;
+  currencyCode: string | null;
+  originalSum: number;
+  currentSum: number;
+  /** Approved variations only — current less original. */
+  variationValue: number;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  counterpartyId: string | null;
+  counterpartyName: string | null;
+  contractCompletionDate: string | null;
+  externalReference: string | null;
+}
+
+/**
+ * A page of contracts, for the index screen.
+ *
+ * Joins the project and counterparty names in, rather than returning ids for the
+ * client to resolve. A list screen that renders `a3f9c2e1-…` in the client column
+ * is not a list screen, and letting the browser fetch a name per row is the
+ * N+1 problem moved somewhere it is harder to see.
+ *
+ * `variationValue` is derived from the two sums already on the row rather than
+ * aggregated from the variation table: only approved variations move
+ * `currentSum`, so the subtraction is exact and costs nothing.
+ */
+export async function listContracts(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; side?: 'receivable' | 'payable'; projectId?: string } = {},
+): Promise<ListResult<ContractListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(contract.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(contract.status, filters.status as never));
+  if (filters.side) conditions.push(eq(contract.side, filters.side));
+  if (filters.projectId) conditions.push(eq(contract.projectId, filters.projectId));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(contract.number, pattern),
+        ilike(contract.name, pattern),
+        // The client's own reference is what they quote in an email, so it is
+        // very often what a user pastes into a search box.
+        ilike(contract.externalReference, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: contract.number,
+    name: contract.name,
+    status: contract.status,
+    currentSum: contract.currentSum,
+    contractCompletionDate: contract.contractCompletionDate,
+    createdAt: contract.createdAt,
+  }[params.sort as string] ?? contract.createdAt;
+
+  const rows = await tx
+    .select({
+      id: contract.id,
+      number: contract.number,
+      name: contract.name,
+      side: contract.side,
+      status: contract.status,
+      currencyCode: contract.currencyCode,
+      originalSum: contract.originalSum,
+      currentSum: contract.currentSum,
+      projectId: contract.projectId,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+      counterpartyId: contract.counterpartyId,
+      counterpartyName: schema.party.name,
+      contractCompletionDate: contract.contractCompletionDate,
+      externalReference: contract.externalReference,
+    })
+    .from(contract)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, contract.counterpartyId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(contract.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(contract)
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      ...row,
+      originalSum: num(row.originalSum),
+      currentSum: num(row.currentSum),
+      variationValue: num(row.currentSum) - num(row.originalSum),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
 }

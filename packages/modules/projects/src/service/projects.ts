@@ -7,11 +7,16 @@
  */
 import {
   emit,
+  listResult,
   recordAudit,
   requireTenantContext,
+  schema,
+  searchPattern,
+  type ListParams,
+  type ListResult,
   type Transaction,
 } from '@aerolith/kernel';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import {
   budget,
@@ -984,4 +989,142 @@ export async function getCostEntries(
   }
 
   return tx.select().from(costEntry).where(and(...conditions)).orderBy(asc(costEntry.postedOn));
+}
+
+// ---------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------
+
+export interface ProjectListRow {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  currencyCode: string | null;
+  contractValue: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  countryCode: string | null;
+  /** From the module's own detail row. Null when the project has no detail yet. */
+  healthStatus: string | null;
+  forecastEndDate: string | null;
+  /** Days late against the baseline. Negative is early. Null without both dates. */
+  scheduleVarianceDays: number | null;
+}
+
+/**
+ * A page of projects, for the index screen.
+ *
+ * Left-joined to `project_detail` rather than inner-joined: a project created by
+ * Estimation or Contracts has a `kernel.project` row and no Projects detail until
+ * somebody opens it here. An inner join would silently hide exactly the projects
+ * a user is looking for.
+ *
+ * Deliberately does NOT compute earned value per row. That needs the WBS roll-up
+ * and the cost ledger for every project on the page, which is a query per row on
+ * the one screen a user hits first. Health status is the PM's own summary and is
+ * already on the row; the real numbers are one click away.
+ */
+export async function listProjects(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string } = {},
+): Promise<ListResult<ProjectListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [
+    eq(schema.project.tenantId, tenantId),
+    // Soft-deleted projects are gone as far as any list is concerned. Without
+    // this they come back, and a user who deleted something watching it reappear
+    // stops trusting delete everywhere else in the product.
+    isNull(schema.project.deletedAt),
+  ];
+
+  if (filters.status) conditions.push(eq(schema.project.status, filters.status));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(schema.project.code, pattern),
+        ilike(schema.project.name, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    code: schema.project.code,
+    name: schema.project.name,
+    status: schema.project.status,
+    contractValue: schema.project.contractValue,
+    endDate: schema.project.endDate,
+    createdAt: schema.project.createdAt,
+  }[params.sort as string] ?? schema.project.createdAt;
+
+  const rows = await tx
+    .select({
+      id: schema.project.id,
+      code: schema.project.code,
+      name: schema.project.name,
+      status: schema.project.status,
+      currencyCode: schema.project.currencyCode,
+      contractValue: schema.project.contractValue,
+      startDate: schema.project.startDate,
+      endDate: schema.project.endDate,
+      countryCode: schema.project.countryCode,
+      healthStatus: projectDetail.healthStatus,
+      forecastEndDate: projectDetail.forecastEndDate,
+      baselineEndDate: projectDetail.baselineEndDate,
+    })
+    .from(schema.project)
+    .leftJoin(
+      projectDetail,
+      and(
+        eq(projectDetail.projectId, schema.project.id),
+        eq(projectDetail.tenantId, tenantId),
+      ),
+    )
+    .where(where)
+    // Tie-broken on id. Without it, rows sharing a status sort arbitrarily and
+    // can appear on two pages or none as the user pages through.
+    .orderBy(
+      params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn),
+      asc(schema.project.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(schema.project)
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      status: row.status,
+      currencyCode: row.currencyCode,
+      contractValue: row.contractValue == null ? null : num(row.contractValue),
+      startDate: row.startDate,
+      endDate: row.endDate,
+      countryCode: row.countryCode,
+      healthStatus: row.healthStatus,
+      forecastEndDate: row.forecastEndDate,
+      scheduleVarianceDays: daysBetween(row.baselineEndDate, row.forecastEndDate),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+/** Whole days from `from` to `to`. Null unless both are present. */
+function daysBetween(from: string | null, to: string | null): number | null {
+  if (!from || !to) return null;
+  const ms = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
+  if (!Number.isFinite(ms)) return null;
+  return Math.round(ms / 86_400_000);
 }

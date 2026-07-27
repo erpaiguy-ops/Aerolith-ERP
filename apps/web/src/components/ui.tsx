@@ -157,7 +157,12 @@ export function Table({
 export function Th({ children, numeric }: { children: React.ReactNode; numeric?: boolean }) {
   return (
     <th
-      className={`border-b border-(--color-line) pb-2 font-medium ${numeric ? 'text-end' : 'text-start'}`}
+      // `pe-4` is padding-INLINE-end, not padding-right: it flips with the
+      // document direction, so the Arabic build gets the gap on the correct
+      // side without a second rule.
+      className={`border-b border-(--color-line) pb-2 pe-4 font-medium last:pe-0 ${
+        numeric ? 'text-end' : 'text-start'
+      }`}
     >
       {children}
     </th>
@@ -167,7 +172,12 @@ export function Th({ children, numeric }: { children: React.ReactNode; numeric?:
 export function Td({ children, numeric }: { children: React.ReactNode; numeric?: boolean }) {
   return (
     <td
-      className={`border-b border-(--color-line) py-2 ${numeric ? 'numeric text-end' : 'text-start'}`}
+      // Without the inline-end padding a right-aligned number touches the next
+      // column and renders as one run of characters — "AED 14,112.0005 Apr
+      // 2026" — which looks like corrupt data rather than a spacing bug.
+      className={`border-b border-(--color-line) py-2 pe-4 last:pe-0 ${
+        numeric ? 'numeric text-end' : 'text-start'
+      }`}
     >
       {children}
     </td>

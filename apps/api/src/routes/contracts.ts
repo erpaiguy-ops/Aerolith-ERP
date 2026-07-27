@@ -7,7 +7,7 @@
  * parts → scanned progress → payment application. Contracts does not import
  * Projects and Projects does not import Contracts; this route composes them.
  */
-import { withTenant } from '@aerolith/kernel';
+import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
   ContractsError,
   activateContract,
@@ -20,6 +20,7 @@ import {
   getContractPosition,
   getNoticeExposure,
   getVariationPosition,
+  listContracts,
   recordPracticalCompletion,
   scheduleRetentionRelease,
   submitApplication,
@@ -154,7 +155,57 @@ const applicationBody = z.object({
     .optional(),
 });
 
+
+const CONTRACT_SORTS = [
+  'number',
+  'name',
+  'status',
+  'currentSum',
+  'contractCompletionDate',
+  'createdAt',
+] as const;
+
 export async function contractRoutes(app: FastifyInstance) {
+  // --- The index ----------------------------------------------------------
+
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      sort?: string;
+      direction?: string;
+      q?: string;
+      status?: string;
+      side?: string;
+      projectId?: string;
+    };
+  }>('/contracts', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.contract.read');
+
+    const params = parseListParams(request.query, {
+      sortable: CONTRACT_SORTS,
+      defaultSort: 'createdAt',
+      defaultDirection: 'desc',
+    });
+
+    const side =
+      request.query.side === 'receivable' || request.query.side === 'payable'
+        ? request.query.side
+        : undefined;
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listContracts(tx, params, {
+          status: request.query.status,
+          side,
+          projectId: request.query.projectId,
+        }),
+      ),
+    );
+  });
+
   // --- Contracts ----------------------------------------------------------
 
   app.post('/contracts', async (request, reply) => {

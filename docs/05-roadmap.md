@@ -144,10 +144,46 @@ pnpm --filter @aerolith/web dev            # :3000
 
 The demo seed builds one continuous story rather than disconnected rows — budget
 → progress → payment application → certificate, plus a variation instructed on
-site and now past its notice deadline, so the screens have something true to show.
+site and now past its notice deadline, and a purchasing round that ends with one
+invoice billing 140 boards against a 90-board delivery. Every screen therefore
+has something true to show, including the exception queue.
 
-Still missing before this is a usable product: list endpoints (every screen
-reaches an entity by id), write flows in the UI (everything is read-only so far),
+It is also now idempotent. It never was: the clean-up deleted `kernel.project`
+but none of the module tables, which point at it with plain uuid columns by
+design, so a second run collided on `wbs_node_uq`. It had only ever been run
+against a fresh database, which is exactly how that class of bug survives.
+
+### The index screens — delivered
+
+Until this, the shell was navigable and there was nothing to navigate to: every
+screen reached an entity by id, and the two list pages were placeholders saying
+so. There are now six real index screens — Projects, Contracts, Purchase Orders,
+Supplier Invoices, Requisitions and Match Exceptions — each with search,
+filters, sortable columns and a pager.
+
+Three decisions worth recording:
+
+- **Every control is a URL, and there is no client JavaScript.** A filtered,
+  sorted page is bookmarkable and pasteable — "the held invoices, biggest first"
+  is a message somebody can send. A client-side filter would have prevented that
+  and bought nothing, because the server has to run the query either way.
+- **Sort columns are whitelisted per list, not validated.** Drizzle parameterises
+  values but never identifiers, so `order by ${query.sort}` is an injection
+  however it is escaped afterwards. An unrecognised key falls back to the default
+  rather than erroring — a list that 400s because somebody edited the address bar
+  teaches users the software is brittle.
+- **Offset pagination with a total, not keyset.** Keyset pages more efficiently
+  but cannot produce a total, and "47 open orders" is very often the only thing
+  the user came to find out. ERP users filter; they do not page to row 40,000.
+  `LIST_MAX_PAGE_SIZE` carries the note on when that stops being true.
+
+Each list joins the names it displays — supplier, client, project — rather than
+returning ids for the browser to resolve, and the invoice list carries an open
+exception count per row, because "on hold" without a number is a queue nobody
+triages.
+
+Still missing before this is a usable product: **write flows in the UI**
+(everything is still read-only), detail screens for the procurement documents,
 Arabic translations to exercise the RTL support that is wired but untested, and
 PDF output for certificates and applications.
 

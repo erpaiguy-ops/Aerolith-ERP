@@ -999,21 +999,57 @@ suite('Procurement', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const exceptions = response.json();
-      expect(exceptions.length).toBeGreaterThan(1);
+      const body = response.json();
+      expect(body.rows.length).toBeGreaterThan(1);
+      expect(body.total).toBe(body.rows.length);
 
-      const amounts = exceptions.map((e: { amount: string }) => Number(e.amount));
-      expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
+      // Biggest money first. Any other ordering makes this a list rather than a
+      // queue, and a buyer works down it in the order it is given.
+      const amounts = body.rows.map((e: { amount: number }) => e.amount);
+      expect([...amounts].sort((a: number, b: number) => b - a)).toEqual(amounts);
 
       // The favourable variance is not in the queue — it opens resolved, or it
       // would bury the real holds under undercharges nobody needs to action.
-      expect(
-        exceptions.every((e: { isFavourable: boolean }) => e.isFavourable === false),
-      ).toBe(true);
+      expect(body.rows.every((e: { isFavourable: boolean }) => e.isFavourable === false)).toBe(
+        true,
+      );
 
-      heldInvoiceId = exceptions.find(
+      // Joined through to the supplier, which is what makes triage possible:
+      // "billed 180 but only 40 received" is useless without knowing whose
+      // invoice it is.
+      const priceVariance = body.rows.find(
         (e: { code: string }) => e.code === 'price_variance',
-      ).supplier_invoice_id ?? exceptions[0].supplierInvoiceId;
+      );
+      expect(priceVariance.supplierReference).toBe('INV-8810');
+      expect(priceVariance.supplierName).toBe('Gulf Panels Trading');
+      heldInvoiceId = priceVariance.supplierInvoiceId;
+    });
+
+    it('filters the queue by exception code', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/exceptions?code=over_invoiced_quantity',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.rows.length).toBeGreaterThan(0);
+      expect(
+        body.rows.every((e: { code: string }) => e.code === 'over_invoiced_quantity'),
+      ).toBe(true);
+    });
+
+    it('ignores a sort column it was not told about', async () => {
+      // Drizzle parameterises values, never identifiers, so an unrecognised sort
+      // key can only be rejected. It falls back rather than erroring.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/exceptions?sort=amount;drop%20table%20kernel.tenant',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().sort).toBe('amount');
     });
 
     it('refuses a release with no reason', async () => {
@@ -1120,6 +1156,141 @@ suite('Procurement', () => {
       expect(Number(orderLine!.quantityInvoiced)).toBe(500);
       // Received and billed in full — nothing left to claim.
       expect(Number(orderLine!.quantityReceived) - Number(orderLine!.quantityInvoiced)).toBe(0);
+    });
+  });
+
+
+  describe('7 — the index screens', () => {
+    it('returns a page of orders with the supplier joined in', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders?pageSize=2',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.rows).toHaveLength(2);
+      // Three orders were raised across this suite: the MDF, the edge tape and
+      // the hinges. The total counts all of them, not the page.
+      expect(body.total).toBe(3);
+      expect(body.totalPages).toBe(2);
+      expect(body.hasMore).toBe(true);
+
+      // Joined, not an id for the browser to resolve. A list screen rendering a
+      // UUID in the supplier column is not a list screen.
+      expect(body.rows[0].supplierName).toBe('Gulf Panels Trading');
+    });
+
+    it('searches orders by supplier name, not just by number', async () => {
+      const hit = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders?q=gulf',
+        headers: auth(),
+      });
+      expect(hit.json().total).toBe(3);
+
+      const miss = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders?q=lombardia',
+        headers: auth(),
+      });
+      expect(miss.json().total).toBe(0);
+      // The count must reflect the same filter as the rows, or the pager lies.
+      expect(miss.json().rows).toHaveLength(0);
+    });
+
+    it('escapes wildcards in the search term', async () => {
+      // Without escaping, a lone `%` matches every row and the user concludes
+      // search is broken rather than that they typed a wildcard.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders?q=%25',
+        headers: auth(),
+      });
+
+      expect(response.json().total).toBe(0);
+    });
+
+    it('counts open exceptions per invoice on the list', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/invoices',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      const duplicate = body.rows.find(
+        (r: { supplierReference: string }) => r.supplierReference === 'INV-8802',
+      );
+
+      // Still held: it was never released, and its exception is still open.
+      expect(duplicate.status).toBe('on_hold');
+      expect(duplicate.openExceptions).toBe(1);
+
+      // The released one had its exceptions resolved, so its count is zero even
+      // though the exception rows still exist.
+      const released = body.rows.find(
+        (r: { supplierReference: string }) => r.supplierReference === 'INV-8810',
+      );
+      expect(released.status).toBe('approved');
+      expect(released.openExceptions).toBe(0);
+    });
+
+    it('filters invoices down to the held ones', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/invoices?held=true',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.total).toBeGreaterThan(0);
+      expect(body.rows.every((r: { status: string }) => r.status === 'on_hold')).toBe(true);
+    });
+
+    it('sorts requisitions by what the site needs first', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/requisitions',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      // Ascending by required date, not by creation. A requisition list ordered
+      // by when it was typed buries the one about to stop a job.
+      expect(body.sort).toBe('requiredBy');
+      expect(body.direction).toBe('asc');
+      expect(body.rows[0].projectCode).toBe('P-2026-100');
+    });
+
+    it('caps the page size however large the request', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders?pageSize=100000',
+        headers: auth(),
+      });
+
+      expect(response.json().pageSize).toBe(200);
+    });
+
+    it('is still module-gated and permission-gated', async () => {
+      // The storeman can read orders but not invoices — the same separation the
+      // release permission enforces, applied to the list screens.
+      const orders = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/orders',
+        headers: auth(STOREMAN_TOKEN),
+      });
+      expect(orders.statusCode).toBe(200);
+
+      const invoices = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/invoices',
+        headers: auth(STOREMAN_TOKEN),
+      });
+      expect(invoices.statusCode).toBe(403);
     });
   });
 

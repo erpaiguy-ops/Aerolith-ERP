@@ -5,7 +5,7 @@
  * the cost report, and `projects.margin.view` is what gets you the forecast
  * margin beside it. A site engineer needs the first and rarely the second.
  */
-import { withTenant } from '@aerolith/kernel';
+import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
   ProjectsError,
   approveBudget,
@@ -15,6 +15,7 @@ import {
   getCostSummary,
   getProjectPosition,
   getWbsRollUp,
+  listProjects,
   postCost,
   projectsSchema,
   recordCommitment,
@@ -120,7 +121,52 @@ const progressBody = z.object({
     .min(1),
 });
 
+/**
+ * Columns this list may be sorted by.
+ *
+ * A whitelist rather than validation: Drizzle parameterises values but never
+ * identifiers, so a sort key taken from the query string and interpolated is an
+ * injection however carefully it is escaped afterwards.
+ */
+const PROJECT_SORTS = [
+  'code',
+  'name',
+  'status',
+  'contractValue',
+  'endDate',
+  'createdAt',
+] as const;
+
 export async function projectRoutes(app: FastifyInstance) {
+  // --- The index ----------------------------------------------------------
+
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      sort?: string;
+      direction?: string;
+      q?: string;
+      status?: string;
+    };
+  }>('/projects', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.project.read');
+
+    const params = parseListParams(request.query, {
+      sortable: PROJECT_SORTS,
+      // Newest first. A project list opened cold is nearly always somebody
+      // looking for the job they just heard about, not the one from 2019.
+      defaultSort: 'createdAt',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) => listProjects(tx, params, { status: request.query.status })),
+    );
+  });
+
   // --- Work breakdown -----------------------------------------------------
 
   app.post<{ Params: { id: string } }>('/projects/:id/wbs', async (request, reply) => {

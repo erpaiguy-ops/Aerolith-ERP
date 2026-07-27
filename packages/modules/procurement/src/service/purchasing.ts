@@ -22,12 +22,16 @@ import {
   emit,
   loadRuleSnapshot,
   recordAudit,
+  listResult,
   requireTenantContext,
   ruleValue,
   schema,
+  searchPattern,
+  type ListParams,
+  type ListResult,
   type Transaction,
 } from '@aerolith/kernel';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import {
   goodsReceipt,
@@ -1822,26 +1826,120 @@ export async function getOrderPosition(
   };
 }
 
-/** Open exceptions, largest first — the buyer's work queue. */
-export async function getOpenExceptions(
+export interface MatchExceptionListRow {
+  id: string;
+  code: string;
+  message: string;
+  amount: number;
+  isFavourable: boolean;
+  resolution: string;
+  supplierInvoiceId: string | null;
+  supplierReference: string | null;
+  supplierName: string | null;
+  invoiceStatus: string | null;
+  goodsReceiptId: string | null;
+  createdAt: Date;
+}
+
+/**
+ * The buyer's work queue: open exceptions, biggest money first.
+ *
+ * Joined to the invoice and the supplier rather than returning ids. An exception
+ * row on its own says "billed 180 but only 40 received" — true, and useless
+ * without knowing whose invoice it is. Triage is the entire purpose of this
+ * list, and triage needs a name and an amount in the same glance.
+ *
+ * Defaults to open only. A queue that includes everything ever resolved is not a
+ * queue, and the resolved ones are already on the invoice they belong to.
+ */
+export async function listMatchExceptions(
   tx: Transaction,
-  input: { supplierInvoiceId?: string } = {},
-): Promise<(typeof matchException.$inferSelect)[]> {
+  params: ListParams,
+  filters: { supplierInvoiceId?: string; includeResolved?: boolean; code?: string } = {},
+): Promise<ListResult<MatchExceptionListRow>> {
   const { tenantId } = requireTenantContext();
 
-  const conditions = [
-    eq(matchException.tenantId, tenantId),
-    eq(matchException.resolution, 'open'),
-  ];
-  if (input.supplierInvoiceId) {
-    conditions.push(eq(matchException.supplierInvoiceId, input.supplierInvoiceId));
+  const conditions = [eq(matchException.tenantId, tenantId)];
+  if (!filters.includeResolved) conditions.push(eq(matchException.resolution, 'open'));
+  if (filters.supplierInvoiceId) {
+    conditions.push(eq(matchException.supplierInvoiceId, filters.supplierInvoiceId));
+  }
+  if (filters.code) conditions.push(eq(matchException.code, filters.code as never));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(supplierInvoice.supplierReference, pattern),
+        ilike(schema.party.name, pattern),
+        ilike(matchException.message, pattern),
+      )!,
+    );
   }
 
-  return tx
-    .select()
+  const where = and(...conditions);
+
+  const sortColumn = {
+    amount: matchException.amount,
+    code: matchException.code,
+    createdAt: matchException.createdAt,
+  }[params.sort as string] ?? matchException.amount;
+
+  const joined = tx
+    .select({
+      id: matchException.id,
+      code: matchException.code,
+      message: matchException.message,
+      amount: matchException.amount,
+      isFavourable: matchException.isFavourable,
+      resolution: matchException.resolution,
+      supplierInvoiceId: matchException.supplierInvoiceId,
+      supplierReference: supplierInvoice.supplierReference,
+      supplierName: schema.party.name,
+      invoiceStatus: supplierInvoice.status,
+      goodsReceiptId: matchException.goodsReceiptId,
+      createdAt: matchException.createdAt,
+    })
     .from(matchException)
-    .where(and(...conditions))
-    .orderBy(sql`${matchException.amount} desc`);
+    .leftJoin(
+      supplierInvoice,
+      and(
+        eq(supplierInvoice.id, matchException.supplierInvoiceId),
+        eq(supplierInvoice.tenantId, tenantId),
+      ),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, supplierInvoice.supplierId), eq(schema.party.tenantId, tenantId)),
+    );
+
+  const rows = await joined
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(matchException.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(matchException)
+    .leftJoin(
+      supplierInvoice,
+      and(
+        eq(supplierInvoice.id, matchException.supplierInvoiceId),
+        eq(supplierInvoice.tenantId, tenantId),
+      ),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, supplierInvoice.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({ ...row, amount: num(row.amount) })),
+    counted?.total ?? 0,
+    params,
+  );
 }
 
 function dueDate(invoiceDate: string, termDays: number | null): string | null {
@@ -1849,4 +1947,340 @@ function dueDate(invoiceDate: string, termDays: number | null): string | null {
   const date = new Date(`${invoiceDate}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + termDays);
   return date.toISOString().slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------
+
+export interface RequisitionListRow {
+  id: string;
+  number: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  requiredBy: string | null;
+  estimatedValue: number;
+  projectId: string | null;
+  projectCode: string | null;
+  createdAt: Date;
+}
+
+export async function listRequisitions(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; projectId?: string } = {},
+): Promise<ListResult<RequisitionListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(requisition.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(requisition.status, filters.status as never));
+  if (filters.projectId) conditions.push(eq(requisition.projectId, filters.projectId));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(or(ilike(requisition.number, pattern), ilike(requisition.title, pattern))!);
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: requisition.number,
+    title: requisition.title,
+    status: requisition.status,
+    requiredBy: requisition.requiredBy,
+    estimatedValue: requisition.estimatedValue,
+    createdAt: requisition.createdAt,
+  }[params.sort as string] ?? requisition.createdAt;
+
+  const rows = await tx
+    .select({
+      id: requisition.id,
+      number: requisition.number,
+      title: requisition.title,
+      status: requisition.status,
+      priority: requisition.priority,
+      requiredBy: requisition.requiredBy,
+      estimatedValue: requisition.estimatedValue,
+      projectId: requisition.projectId,
+      projectCode: schema.project.code,
+      createdAt: requisition.createdAt,
+    })
+    .from(requisition)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, requisition.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(requisition.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(requisition)
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({ ...row, estimatedValue: num(row.estimatedValue) })),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+export interface PurchaseOrderListRow {
+  id: string;
+  number: string | null;
+  status: string;
+  supplierId: string;
+  supplierName: string | null;
+  projectId: string | null;
+  projectCode: string | null;
+  currencyCode: string | null;
+  grossValue: number;
+  baseValue: number;
+  promisedDeliveryDate: string | null;
+  issuedOn: string | null;
+  /** True once the promised date has passed with the order not fully received. */
+  isOverdue: boolean;
+}
+
+/**
+ * A page of purchase orders.
+ *
+ * `isOverdue` is computed here rather than left to the client, because "late" is
+ * a business rule — an order past its promised date that is NOT yet fully
+ * received — and two clients would eventually disagree about it. The date
+ * comparison happens in Postgres so it is against the database's clock rather
+ * than the browser's, which matters when the two are in different timezones.
+ */
+export async function listPurchaseOrders(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; supplierId?: string; projectId?: string; overdueOnly?: boolean } = {},
+): Promise<ListResult<PurchaseOrderListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const openStatuses = ['issued', 'partially_received'] as const;
+  const overdue = sql<boolean>`(
+    ${purchaseOrder.promisedDeliveryDate} is not null
+    and ${purchaseOrder.promisedDeliveryDate} < current_date
+    and ${purchaseOrder.status} in ('issued', 'partially_received')
+  )`;
+
+  const conditions = [eq(purchaseOrder.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(purchaseOrder.status, filters.status as never));
+  if (filters.supplierId) conditions.push(eq(purchaseOrder.supplierId, filters.supplierId));
+  if (filters.projectId) conditions.push(eq(purchaseOrder.projectId, filters.projectId));
+  if (filters.overdueOnly) {
+    conditions.push(inArray(purchaseOrder.status, [...openStatuses]));
+    conditions.push(sql`${purchaseOrder.promisedDeliveryDate} < current_date`);
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(or(ilike(purchaseOrder.number, pattern), ilike(schema.party.name, pattern))!);
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: purchaseOrder.number,
+    status: purchaseOrder.status,
+    grossValue: purchaseOrder.grossValue,
+    baseValue: purchaseOrder.baseValue,
+    promisedDeliveryDate: purchaseOrder.promisedDeliveryDate,
+    issuedOn: purchaseOrder.issuedOn,
+    createdAt: purchaseOrder.createdAt,
+  }[params.sort as string] ?? purchaseOrder.createdAt;
+
+  const rows = await tx
+    .select({
+      id: purchaseOrder.id,
+      number: purchaseOrder.number,
+      status: purchaseOrder.status,
+      supplierId: purchaseOrder.supplierId,
+      supplierName: schema.party.name,
+      projectId: purchaseOrder.projectId,
+      projectCode: schema.project.code,
+      currencyCode: purchaseOrder.currencyCode,
+      grossValue: purchaseOrder.grossValue,
+      baseValue: purchaseOrder.baseValue,
+      promisedDeliveryDate: purchaseOrder.promisedDeliveryDate,
+      issuedOn: purchaseOrder.issuedOn,
+      isOverdue: overdue,
+    })
+    .from(purchaseOrder)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, purchaseOrder.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, purchaseOrder.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(purchaseOrder.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  // The count joins `party` too: the search filter references the supplier name,
+  // and counting without the join would either fail or count a different set
+  // from the one being shown.
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(purchaseOrder)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, purchaseOrder.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      ...row,
+      grossValue: num(row.grossValue),
+      baseValue: num(row.baseValue),
+      isOverdue: Boolean(row.isOverdue),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+export interface SupplierInvoiceListRow {
+  id: string;
+  number: string | null;
+  supplierReference: string;
+  status: string;
+  supplierId: string;
+  supplierName: string | null;
+  purchaseOrderId: string | null;
+  purchaseOrderNumber: string | null;
+  invoiceDate: string;
+  dueOn: string | null;
+  currencyCode: string | null;
+  grossValue: number;
+  baseValue: number;
+  matchVariance: number | null;
+  /** Open exceptions on this invoice. Zero on a clean match. */
+  openExceptions: number;
+  /** True once due and not yet paid. */
+  isOverdue: boolean;
+}
+
+/**
+ * A page of supplier invoices, with the open exception count per row.
+ *
+ * The exception count is a correlated subquery rather than a join with a group
+ * by, so the page size still governs how many rows come back. It is the one
+ * figure that makes this list actionable — an invoice list without it is a list
+ * of things somebody else will deal with.
+ */
+export async function listSupplierInvoices(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; supplierId?: string; heldOnly?: boolean } = {},
+): Promise<ListResult<SupplierInvoiceListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(supplierInvoice.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(supplierInvoice.status, filters.status as never));
+  if (filters.supplierId) conditions.push(eq(supplierInvoice.supplierId, filters.supplierId));
+  if (filters.heldOnly) conditions.push(eq(supplierInvoice.status, 'on_hold'));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(supplierInvoice.number, pattern),
+        // The supplier's own number is what a phone call about a late payment
+        // will quote, so it has to be searchable.
+        ilike(supplierInvoice.supplierReference, pattern),
+        ilike(schema.party.name, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: supplierInvoice.number,
+    supplierReference: supplierInvoice.supplierReference,
+    status: supplierInvoice.status,
+    invoiceDate: supplierInvoice.invoiceDate,
+    dueOn: supplierInvoice.dueOn,
+    grossValue: supplierInvoice.grossValue,
+    createdAt: supplierInvoice.createdAt,
+  }[params.sort as string] ?? supplierInvoice.createdAt;
+
+  const rows = await tx
+    .select({
+      id: supplierInvoice.id,
+      number: supplierInvoice.number,
+      supplierReference: supplierInvoice.supplierReference,
+      status: supplierInvoice.status,
+      supplierId: supplierInvoice.supplierId,
+      supplierName: schema.party.name,
+      purchaseOrderId: supplierInvoice.purchaseOrderId,
+      purchaseOrderNumber: purchaseOrder.number,
+      invoiceDate: supplierInvoice.invoiceDate,
+      dueOn: supplierInvoice.dueOn,
+      currencyCode: supplierInvoice.currencyCode,
+      grossValue: supplierInvoice.grossValue,
+      baseValue: supplierInvoice.baseValue,
+      matchVariance: supplierInvoice.matchVariance,
+      openExceptions: sql<number>`(
+        select count(*)::int from procurement."match_exception" me
+        where me.supplier_invoice_id = ${supplierInvoice.id}
+          and me.tenant_id = ${tenantId}
+          and me.resolution = 'open'
+      )`,
+      isOverdue: sql<boolean>`(
+        ${supplierInvoice.dueOn} is not null
+        and ${supplierInvoice.dueOn} < current_date
+        and ${supplierInvoice.paidOn} is null
+      )`,
+    })
+    .from(supplierInvoice)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, supplierInvoice.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .leftJoin(
+      purchaseOrder,
+      and(
+        eq(purchaseOrder.id, supplierInvoice.purchaseOrderId),
+        eq(purchaseOrder.tenantId, tenantId),
+      ),
+    )
+    .where(where)
+    .orderBy(
+      params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn),
+      asc(supplierInvoice.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(supplierInvoice)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, supplierInvoice.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      ...row,
+      grossValue: num(row.grossValue),
+      baseValue: num(row.baseValue),
+      matchVariance: row.matchVariance == null ? null : num(row.matchVariance),
+      openExceptions: Number(row.openExceptions ?? 0),
+      isOverdue: Boolean(row.isOverdue),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
 }

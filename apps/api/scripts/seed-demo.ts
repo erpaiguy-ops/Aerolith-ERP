@@ -10,6 +10,7 @@
  * disconnected rows would demonstrate none of it.
  */
 import {
+  adoptCountry,
   closeDatabase,
   createDatabase,
   hashPassword,
@@ -19,6 +20,16 @@ import {
   withoutTenantGuard,
 } from '@aerolith/kernel';
 import {
+  approveRequisition,
+  createPurchaseOrder,
+  createRequisition,
+  issuePurchaseOrder,
+  linkCommitment,
+  procurementSchema,
+  receiveGoods,
+  registerInvoice,
+} from '@aerolith/module-procurement';
+import {
   activateContract,
   approveVariation,
   certifyApplication,
@@ -26,6 +37,7 @@ import {
   createPaymentApplication,
   createVariation,
   submitApplication,
+  contractsSchema,
 } from '@aerolith/module-contracts';
 import {
   approveBudget,
@@ -34,6 +46,7 @@ import {
   postCost,
   recordCommitment,
   recordProgress,
+  projectsSchema,
 } from '@aerolith/module-projects';
 import { eq } from 'drizzle-orm';
 
@@ -61,6 +74,54 @@ async function main() {
       schema.auditLog,
       schema.eventOutbox,
       schema.numberAllocation,
+
+      // Order matters: children before parents, and every module's tables
+      // before the kernel rows they point at. Deleting `kernel.project` does
+      // NOT cascade into the module schemas — those columns are plain uuids by
+      // design, so that a module can be dropped without a migration touching
+      // the kernel — which meant a second run of this seed collided on
+      // `wbs_node_uq` and the seed was only ever idempotent by accident of
+      // always being run against a fresh database.
+      contractsSchema.paymentApplicationLine,
+      contractsSchema.retentionRelease,
+      contractsSchema.paymentApplication,
+      contractsSchema.variationLine,
+      contractsSchema.variation,
+      contractsSchema.backCharge,
+      contractsSchema.correspondence,
+      contractsSchema.contractLine,
+      contractsSchema.contract,
+
+      procurementSchema.matchException,
+      procurementSchema.supplierInvoiceLine,
+      procurementSchema.supplierInvoice,
+      procurementSchema.goodsReceiptLine,
+      procurementSchema.goodsReceipt,
+      procurementSchema.purchaseOrderLine,
+      procurementSchema.purchaseOrder,
+      procurementSchema.requisitionLine,
+      procurementSchema.requisition,
+
+      projectsSchema.costEntry,
+      projectsSchema.commitment,
+      projectsSchema.progressEntry,
+      projectsSchema.budgetLine,
+      projectsSchema.budget,
+      projectsSchema.snag,
+      projectsSchema.milestone,
+      projectsSchema.wbsNode,
+      projectsSchema.projectDetail,
+
+      // Country adoption writes the tenant its own copies of these. None of
+      // them has a foreign key to `tenant`, so they outlive it.
+      schema.tenantTaxCode,
+      schema.tenantRequirement,
+      schema.tenantRuleValue,
+      schema.tenantHoliday,
+      schema.tenantLocalisation,
+
+      schema.item,
+      schema.party,
       schema.numberSeries,
       schema.tenantModule,
       schema.session,
@@ -101,11 +162,13 @@ async function main() {
       .values({ tenantId: TENANT, userId: USER, status: 'active', isOwner: true });
 
     await tx.insert(schema.tenantModule).values(
-      ['projects', 'contracts', 'estimation', 'production', 'inventory'].map((moduleKey) => ({
-        tenantId: TENANT,
-        moduleKey,
-        status: 'enabled' as const,
-      })),
+      ['projects', 'contracts', 'estimation', 'production', 'inventory', 'procurement'].map(
+        (moduleKey) => ({
+          tenantId: TENANT,
+          moduleKey,
+          status: 'enabled' as const,
+        }),
+      ),
     );
 
     await tx.insert(schema.numberSeries).values([
@@ -115,6 +178,10 @@ async function main() {
       { tenantId: TENANT, entityType: 'projects.snag', code: 'SNG', name: 'Snag', pattern: 'SNG-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'estimation.tender', code: 'TND', name: 'Tender', pattern: 'TND-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'production.work_order', code: 'WO', name: 'Work Order', pattern: 'WO-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'procurement.requisition', code: 'PR', name: 'Requisition', pattern: 'PR-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'procurement.purchase_order', code: 'PO', name: 'Purchase Order', pattern: 'PO-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'procurement.goods_receipt', code: 'GRN', name: 'Goods Receipt', pattern: 'GRN-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'procurement.supplier_invoice', code: 'SINV', name: 'Supplier Invoice', pattern: 'SINV-{YYYY}-{SEQ}' },
     ]);
 
     await tx.insert(schema.project).values({
@@ -305,10 +372,170 @@ async function main() {
     });
   });
 
+  console.log('→ purchasing: an order, a part delivery, and one invoice that does not agree');
+  await asUser(async (tx) => {
+    // Adopting AE gives the tenant its own copy of the UAE tax codes, so the
+    // purchase order picks up 5% VAT without anybody typing it. Same mechanism
+    // as the contract terms above, different table.
+    await adoptCountry(tx, { tenantId: TENANT, countryCode: 'AE', isPrimary: true });
+
+    const suppliers = await tx
+      .insert(schema.party)
+      .values([
+        { tenantId: TENANT, code: 'SUP-GULF', name: 'Gulf Panels Trading', isSupplier: true, countryCode: 'AE' },
+        { tenantId: TENANT, code: 'SUP-HAF', name: 'Hafele Middle East', isSupplier: true, countryCode: 'AE' },
+      ])
+      .returning({ id: schema.party.id, code: schema.party.code });
+
+    const gulf = suppliers.find((row) => row.code === 'SUP-GULF')!.id;
+    const hafele = suppliers.find((row) => row.code === 'SUP-HAF')!.id;
+
+    // Demand from site, approved before anybody is committed to a supplier.
+    const requisition = await createRequisition(tx, {
+      title: 'Carcass board — wardrobes',
+      projectId: PROJECT,
+      requiredBy: '2026-04-10',
+      lines: [
+        {
+          description: '18mm MDF 2440x1220',
+          quantity: 140,
+          uomCode: 'NR',
+          estimatedUnitPrice: 95,
+          wbsNodeId: nodes.get('J-WARD'),
+        },
+      ],
+    });
+    await approveRequisition(tx, { requisitionId: requisition.requisitionId });
+
+    // An order that is now past its promised date and only part delivered —
+    // the row the overdue filter exists to surface.
+    const board = await createPurchaseOrder(tx, {
+      supplierId: gulf,
+      countryCode: 'AE',
+      projectId: PROJECT,
+      currencyCode: 'AED',
+      promisedDeliveryDate: '2026-04-05',
+      lines: [
+        {
+          description: '18mm MDF 2440x1220',
+          quantity: 140,
+          uomCode: 'NR',
+          unitPrice: 96,
+          wbsNodeId: nodes.get('J-WARD'),
+        },
+      ],
+    });
+    const issued = await issuePurchaseOrder(tx, { purchaseOrderId: board.purchaseOrderId });
+
+    // The commitment against the budget. This is the number that makes the
+    // forecast honest: 141,120 is spent in every sense that matters, months
+    // before an invoice for it exists.
+    const { commitmentId } = await recordCommitment(tx, {
+      projectId: PROJECT,
+      wbsNodeId: nodes.get('J-WARD'),
+      type: 'purchase_order',
+      reference: issued.number,
+      partyId: gulf,
+      description: `Purchase order ${issued.number}`,
+      category: 'material',
+      committedAmount: issued.baseValue,
+      currencyCode: 'AED',
+      sourceModule: 'procurement',
+      sourceEntityId: issued.purchaseOrderId,
+    });
+    await linkCommitment(tx, { purchaseOrderId: board.purchaseOrderId, commitmentId });
+
+    const [boardLine] = await tx
+      .select()
+      .from(procurementSchema.purchaseOrderLine)
+      .where(eq(procurementSchema.purchaseOrderLine.purchaseOrderId, board.purchaseOrderId));
+
+    await receiveGoods(tx, {
+      purchaseOrderId: board.purchaseOrderId,
+      countryCode: 'AE',
+      receivedOn: '2026-04-02',
+      deliveryNoteReference: 'DN-7781',
+      lines: [{ purchaseOrderLineId: boardLine!.id, quantityReceived: 90 }],
+    });
+
+    // Billed for the whole order against a part delivery. Nothing about this
+    // invoice looks wrong on its own — only the cumulative position catches it,
+    // and it lands on the exceptions queue with the money named.
+    await registerInvoice(tx, {
+      supplierId: gulf,
+      purchaseOrderId: board.purchaseOrderId,
+      countryCode: 'AE',
+      supplierReference: 'GP-11402',
+      invoiceDate: '2026-04-03',
+      currencyCode: 'AED',
+      lines: [
+        {
+          purchaseOrderLineId: boardLine!.id,
+          description: '18mm MDF 2440x1220',
+          quantity: 140,
+          unitPrice: 96,
+          taxPercent: 5,
+        },
+      ],
+    });
+
+    // A second order that behaves itself, so the queue is a queue and not the
+    // whole list — a demo where everything is broken teaches nothing.
+    const hardware = await createPurchaseOrder(tx, {
+      supplierId: hafele,
+      countryCode: 'AE',
+      projectId: PROJECT,
+      currencyCode: 'AED',
+      promisedDeliveryDate: '2026-04-20',
+      lines: [
+        {
+          description: 'Soft-close hinge, full overlay',
+          quantity: 800,
+          uomCode: 'NR',
+          unitPrice: 12,
+          wbsNodeId: nodes.get('J-WARD'),
+        },
+      ],
+    });
+    await issuePurchaseOrder(tx, { purchaseOrderId: hardware.purchaseOrderId });
+
+    const [hardwareLine] = await tx
+      .select()
+      .from(procurementSchema.purchaseOrderLine)
+      .where(eq(procurementSchema.purchaseOrderLine.purchaseOrderId, hardware.purchaseOrderId));
+
+    await receiveGoods(tx, {
+      purchaseOrderId: hardware.purchaseOrderId,
+      countryCode: 'AE',
+      receivedOn: '2026-04-18',
+      deliveryNoteReference: 'DN-7790',
+      lines: [{ purchaseOrderLineId: hardwareLine!.id, quantityReceived: 800 }],
+    });
+
+    await registerInvoice(tx, {
+      supplierId: hafele,
+      purchaseOrderId: hardware.purchaseOrderId,
+      countryCode: 'AE',
+      supplierReference: 'HAF-55012',
+      invoiceDate: '2026-04-19',
+      currencyCode: 'AED',
+      lines: [
+        {
+          purchaseOrderLineId: hardwareLine!.id,
+          description: 'Soft-close hinge, full overlay',
+          quantity: 800,
+          unitPrice: 12,
+          taxPercent: 5,
+        },
+      ],
+    });
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
   console.log(`  contract: /contracts/${contractId}`);
+  console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
 
   await closeDatabase();
 }

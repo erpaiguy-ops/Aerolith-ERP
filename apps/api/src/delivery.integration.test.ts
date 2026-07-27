@@ -951,4 +951,134 @@ suite('Projects and Contract Administration', () => {
       invalidateTenantModules(TENANT);
     });
   });
+
+  describe('7 — the index screens', () => {
+    it('lists projects, left-joining detail that may not exist', async () => {
+      // This project has a `kernel.project` row and no `projects.project_detail`
+      // row — nothing in this suite created one. An inner join would return an
+      // empty list, hiding exactly the project the user is looking for.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.total).toBe(1);
+      expect(body.rows[0].code).toBe('P-2026-001');
+      expect(body.rows[0].name).toBe('Marina Tower fit-out');
+      expect(body.rows[0].healthStatus).toBeNull();
+      expect(body.rows[0].scheduleVarianceDays).toBeNull();
+    });
+
+    it('searches projects by code and by name', async () => {
+      const byCode = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects?q=2026-001',
+        headers: auth(),
+      });
+      expect(byCode.json().total).toBe(1);
+
+      const byName = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects?q=MARINA',
+        headers: auth(),
+      });
+      expect(byName.json().total).toBe(1);
+
+      const miss = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects?q=nothing-like-this',
+        headers: auth(),
+      });
+      expect(miss.json().total).toBe(0);
+    });
+
+    it('filters projects by status', async () => {
+      const awarded = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects?status=awarded',
+        headers: auth(),
+      });
+      expect(awarded.json().total).toBe(1);
+
+      const closed = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects?status=closed',
+        headers: auth(),
+      });
+      expect(closed.json().total).toBe(0);
+    });
+
+    it('lists contracts with the project and client resolved to names', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.total).toBe(1);
+      const row = body.rows[0];
+      expect(row.projectCode).toBe('P-2026-001');
+      expect(row.number).toMatch(/^CON-/);
+
+      // Current less original, which is exactly the approved variation value:
+      // only an approved variation moves the current sum.
+      expect(row.variationValue).toBeCloseTo(row.currentSum - row.originalSum, 2);
+      expect(row.variationValue).toBeGreaterThan(0);
+    });
+
+    it('filters contracts by side', async () => {
+      const receivable = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts?side=receivable',
+        headers: auth(),
+      });
+      expect(receivable.json().total).toBe(1);
+
+      const payable = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts?side=payable',
+        headers: auth(),
+      });
+      expect(payable.json().total).toBe(0);
+    });
+
+    it('gives an empty list one page rather than zero', async () => {
+      // "Page 1 of 0" is the kind of detail that makes a user distrust every
+      // other number on the screen.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts?side=payable',
+        headers: auth(),
+      });
+
+      expect(response.json().totalPages).toBe(1);
+      expect(response.json().hasMore).toBe(false);
+    });
+
+    it('gates the project list on the permission, not just the module', async () => {
+      // The site engineer has `projects.project.read`, so they see the list.
+      const engineer = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects',
+        headers: auth(ENGINEER_TOKEN),
+      });
+      expect(engineer.statusCode).toBe(200);
+
+      // They have no contracts permission at all.
+      const contracts = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts',
+        headers: auth(ENGINEER_TOKEN),
+      });
+      expect(contracts.statusCode).toBe(403);
+    });
+  });
+
 });

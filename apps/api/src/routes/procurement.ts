@@ -25,7 +25,7 @@
  * behaviour when the other module is not entitled, which is what keeps this
  * module sellable on its own.
  */
-import { withTenant } from '@aerolith/kernel';
+import { parseListParams, withTenant } from '@aerolith/kernel';
 import { postMovement } from '@aerolith/module-inventory';
 import {
   ProcurementError,
@@ -35,11 +35,14 @@ import {
   createPurchaseOrder,
   createRequisition,
   createRfq,
-  getOpenExceptions,
   getOrderPosition,
   issuePurchaseOrder,
   linkCommitment,
   linkReceiptPostings,
+  listMatchExceptions,
+  listPurchaseOrders,
+  listRequisitions,
+  listSupplierInvoices,
   procurementSchema,
   receiveGoods,
   recordQuote,
@@ -235,6 +238,46 @@ const invoiceBody = z.object({
     .min(1),
 });
 
+const REQUISITION_SORTS = [
+  'number',
+  'title',
+  'status',
+  'requiredBy',
+  'estimatedValue',
+  'createdAt',
+] as const;
+
+const ORDER_SORTS = [
+  'number',
+  'status',
+  'grossValue',
+  'baseValue',
+  'promisedDeliveryDate',
+  'issuedOn',
+  'createdAt',
+] as const;
+
+const INVOICE_SORTS = [
+  'number',
+  'supplierReference',
+  'status',
+  'invoiceDate',
+  'dueOn',
+  'grossValue',
+  'createdAt',
+] as const;
+
+const EXCEPTION_SORTS = ['amount', 'code', 'createdAt'] as const;
+
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+}
+
 // ---------------------------------------------------------------------------
 
 export async function procurementRoutes(app: FastifyInstance): Promise<void> {
@@ -253,6 +296,33 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
   };
 
   // --- Requisitions ---
+
+  app.get<{ Querystring: ListQuery & { projectId?: string } }>(
+    '/procurement/requisitions',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'procurement.requisition.read');
+
+      const params = parseListParams(request.query, {
+        sortable: REQUISITION_SORTS,
+        // By what the site needs first, soonest first. A requisition list sorted
+        // by creation date buries the one that is about to stop a job.
+        defaultSort: 'requiredBy',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listRequisitions(tx, params, {
+            status: request.query.status,
+            projectId: request.query.projectId,
+          }),
+        ),
+      );
+    },
+  );
+
 
   app.post('/procurement/requisitions', async (request, reply) => {
     const principal = await authenticate(request);
@@ -367,6 +437,32 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --- Purchase orders ---
+
+  app.get<{
+    Querystring: ListQuery & { supplierId?: string; projectId?: string; overdue?: string };
+  }>('/procurement/orders', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'procurement.order.read');
+
+    const params = parseListParams(request.query, {
+      sortable: ORDER_SORTS,
+      defaultSort: 'createdAt',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listPurchaseOrders(tx, params, {
+          status: request.query.status,
+          supplierId: request.query.supplierId,
+          projectId: request.query.projectId,
+          overdueOnly: request.query.overdue === 'true',
+        }),
+      ),
+    );
+  });
+
 
   app.post('/procurement/orders', async (request, reply) => {
     const principal = await authenticate(request);
@@ -552,6 +648,34 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
 
   // --- Supplier invoices ---
 
+  app.get<{ Querystring: ListQuery & { supplierId?: string; held?: string } }>(
+    '/procurement/invoices',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'procurement.invoice.read');
+
+      const params = parseListParams(request.query, {
+        sortable: INVOICE_SORTS,
+        // Oldest due date first: this list is a payment run waiting to happen,
+        // and the useful question is always what is closest to being late.
+        defaultSort: 'dueOn',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listSupplierInvoices(tx, params, {
+            status: request.query.status,
+            supplierId: request.query.supplierId,
+            heldOnly: request.query.held === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+
   /**
    * Registers and matches a supplier invoice.
    *
@@ -621,18 +745,33 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  app.get('/procurement/exceptions', async (request, reply) => {
+  app.get<{
+    Querystring: ListQuery & {
+      supplierInvoiceId?: string;
+      code?: string;
+      includeResolved?: string;
+    };
+  }>('/procurement/exceptions', async (request, reply) => {
     const principal = await authenticate(request);
     if (!(await requireModule(principal, reply))) return reply;
     requirePermission(principal, 'procurement.invoice.read');
 
-    const query = z
-      .object({ supplierInvoiceId: z.string().uuid().optional() })
-      .safeParse(request.query);
-    if (!query.success) return bad(reply, query.error.issues);
+    const params = parseListParams(request.query, {
+      sortable: EXCEPTION_SORTS,
+      // Biggest money first, always. This is a triage queue, and the only
+      // ordering that makes it one is by what is at stake.
+      defaultSort: 'amount',
+      defaultDirection: 'desc',
+    });
 
-    return handle(reply, () =>
-      withPrincipal(principal, () => withTenant((tx) => getOpenExceptions(tx, query.data))),
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listMatchExceptions(tx, params, {
+          supplierInvoiceId: request.query.supplierInvoiceId,
+          code: request.query.code,
+          includeResolved: request.query.includeResolved === 'true',
+        }),
+      ),
     );
   });
 
