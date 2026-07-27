@@ -60,14 +60,65 @@ Multi-warehouse, multi-location (rack/shelf/bin), barcode-driven.
 
 ## 4. Procurement
 
-- Purchase requisition → RFQ → quote comparison → PO → GRN → invoice matching.
-- **3-way matching** (PO / GRN / invoice) with tolerance rules. Non-negotiable.
+**Status: shipped (v0.1).** Requisition → RFQ → landed-cost quote comparison →
+award → purchase order → goods receipt → three-way-matched supplier invoice, with
+the exception register and the release override that goes with it.
+
+Four decisions worth recording, all of them cases where the obvious
+implementation is quietly wrong:
+
+- **Matching is cumulative, against received-and-not-yet-billed.** Not against the
+  purchase order. Partial deliveries are the norm — a board order arrives over
+  three weeks — and comparing each invoice to the ORDER quantity lets a supplier
+  bill the same delivery three times without any single invoice looking wrong.
+  Every one of them passes on its own; only the running total catches it.
+- **Tolerance applies to the line total, never the unit price.** A 5 AED absolute
+  floor on a unit price forgives 5 AED per unit: on a 500-unit line that is
+  2,500 AED nobody ever sees, and the hole grows with volume. The floor exists so
+  a rounding difference on a cheap line does not generate an exception costing
+  more to read than the difference — it is not licence to inflate a line.
+- **Under-charging is reported, never held.** Refusing to pay a supplier who
+  charged less than agreed generates a phone call and no benefit. The asymmetry
+  with over-charging is deliberate, and favourable variances open resolved so
+  they do not bury the real holds in a queue nobody triages.
+- **The award is ranked on landed cost, and lead time is deliberately not
+  priced.** Freight, duty, minimum order quantities, currency and payment terms
+  all go into the number; two extra weeks does not, because its cost depends on
+  whether the job is waiting — which this module cannot know and should not
+  guess. It is shown beside the money so a buyer overrides with a reason rather
+  than being told an answer. Awarding above the cheapest landed cost requires
+  that reason to be recorded.
+
+The surplus forced by a minimum order quantity is credited back when it is
+genuine stock and charged in full when it is not, which is a buyer-supplied fact
+rather than something the arithmetic can infer: the same 60 spare sheets are an
+asset in 18mm MDF and a write-off in a bespoke colour.
+
+Two links to other modules, both composed in the application layer so that
+neither module imports the other:
+
+- **Issuing an order registers a commitment against the project budget.**
+  Ordered-but-not-invoiced money is spent in every sense that matters to a
+  forecast. A matched invoice relieves it; a HELD invoice does not, because
+  relieving on a failed match releases money still genuinely at risk.
+- **A goods receipt takes stock in and accrues the cost against the job in one
+  transaction.** The job is charged when the material lands, not whenever the
+  supplier gets round to invoicing — the difference between a cost report that is
+  useful during the job and one that is only correct after it.
+
+Still to build:
+
 - Supplier master with prequalification, categories, trade licence expiry,
   performance scoring (on-time %, quality rejection %, price variance).
 - **Subcontractor procurement is a separate flow** — back-to-back terms, retention,
   work orders, payment certificates, not just POs. Build it explicitly.
-- Framework agreements and rate contracts, budget checking against project cost codes
-  before a PO is released, landed cost (freight, duty, clearing) apportioned to items.
+- Framework agreements and rate contracts, budget checking against project cost
+  codes before a PO is released, and landed cost apportioned down to the item
+  (the comparison prices it; the receipt does not yet carry it into stock value).
+- Package awards across several RFQ lines at once. Comparison is deliberately
+  per-line today: apportioning one freight charge across four materials with
+  different MOQs is a different problem with a different answer, and pretending
+  one function does both produces a number that is wrong invisibly.
 
 ## 5. Production (Joinery Factory) — *your differentiator, build it well*
 

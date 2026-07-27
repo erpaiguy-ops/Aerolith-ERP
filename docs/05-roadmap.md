@@ -31,6 +31,32 @@ module two.
 kernel hard, and they are immediately useful internally — which means real users
 and real feedback while the stakes are low.
 
+### Phase 1 status — both shipped, and the loop is closed
+
+Procurement was the last phase-1 module and it closed three dangling ends left
+by the modules built before it: `projects.commitment` had a `relieveCommitment`
+nothing called, Inventory had goods-receipt movement types with no purchase order
+to receive against, and Estimation produced material demand with no consumer.
+
+The chain is proven by an integration test that runs it as one story against a
+real database:
+
+> requisition → RFQ → landed-cost comparison → award → purchase order →
+> **commitment against the budget** → delivery → **stock in and cost accrued** →
+> supplier invoice matched three ways → **commitment relieved**.
+
+The link nobody else joins is the middle one. Issuing an order registers what the
+job is committed to; receiving the goods charges the job on the day the material
+lands rather than whenever the invoice arrives; the matched invoice reverses one
+and relieves the other. A cost report is therefore true *during* the job, which
+is the only time it can change a decision.
+
+Both compositions live in `apps/api/src/routes/procurement.ts`. The boundary
+checker enforces that Procurement imports neither Inventory nor Projects, and
+each composition degrades to the procurement-only behaviour when the other module
+is not entitled — so a firm that buys purchasing alone gets a complete purchasing
+system, not a broken ERP.
+
 ## Phase 2 — The wedge (months 6-14) ← this is the product
 
 **Estimation & Tendering** → **Production (cutlist, routing, shop-floor scanning,
@@ -99,9 +125,9 @@ rules of credit, earned value, forecast, margin gated behind
 and the time-bar warning above everything else because it is the one fact on the
 page with a deadline attached).
 
-Inventory, Estimating and Production have working, tested APIs and no UI yet.
-Their nav links render a "not built yet" page **inside the shell** rather than a
-404, so the gap is explicit instead of looking broken.
+Inventory, Procurement, Estimating and Production have working, tested APIs and
+no UI yet. Their nav links render a "not built yet" page **inside the shell**
+rather than a 404, so the gap is explicit instead of looking broken.
 
 Security posture: the session token is an httpOnly cookie, every API call is made
 from the server, and no credential ever reaches client JavaScript. Verified in a

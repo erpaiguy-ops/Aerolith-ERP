@@ -22,7 +22,8 @@
     "@aerolith/module-production": "workspace:*",
     "@aerolith/module-estimation": "workspace:*",
     "@aerolith/module-projects": "workspace:*",
-    "@aerolith/module-contracts": "workspace:*"
+    "@aerolith/module-contracts": "workspace:*",
+    "@aerolith/module-procurement": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

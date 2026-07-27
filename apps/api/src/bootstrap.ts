@@ -21,6 +21,7 @@ import {
 import { contractsModule } from '@aerolith/module-contracts';
 import { inventoryModule } from '@aerolith/module-inventory';
 import { estimationModule } from '@aerolith/module-estimation';
+import { procurementModule } from '@aerolith/module-procurement';
 import { productionModule } from '@aerolith/module-production';
 import { projectsModule } from '@aerolith/module-projects';
 import { eq } from 'drizzle-orm';
@@ -28,6 +29,7 @@ import { eq } from 'drizzle-orm';
 /** Every module compiled into this binary. */
 export const MODULES: ModuleManifest[] = [
   inventoryModule,
+  procurementModule,
   productionModule,
   estimationModule,
   projectsModule,
