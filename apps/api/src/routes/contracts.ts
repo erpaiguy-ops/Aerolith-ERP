@@ -22,6 +22,9 @@ import {
   getVariationPosition,
   listContracts,
   listPaymentApplications,
+  listVariations,
+  noticeStatus,
+  recordVariationNotice,
   recordPracticalCompletion,
   scheduleRetentionRelease,
   submitApplication,
@@ -157,6 +160,15 @@ const applicationBody = z.object({
 });
 
 
+const VARIATION_SORTS = [
+  'number',
+  'title',
+  'status',
+  'instructedOn',
+  'quotedValue',
+  'createdAt',
+] as const;
+
 const APPLICATION_SORTS = [
   'number',
   'status',
@@ -177,6 +189,46 @@ const CONTRACT_SORTS = [
 
 export async function contractRoutes(app: FastifyInstance) {
   // --- The index ----------------------------------------------------------
+
+  /**
+   * Variations across every contract, with the notice clock resolved per row.
+   *
+   * Sorted by instruction date descending by default: the newest instruction is
+   * the one whose clock has most recently started, and the register is read to
+   * find out what still needs a notice.
+   */
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      sort?: string;
+      direction?: string;
+      q?: string;
+      status?: string;
+      contractId?: string;
+      atRisk?: string;
+    };
+  }>('/contracts/variations', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.variation.read');
+
+    const params = parseListParams(request.query, {
+      sortable: VARIATION_SORTS,
+      defaultSort: 'instructedOn',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listVariations(tx, params, {
+          status: request.query.status,
+          contractId: request.query.contractId,
+          atRiskOnly: request.query.atRisk === 'true',
+        }),
+      ),
+    );
+  });
 
   /**
    * Payment applications across every contract.
@@ -360,6 +412,131 @@ export async function contractRoutes(app: FastifyInstance) {
       return await withPrincipal(principal, () =>
         withTenant((tx) =>
           createVariation(tx, { contractId: request.params.id, ...parsed.data }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof ContractsError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  /**
+   * One variation, with its priced lines and the notice clock resolved.
+   *
+   * The clock comes from the server for the same reason it does on the register:
+   * it is a contractual rule depending on the contract's own notice period, and
+   * two clients disagreeing about whether a claim is still alive because their
+   * machines disagree about the date is not a bug worth having. Both call the
+   * same domain function — that, not the list query, is the single place.
+   */
+  app.get<{ Params: { id: string } }>('/contracts/variations/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.variation.read');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => {
+        const tenantId = principal.context.tenantId;
+
+        const [row] = await tx
+          .select()
+          .from(contractsSchema.variation)
+          .where(
+            and(
+              eq(contractsSchema.variation.tenantId, tenantId),
+              eq(contractsSchema.variation.id, request.params.id),
+            ),
+          );
+
+        if (!row) return reply.code(404).send({ error: 'Not found.' });
+
+        const [head] = await tx
+          .select({
+            id: contractsSchema.contract.id,
+            number: contractsSchema.contract.number,
+            name: contractsSchema.contract.name,
+            currencyCode: contractsSchema.contract.currencyCode,
+            noticePeriodDays: contractsSchema.contract.noticePeriodDays,
+          })
+          .from(contractsSchema.contract)
+          .where(
+            and(
+              eq(contractsSchema.contract.tenantId, tenantId),
+              eq(contractsSchema.contract.id, row.contractId),
+            ),
+          );
+
+        const lines = await tx
+          .select()
+          .from(contractsSchema.variationLine)
+          .where(
+            and(
+              eq(contractsSchema.variationLine.tenantId, tenantId),
+              eq(contractsSchema.variationLine.variationId, request.params.id),
+            ),
+          )
+          .orderBy(asc(contractsSchema.variationLine.lineNumber));
+
+        // No instruction date means no event for the clock to run from, which is
+        // a real state — an identified-but-uninstructed variation has no
+        // deadline yet — and is reported as null rather than as "not barred".
+        const notice =
+          row.instructedOn && head?.noticePeriodDays != null
+            ? noticeStatus({
+                eventOn: new Date(`${row.instructedOn}T00:00:00Z`),
+                noticePeriodDays: head.noticePeriodDays,
+                noticeGivenOn: row.noticeGivenOn
+                  ? new Date(`${row.noticeGivenOn}T00:00:00Z`)
+                  : null,
+              })
+            : null;
+
+        return {
+          variation: row,
+          contract: head ?? null,
+          lines,
+          notice: notice
+            ? {
+                deadlineOn: notice.deadlineOn.toISOString().slice(0, 10),
+                daysRemaining: notice.daysRemaining,
+                isGiven: notice.isGiven,
+                isTimeBarred: notice.isTimeBarred,
+                wasLate: notice.wasLate,
+              }
+            : null,
+        };
+      }),
+    );
+  });
+
+  /**
+   * Records that written notice was given.
+   *
+   * `contracts.variation.write` rather than the approval permission: giving
+   * notice is administrative and time-critical, and gating it behind the person
+   * who approves variations is how a deadline gets missed while somebody is on
+   * leave.
+   */
+  app.post<{ Params: { id: string } }>('/contracts/variations/:id/notice', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.variation.write');
+
+    const parsed = z
+      .object({
+        noticeGivenOn: z.string().date(),
+        noticeReference: z.string().trim().min(1).nullish(),
+      })
+      .safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          recordVariationNotice(tx, { variationId: request.params.id, ...parsed.data }),
         ),
       );
     } catch (error) {

@@ -276,10 +276,46 @@ both affecting every screen:
   specific wins — a nav that disagrees with itself about where you are is worse
   than one that is merely plain.
 
-Still missing before this is a usable product: raising a variation and receiving
-goods in the UI, detail screens for requisitions and RFQs, Arabic translations to
-exercise the RTL support that is wired but untested, and PDF output for
-certificates and applications.
+### Variations, and the notice that preserves them
+
+The same dead end one module over: the contract screen warned that a variation
+was about to be time-barred and gave nobody a way to answer it. There was no
+endpoint at all for recording a notice — the module shouted about a deadline it
+could not help you meet.
+
+There is now a cross-contract **variation register** filling the last "not built
+yet" nav slot, a detail screen, and the two operations that matter: recording
+notice, and recording the client's decision.
+
+- **The notice clock is computed server-side**, on the register and on the detail
+  screen, both calling the same domain function. It is a contractual rule that
+  depends on the contract's own notice period, and two clients disagreeing about
+  whether a claim is still alive because their machines disagree about today's
+  date is not a bug worth having.
+- **Late notice is recorded, never refused.** A notice served on day 30 of a
+  28-day bar is still evidence, still worth having on file, and still better than
+  nothing. Refusing it would leave the strongest available fact out of the record
+  to keep a status column tidy. The screen states the lateness plainly rather
+  than hiding it.
+- **No clock at all is a distinct state from "not barred."** A variation that has
+  been identified but not instructed has no event for the deadline to run from,
+  and reports `null` — saying "not barred" there would be a quiet lie about a
+  claim whose clock has not started.
+- Giving notice needs `contracts.variation.write`, not the approval permission.
+  It is administrative and time-critical, and gating it behind the person who
+  approves variations is exactly how a deadline gets missed while they are on
+  leave.
+
+The durable-state rule earned its keep again: an earlier draft of the notice
+action returned a special message when the notice was late. That message could
+never have been read — recording the notice revalidates the page, and the panel
+holding the message is replaced by the "notice given" card. The lateness is
+stated on that card instead, and the dead branch is gone.
+
+Still missing before this is a usable product: receiving goods in the UI, detail
+screens for requisitions and RFQs, Arabic translations to exercise the RTL
+support that is wired but untested, and PDF output for certificates and
+applications.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

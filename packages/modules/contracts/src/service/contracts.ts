@@ -44,6 +44,7 @@ import {
   type Valuation,
 } from '../domain/payment';
 import {
+  INSTRUCTED_STATUSES,
   noticeStatus,
   valueVariation,
   variationPosition,
@@ -1546,6 +1547,238 @@ export async function listPaymentApplications(
         disallowed: certified == null ? null : certified - applied,
         isOverdue: Boolean(row.isOverdue),
         awaitingCertificate: row.status === 'submitted',
+      };
+    }),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+/**
+ * Records that written notice was given, against the contract's time bar.
+ *
+ * The one operation this module warned about and could not perform. Notice is
+ * what preserves entitlement: miss the deadline and the claim can be
+ * extinguished entirely however good it is, which is why the register shouts
+ * about it and why there has to be a way to answer.
+ *
+ * Late notice is recorded rather than refused. A notice given on day 30 of a
+ * 28-day bar is still evidence, still worth having on file, and still better
+ * than nothing — refusing to record it would leave the strongest available fact
+ * out of the file to keep a status column tidy.
+ */
+export async function recordVariationNotice(
+  tx: Transaction,
+  input: { variationId: string; noticeGivenOn: string; noticeReference?: string | null },
+): Promise<{ number: string | null; wasLate: boolean; deadlineOn: string | null }> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select()
+    .from(variation)
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  if (!row) throw new ContractsError('Variation not found.');
+
+  const [head] = await tx
+    .select({ noticePeriodDays: contract.noticePeriodDays })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, row.contractId)));
+
+  // The event the clock runs from is the instruction. Without one there is no
+  // deadline to be late against — the notice is simply recorded.
+  const eventOn = row.instructedOn ?? null;
+  const noticePeriodDays = head?.noticePeriodDays ?? null;
+
+  let wasLate = false;
+  let deadlineOn: string | null = null;
+
+  if (eventOn && noticePeriodDays != null) {
+    const status = noticeStatus({
+      eventOn: new Date(`${eventOn}T00:00:00Z`),
+      noticePeriodDays,
+      noticeGivenOn: new Date(`${input.noticeGivenOn}T00:00:00Z`),
+    });
+    wasLate = status.wasLate;
+    deadlineOn = status.deadlineOn.toISOString().slice(0, 10);
+  }
+
+  await tx
+    .update(variation)
+    .set({
+      noticeGivenOn: input.noticeGivenOn,
+      noticeReference: input.noticeReference ?? null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    action: 'update',
+    entityType: 'contracts.variation',
+    entityId: input.variationId,
+    entityLabel: row.number,
+    metadata: {
+      noticeGivenOn: input.noticeGivenOn,
+      noticeReference: input.noticeReference,
+      deadlineOn,
+      // Recorded as a fact rather than hidden, because a late notice changes
+      // how the claim has to be argued and whoever picks this up later needs
+      // to know without recomputing it.
+      wasLate,
+    },
+  });
+
+  return { number: row.number, wasLate, deadlineOn };
+}
+
+export interface VariationListRow {
+  id: string;
+  number: string | null;
+  title: string;
+  status: string;
+  basis: string;
+  contractId: string;
+  contractNumber: string | null;
+  contractName: string;
+  projectCode: string | null;
+  currencyCode: string | null;
+  instructedOn: string | null;
+  noticeGivenOn: string | null;
+  noticePeriodDays: number | null;
+  approvedOn: string | null;
+  quotedValue: number | null;
+  approvedValue: number | null;
+  percentExecuted: number;
+  /** Null when there is no instruction date to run the clock from. */
+  notice: {
+    deadlineOn: string;
+    daysRemaining: number;
+    isGiven: boolean;
+    isTimeBarred: boolean;
+    wasLate: boolean;
+  } | null;
+}
+
+/**
+ * Variations across every contract, with the notice clock resolved per row.
+ *
+ * The clock is computed here rather than in the browser on purpose: it is a
+ * contractual rule, it depends on the contract's own notice period, and two
+ * clients disagreeing about whether something is time-barred because one of them
+ * has a different system clock is not a bug anybody wants to debug.
+ */
+export async function listVariations(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; contractId?: string; atRiskOnly?: boolean } = {},
+): Promise<ListResult<VariationListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(variation.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(variation.status, filters.status as never));
+  if (filters.contractId) conditions.push(eq(variation.contractId, filters.contractId));
+  if (filters.atRiskOnly) {
+    // Instructed, no notice yet, and not settled either way. Everything whose
+    // clock is still running — which is the only set worth a morning's attention.
+    conditions.push(sql`${variation.instructedOn} is not null`);
+    conditions.push(sql`${variation.noticeGivenOn} is null`);
+    conditions.push(inArray(variation.status, [...INSTRUCTED_STATUSES]));
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(variation.number, pattern),
+        ilike(variation.title, pattern),
+        ilike(variation.instructionReference, pattern),
+        ilike(contract.number, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: variation.number,
+    title: variation.title,
+    status: variation.status,
+    instructedOn: variation.instructedOn,
+    quotedValue: variation.quotedValue,
+    createdAt: variation.createdAt,
+  }[params.sort as string] ?? variation.instructedOn;
+
+  const rows = await tx
+    .select({
+      id: variation.id,
+      number: variation.number,
+      title: variation.title,
+      status: variation.status,
+      basis: variation.basis,
+      contractId: variation.contractId,
+      contractNumber: contract.number,
+      contractName: contract.name,
+      projectCode: schema.project.code,
+      currencyCode: contract.currencyCode,
+      noticePeriodDays: contract.noticePeriodDays,
+      instructedOn: variation.instructedOn,
+      noticeGivenOn: variation.noticeGivenOn,
+      approvedOn: variation.approvedOn,
+      quotedValue: variation.quotedValue,
+      approvedValue: variation.approvedValue,
+      percentExecuted: variation.percentExecuted,
+    })
+    .from(variation)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, variation.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(variation.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(variation)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, variation.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => {
+      const notice =
+        row.instructedOn && row.noticePeriodDays != null
+          ? noticeStatus({
+              eventOn: new Date(`${row.instructedOn}T00:00:00Z`),
+              noticePeriodDays: row.noticePeriodDays,
+              noticeGivenOn: row.noticeGivenOn
+                ? new Date(`${row.noticeGivenOn}T00:00:00Z`)
+                : null,
+            })
+          : null;
+
+      return {
+        ...row,
+        quotedValue: row.quotedValue == null ? null : num(row.quotedValue),
+        approvedValue: row.approvedValue == null ? null : num(row.approvedValue),
+        percentExecuted: num(row.percentExecuted),
+        notice: notice
+          ? {
+              deadlineOn: notice.deadlineOn.toISOString().slice(0, 10),
+              daysRemaining: notice.daysRemaining,
+              isGiven: notice.isGiven,
+              isTimeBarred: notice.isTimeBarred,
+              wasLate: notice.wasLate,
+            }
+          : null,
       };
     }),
     counted?.total ?? 0,

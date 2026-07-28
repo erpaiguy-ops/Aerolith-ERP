@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { ActionForm, SubmitButton } from '@/components/Action';
@@ -299,7 +300,12 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
               return (
                 <tr key={v.id}>
                   <Td>
-                    <span className="numeric">{v.number}</span>
+                    <Link
+                      href={`/contracts/variations/${v.id}`}
+                      className="numeric text-(--color-accent) hover:underline"
+                    >
+                      {v.number}
+                    </Link>
                   </Td>
                   <Td>{v.title}</Td>
                   <Td>

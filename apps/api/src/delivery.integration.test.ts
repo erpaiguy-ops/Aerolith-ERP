@@ -1185,6 +1185,136 @@ it('lists payment applications across contracts with the disallowance on the row
       expect(response.statusCode).toBe(404);
     });
 
+it('lists variations with the notice clock resolved per row', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rows = response.json().rows;
+      expect(rows.length).toBeGreaterThan(0);
+
+      // The clock is computed server-side because it is a contractual rule that
+      // depends on the contract's own notice period. Two clients disagreeing
+      // about whether a claim is alive because their machines disagree about
+      // the date is not a bug worth having.
+      const instructed = rows.filter((r: { instructedOn: string | null }) => r.instructedOn);
+      expect(instructed.length).toBeGreaterThan(0);
+      for (const row of instructed) {
+        expect(row.notice).not.toBeNull();
+        expect(typeof row.notice.daysRemaining).toBe('number');
+        expect(typeof row.notice.isTimeBarred).toBe('boolean');
+      }
+    });
+
+    it('reports no clock at all when there is no instruction to run it from', async () => {
+      // An identified-but-uninstructed variation has no deadline yet. Null is a
+      // different claim from "not barred", and reporting the second would be a
+      // quiet lie about a claim that has not started its clock.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations',
+        headers: auth(),
+      });
+
+      const uninstructed = response
+        .json()
+        .rows.filter((r: { instructedOn: string | null }) => !r.instructedOn);
+
+      for (const row of uninstructed) {
+        expect(row.notice).toBeNull();
+      }
+    });
+
+    it('records a notice, and says so when it was late', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations?atRisk=true',
+        headers: auth(),
+      });
+
+      const atRisk = list.json().rows;
+      expect(atRisk.length).toBeGreaterThan(0);
+      // Everything the filter returns is instructed, unnoticed and unsettled.
+      for (const row of atRisk) {
+        expect(row.instructedOn).not.toBeNull();
+        expect(row.noticeGivenOn).toBeNull();
+      }
+
+      const barred = atRisk.find((r: { notice: { isTimeBarred: boolean } }) => r.notice.isTimeBarred);
+      expect(barred).toBeDefined();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/variations/${barred.id}/notice`,
+        headers: auth(),
+        payload: { noticeGivenOn: '2026-07-01', noticeReference: 'LTR-2026-113' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Late notice is RECORDED, not refused: it is still evidence, and refusing
+      // it would leave the strongest available fact out of the file to keep a
+      // status column tidy.
+      expect(response.json().wasLate).toBe(true);
+      expect(response.json().deadlineOn).toBeTruthy();
+    });
+
+    it('drops a noticed variation out of the at-risk filter', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations?atRisk=true',
+        headers: auth(),
+      });
+
+      expect(
+        response.json().rows.every((r: { noticeGivenOn: string | null }) => r.noticeGivenOn === null),
+      ).toBe(true);
+    });
+
+    it('does not let a user without write permission serve a notice', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations',
+        headers: auth(),
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/variations/${list.json().rows[0].id}/notice`,
+        headers: auth(ENGINEER_TOKEN),
+        payload: { noticeGivenOn: '2026-07-01' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('returns one variation with its lines and its clock', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/variations',
+        headers: auth(),
+      });
+      const first = list.json().rows[0];
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/variations/${first.id}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.variation.id).toBe(first.id);
+      expect(body.contract.currencyCode).toBe('AED');
+      expect(Array.isArray(body.lines)).toBe(true);
+
+      // The register and the detail screen must agree about whether a claim is
+      // still alive — they call the same domain function to make sure.
+      expect(body.notice?.isTimeBarred).toBe(first.notice?.isTimeBarred);
+    });
+
     it('gates the project list on the permission, not just the module', async () => {
       // The site engineer has `projects.project.read`, so they see the list.
       const engineer = await app.inject({
