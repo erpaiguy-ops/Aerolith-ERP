@@ -761,8 +761,180 @@ suite('Estimation', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // The library header still travels with the page: a rate is meaningless
+      // without knowing which version of the library it came from, which is the
+      // same reason an estimate pins one.
       expect(response.json().library.code).toBe('STD');
-      expect(response.json().rates.map((r: { code: string }) => r.code)).toContain('DOOR-STD');
+      expect(response.json().rows.map((r: { code: string }) => r.code)).toContain('DOOR-STD');
     });
+  });
+
+  describe('the registers', () => {
+    it('pages tenders, soonest deadline first', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/tenders',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(Array.isArray(body.rows)).toBe(true);
+      expect(body.sort).toBe('submissionDueAt');
+      expect(body.direction).toBe('asc');
+      expect(body.totalPages).toBeGreaterThanOrEqual(1);
+    });
+
+    it('orders a missing deadline last rather than first', async () => {
+      // A tender with no date is not the most urgent thing on the list, and an
+      // ascending sort puts nulls first by default in Postgres — which reads as
+      // "these three close today".
+      const dated = await newTender('Has a deadline');
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/estimating/tenders',
+        headers: auth(),
+        payload: { name: 'No deadline at all', currencyCode: 'AED' },
+      });
+      await getDatabase()
+        .update(estimationSchema.tender)
+        .set({ submissionDueAt: new Date('2026-09-01T12:00:00Z') })
+        .where(eq(estimationSchema.tender.id, dated.tenderId));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/tenders?pageSize=200',
+        headers: auth(),
+      });
+
+      const rows: { submissionDueAt: string | null }[] = response.json().rows;
+      const firstNull = rows.findIndex((r) => r.submissionDueAt == null);
+      const lastDated = rows.map((r) => r.submissionDueAt != null).lastIndexOf(true);
+      if (firstNull !== -1) expect(firstNull).toBeGreaterThan(lastDated - 1);
+    });
+
+    it('counts a tender\'s estimates and reports the submitted value', async () => {
+      const tender = await newTender('Two versions priced');
+      await priceIt(tender.tenderId);
+      const second = (await priceIt(tender.tenderId)).json();
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/estimating/estimates/${second.estimateId}/submit`,
+        headers: auth(),
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/estimating/tenders?q=${encodeURIComponent('Two versions priced')}`,
+        headers: auth(),
+      });
+
+      const row = response.json().rows[0];
+      expect(row.estimateCount).toBe(2);
+      // The value of the version that actually went out, not of the latest one.
+      expect(Number(row.submittedValue)).toBeCloseTo(second.totalValue, 2);
+    });
+
+    it('hides cost and margin on the estimates register too', async () => {
+      // The detail endpoint already redacted. A new list that forgets is how a
+      // cost column leaks to everyone, and nobody notices from the screen.
+      const tender = await newTender('Redaction check');
+      await priceIt(tender.tenderId);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/estimates',
+        headers: auth(ESTIMATOR_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.marginVisible).toBe(false);
+      expect(body.rows.length).toBeGreaterThan(0);
+
+      for (const row of body.rows) {
+        // Absent, not null. A `totalCost: null` on the wire still tells the
+        // reader the field exists and is being withheld, and is indistinguishable
+        // from an estimate that genuinely has no cost yet.
+        expect(row).not.toHaveProperty('totalCost');
+        expect(row).not.toHaveProperty('marginPercent');
+        expect(row).not.toHaveProperty('marginValue');
+        expect(row).not.toHaveProperty('marginPercentAchieved');
+        // The price is not secret. Only what it cost us is.
+        expect(row.totalValue).toBeDefined();
+      }
+    });
+
+    it('reports the margin actually achieved, not the one requested', async () => {
+      // A provisional sum is the client's money passing through and carries no
+      // margin, so an estimate set to 20% achieves less. Reporting only the
+      // request beside a money figure invites a reader to divide the two, get a
+      // third number, and conclude the screen is wrong.
+      const tender = await newTender('Diluted by a PC sum');
+      const created = (
+        await priceIt(tender.tenderId, {
+          marginPercent: 20,
+          lines: [
+            {
+              description: 'Measured work',
+              quantity: 10,
+              uomCode: 'NR',
+              components: [{ type: 'material', quantityPerUnit: 1, unitRate: 100 }],
+            },
+            {
+              description: 'Provisional sum',
+              quantity: 1,
+              uomCode: 'SUM',
+              kind: 'provisional_sum',
+              unitRate: 50_000,
+            },
+          ],
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/estimates?q=Diluted',
+        headers: auth(),
+      });
+
+      const row = response
+        .json()
+        .rows.find((r: { id: string }) => r.id === created.estimateId);
+
+      expect(row).toBeDefined();
+      const achieved = (Number(row.totalValue) - Number(row.totalCost)) / Number(row.totalValue);
+      expect(row.marginPercentAchieved).toBeCloseTo(achieved * 100, 1);
+      // And it is genuinely lower than the 20% asked for.
+      expect(row.marginPercentAchieved).toBeLessThan(20);
+    });
+
+    it('measures a rate against actual cost, not against its selling rate', async () => {
+      // Comparing `lastActualCost` to `unitRate` would measure the margin and
+      // label it a rate variance — a plausible number answering a different
+      // question.
+      const db = getDatabase();
+      await db
+        .update(estimationSchema.rateItem)
+        .set({ lastActualCost: '90.0000', actualSampleSize: 5 })
+        .where(
+          and(
+            eq(estimationSchema.rateItem.tenantId, TENANT),
+            eq(estimationSchema.rateItem.code, 'DOOR-STD'),
+          ),
+        );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/rates?q=DOOR-STD',
+        headers: auth(),
+      });
+
+      const row = response.json().rows[0];
+      const expected =
+        ((Number(row.directCost) - Number(row.lastActualCost)) / Number(row.directCost)) * 100;
+      expect(row.actualVariancePercent).toBeCloseTo(expected, 1);
+    });
+
   });
 });

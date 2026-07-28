@@ -6,13 +6,20 @@
  * one transaction. Estimation does not import Production and Production does not
  * import Estimation — this route composes them.
  */
-import { schema, withTenant } from '@aerolith/kernel';
+import { parseListParams, schema, withTenant } from '@aerolith/kernel';
 import {
+  ESTIMATE_SORTS,
   EstimationError,
+  RATE_SORTS,
+  TENDER_SORTS,
   createEstimate,
   createTender,
+  currentRateLibrary,
   estimationSchema,
   getEstimateBillOfMaterials,
+  listEstimates,
+  listRates,
+  listTenders,
   marginScenarios,
   recordBidDecision,
   recordOutcome,
@@ -20,12 +27,22 @@ import {
   submitEstimate,
 } from '@aerolith/module-estimation';
 import { createWorkOrder } from '@aerolith/module-production';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import { modulesForTenant } from '../bootstrap';
 import { authenticate, requirePermission, withPrincipal, type Principal } from '../context';
+
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+  libraryId?: string;
+}
 
 const MODULE = 'estimation';
 
@@ -114,32 +131,30 @@ export async function estimationRoutes(app: FastifyInstance) {
     return withPrincipal(principal, () => withTenant((tx) => createTender(tx, parsed.data)));
   });
 
-  app.get<{ Querystring: { status?: string } }>(
+  app.get<{ Querystring: ListQuery & { bidDecision?: string; open?: string } }>(
     '/estimating/tenders',
     async (request, reply) => {
       const principal = await authenticate(request);
       if (!(await requireModule(principal, reply))) return reply;
       requirePermission(principal, 'estimation.tender.read');
 
-      return withPrincipal(principal, () =>
-        withTenant(async (tx) => {
-          const tenders = await tx
-            .select()
-            .from(estimationSchema.tender)
-            .where(
-              and(
-                eq(estimationSchema.tender.tenantId, principal.context.tenantId),
-                request.query.status
-                  ? eq(estimationSchema.tender.status, request.query.status as never)
-                  : undefined,
-              ),
-            )
-            // Soonest deadline first — the only ordering an estimator wants.
-            .orderBy(asc(estimationSchema.tender.submissionDueAt))
-            .limit(200);
+      const params = parseListParams(request.query, {
+        sortable: TENDER_SORTS,
+        // Soonest deadline first. A tender list ordered by anything else buries
+        // the one that closes on Thursday, and a missed submission is the most
+        // expensive failure this module has.
+        defaultSort: 'submissionDueAt',
+        defaultDirection: 'asc',
+      });
 
-          return { tenders };
-        }),
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listTenders(tx, params, {
+            status: request.query.status,
+            bidDecision: request.query.bidDecision,
+            openOnly: request.query.open === 'true',
+          }),
+        ),
       );
     },
   );
@@ -231,6 +246,41 @@ export async function estimationRoutes(app: FastifyInstance) {
         }
         throw error;
       }
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { tenderId?: string; submitted?: string } }>(
+    '/estimating/estimates',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'estimation.estimate.read');
+
+      const params = parseListParams(request.query, {
+        sortable: ESTIMATE_SORTS,
+        defaultSort: 'createdAt',
+        defaultDirection: 'desc',
+      });
+
+      // Read from the PRINCIPAL, never from the query string. The same rule the
+      // detail endpoint follows, and the reason the redaction lives in the
+      // service rather than here.
+      const canSeeMargin =
+        principal.isOwner || principal.context.permissions?.has('estimation.margin.view');
+
+      return withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          const page = await listEstimates(tx, params, {
+            status: request.query.status,
+            tenderId: request.query.tenderId,
+            submittedOnly: request.query.submitted === 'true',
+            canSeeMargin,
+          });
+          // Stated on the wire so the screen can say "you are not seeing cost"
+          // rather than silently rendering a table with columns missing.
+          return { ...page, marginVisible: Boolean(canSeeMargin) };
+        }),
+      );
     },
   );
 
@@ -521,35 +571,33 @@ export async function estimationRoutes(app: FastifyInstance) {
 
   // --- Rate library -------------------------------------------------------
 
-  app.get('/estimating/rates', async (request, reply) => {
-    const principal = await authenticate(request);
-    if (!(await requireModule(principal, reply))) return reply;
-    requirePermission(principal, 'estimation.rate_library.read');
+  app.get<{ Querystring: ListQuery & { category?: string; inactive?: string } }>(
+    '/estimating/rates',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'estimation.rate_library.read');
 
-    return withPrincipal(principal, () =>
-      withTenant(async (tx) => {
-        const [library] = await tx
-          .select()
-          .from(estimationSchema.rateLibrary)
-          .where(
-            and(
-              eq(estimationSchema.rateLibrary.tenantId, principal.context.tenantId),
-              eq(estimationSchema.rateLibrary.isCurrent, true),
-            ),
-          )
-          .orderBy(desc(estimationSchema.rateLibrary.version))
-          .limit(1);
+      const params = parseListParams(request.query, {
+        sortable: RATE_SORTS,
+        defaultSort: 'code',
+        defaultDirection: 'asc',
+      });
 
-        if (!library) return { library: null, rates: [] };
-
-        const rates = await tx
-          .select()
-          .from(estimationSchema.rateItem)
-          .where(eq(estimationSchema.rateItem.libraryId, library.id))
-          .orderBy(asc(estimationSchema.rateItem.code));
-
-        return { library, rates };
-      }),
-    );
-  });
+      return withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          // The library header travels with the page because a rate means
+          // nothing without knowing which version of the library it came from —
+          // that is the whole reason estimates pin a library in the first place.
+          const library = await currentRateLibrary(tx);
+          const page = await listRates(tx, params, {
+            libraryId: request.query.libraryId ?? library?.id,
+            category: request.query.category,
+            includeInactive: request.query.inactive === 'true',
+          });
+          return { ...page, library };
+        }),
+      );
+    },
+  );
 }

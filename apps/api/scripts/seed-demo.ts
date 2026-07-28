@@ -19,6 +19,13 @@ import {
   withTenant,
   withoutTenantGuard,
 } from '@aerolith/kernel';
+import {
+  createEstimate,
+  createTender,
+  estimationSchema,
+  recordBidDecision,
+  submitEstimate,
+} from '@aerolith/module-estimation';
 import { inventorySchema, postMovement } from '@aerolith/module-inventory';
 import {
   approveRequisition,
@@ -97,6 +104,18 @@ async function main() {
       // Order matters. An offcut points at the movement that produced it, and a
       // stock count points at the adjustment that posted it, so both go before
       // `stockMovement`; bins and batches go before the warehouse that owns them.
+      // Estimating: lines and components hang off the estimate, the estimate off
+      // the tender, and rate items off the library. Deepest first.
+      estimationSchema.estimateLineComponent,
+      estimationSchema.estimateLine,
+      estimationSchema.estimateSection,
+      estimationSchema.estimate,
+      estimationSchema.tenderAddendum,
+      estimationSchema.tender,
+      estimationSchema.rateComponent,
+      estimationSchema.rateItem,
+      estimationSchema.rateLibrary,
+
       inventorySchema.offcut,
       inventorySchema.stockCountLine,
       inventorySchema.stockCount,
@@ -841,12 +860,223 @@ async function main() {
     ]);
   });
 
+  console.log('→ estimating: a rate library with actuals behind it, and two tenders');
+  await asUser(async (tx) => {
+    // The library is versioned and exactly one is current. An estimate pins the
+    // one it was priced from, which is why the library can move on afterwards
+    // without rewriting a submitted price.
+    // The build-ups below link to real stock items, which is what lets an
+    // estimate explode into a bill of materials rather than a list of prices.
+    const itemRowsForRates = await tx
+      .select({ id: schema.item.id, code: schema.item.code })
+      .from(schema.item)
+      .where(eq(schema.item.tenantId, TENANT));
+    const itemsByCode = new Map(itemRowsForRates.map((i) => [i.code, i.id]));
+
+    const [library] = await tx
+      .insert(estimationSchema.rateLibrary)
+      .values({
+        tenantId: TENANT,
+        code: 'STD',
+        name: 'Standard joinery rates',
+        version: 3,
+        currencyCode: 'AED',
+        isCurrent: true,
+        effectiveFrom: '2026-01-01',
+      })
+      .returning({ id: estimationSchema.rateLibrary.id });
+
+    // `lastActualCost` is what finished jobs have actually cost. The register
+    // reports the gap as a suggestion and never applies it — an estimator whose
+    // rates change under them stops trusting the library, which is worse than a
+    // rate being slightly stale.
+    // `directCost` and `unitRate` are CACHES of the build-up below, not
+    // independent numbers — every figure here was computed from the components
+    // rather than typed, or the rate library would disagree with the estimates
+    // priced from it.
+    const rateRows: (typeof estimationSchema.rateItem.$inferInsert)[] = [
+      {
+        tenantId: TENANT,
+        libraryId: library!.id,
+        code: 'DOOR-VEN',
+        description: 'Veneered flush door, factory finished, hung',
+        uomCode: 'NR',
+        category: 'doors',
+        directCost: '1217.1680',
+        unitRate: '1521.4600',
+        marginPercent: '20.000',
+        // Costing MORE than the library charges: every door priced at this rate
+        // has been losing the difference.
+        lastActualCost: '1602.0000',
+        actualSampleSize: 14,
+        lastActualAt: new Date('2026-05-18T00:00:00Z'),
+      },
+      {
+        tenantId: TENANT,
+        libraryId: library!.id,
+        code: 'WARD-CARC',
+        description: 'Wardrobe carcass, 18mm MDF, edge banded',
+        uomCode: 'M2',
+        category: 'carcass',
+        directCost: '317.7408',
+        unitRate: '397.1760',
+        marginPercent: '20.000',
+        lastActualCost: '284.0000',
+        actualSampleSize: 31,
+        lastActualAt: new Date('2026-06-02T00:00:00Z'),
+      },
+      {
+        tenantId: TENANT,
+        libraryId: library!.id,
+        code: 'RECEP-SS',
+        description: 'Solid surface reception counter, fabricated and installed',
+        uomCode: 'M',
+        category: 'special',
+        directCost: '2624.0000',
+        unitRate: '3425.5875',
+        marginPercent: '23.400',
+      },
+      {
+        tenantId: TENANT,
+        libraryId: library!.id,
+        code: 'EDGE-TAPE',
+        description: 'Edge banding, 22mm oak, applied',
+        uomCode: 'M',
+        category: 'carcass',
+        directCost: '6.3105',
+        unitRate: '7.8881',
+        // Retired: superseded by a wider tape. Kept because estimates that used
+        // it must still reproduce.
+        isActive: false,
+      },
+    ];
+    const rates = await tx
+      .insert(estimationSchema.rateItem)
+      .values(rateRows)
+      .returning({ id: estimationSchema.rateItem.id, code: estimationSchema.rateItem.code });
+
+    const rateId = (code: string) => rates.find((r) => r.code === code)!.id;
+
+    // The build-ups. A rate without components prices a BOQ line to ZERO —
+    // `createEstimate` snapshots the build-up, not the cached `unitRate`, which
+    // is the whole reason a submitted price can be reproduced after the library
+    // moves on. Seeding the cached figures alone produced two estimates worth
+    // exactly the provisional sum and nothing else.
+    //
+    // `wastagePercent` is on material only. Cutting 10% extra board does not
+    // mean paying the joiner 10% more, and putting wastage on labour is the
+    // single most common way a build-up quietly inflates.
+    const boardItem = itemsByCode.get('MDF-VEN-OAK') ?? null;
+
+    await tx.insert(estimationSchema.rateComponent).values([
+      // Veneered door: 1180.00 direct
+      { tenantId: TENANT, rateItemId: rateId('DOOR-VEN'), sequence: 1, type: 'material' as const, description: 'Veneered blank, 2 faces', itemId: boardItem, quantityPerUnit: '1.900000', unitRate: '284.000000', wastagePercent: '8.000' },
+      { tenantId: TENANT, rateItemId: rateId('DOOR-VEN'), sequence: 2, type: 'hardware' as const, description: 'Hinges, lockset, closer', quantityPerUnit: '1.000000', unitRate: '210.000000' },
+      { tenantId: TENANT, rateItemId: rateId('DOOR-VEN'), sequence: 3, type: 'labour' as const, description: 'Machining, assembly and hanging', quantityPerUnit: '5.500000', unitRate: '42.000000' },
+      { tenantId: TENANT, rateItemId: rateId('DOOR-VEN'), sequence: 4, type: 'finishing' as const, description: 'Spray, 2 coats plus cure', quantityPerUnit: '1.000000', unitRate: '148.000000', wastagePercent: '5.000' },
+      { tenantId: TENANT, rateItemId: rateId('DOOR-VEN'), sequence: 5, type: 'transport' as const, description: 'Delivery and offload', quantityPerUnit: '1.000000', unitRate: '38.000000' },
+
+      // Wardrobe carcass per m2: 312.00 direct
+      { tenantId: TENANT, rateItemId: rateId('WARD-CARC'), sequence: 1, type: 'material' as const, description: '18mm MDF', itemId: boardItem, quantityPerUnit: '1.150000', unitRate: '96.000000', wastagePercent: '12.000' },
+      { tenantId: TENANT, rateItemId: rateId('WARD-CARC'), sequence: 2, type: 'material' as const, description: 'Edge tape', quantityPerUnit: '4.200000', unitRate: '6.400000', wastagePercent: '6.000' },
+      { tenantId: TENANT, rateItemId: rateId('WARD-CARC'), sequence: 3, type: 'labour' as const, description: 'Cut, band, drill and assemble', quantityPerUnit: '2.800000', unitRate: '42.000000' },
+      { tenantId: TENANT, rateItemId: rateId('WARD-CARC'), sequence: 4, type: 'hardware' as const, description: 'Fittings and fixings', quantityPerUnit: '1.000000', unitRate: '48.000000' },
+
+      // Reception counter per m: 2450.00 direct
+      { tenantId: TENANT, rateItemId: rateId('RECEP-SS'), sequence: 1, type: 'material' as const, description: 'Solid surface sheet and adhesive', quantityPerUnit: '1.000000', unitRate: '1420.000000', wastagePercent: '15.000' },
+      { tenantId: TENANT, rateItemId: rateId('RECEP-SS'), sequence: 2, type: 'material' as const, description: 'Substrate and framing', quantityPerUnit: '1.000000', unitRate: '190.000000', wastagePercent: '10.000' },
+      { tenantId: TENANT, rateItemId: rateId('RECEP-SS'), sequence: 3, type: 'labour' as const, description: 'Fabrication, seaming and polishing', quantityPerUnit: '9.000000', unitRate: '58.000000' },
+      { tenantId: TENANT, rateItemId: rateId('RECEP-SS'), sequence: 4, type: 'subcontract' as const, description: 'Specialist installation', quantityPerUnit: '1.000000', unitRate: '260.000000' },
+
+      // Retired edge tape, kept so estimates that used it still reproduce.
+      { tenantId: TENANT, rateItemId: rateId('EDGE-TAPE'), sequence: 1, type: 'material' as const, description: 'Oak tape 22mm', quantityPerUnit: '1.050000', unitRate: '4.200000', wastagePercent: '5.000' },
+      { tenantId: TENANT, rateItemId: rateId('EDGE-TAPE'), sequence: 2, type: 'labour' as const, description: 'Apply and trim', quantityPerUnit: '0.040000', unitRate: '42.000000' },
+    ]);
+
+    // The seed had suppliers but no customer, so every client column rendered
+    // empty and searching a tender by client matched nothing.
+    const [client] = await tx
+      .insert(schema.party)
+      .values({
+        tenantId: TENANT,
+        code: 'CLI-EMAAR',
+        name: 'Emaar Properties PJSC',
+        isCustomer: true,
+        countryCode: 'AE',
+      })
+      .returning({ id: schema.party.id });
+
+    // A live tender, closing soon, priced twice. Two versions is the normal
+    // case, not an edge case: the second is what actually went out.
+    const live = await createTender(tx, {
+      name: 'Business Bay lobby and lift lobbies',
+      clientPartyId: client?.id,
+      currencyCode: 'AED',
+      submissionDueAt: '2026-08-04T12:00:00Z',
+      validityDays: 90,
+    });
+
+    await createEstimate(tx, {
+      tenderId: live.tenderId,
+      label: 'Base bid',
+      rateLibraryId: library!.id,
+      overheadPercent: 8,
+      marginPercent: 18,
+      lines: [
+        { description: 'Veneered doors to lobbies', quantity: 24, uomCode: 'NR', rateItemCode: 'DOOR-VEN' },
+        { description: 'Reception counter', quantity: 6.5, uomCode: 'M', rateItemCode: 'RECEP-SS' },
+        {
+          description: 'Feature wall panelling — design not yet issued',
+          quantity: 1,
+          uomCode: 'SUM',
+          kind: 'provisional_sum',
+          unitRate: 85_000,
+        },
+      ],
+    });
+
+    const sharper = await createEstimate(tx, {
+      tenderId: live.tenderId,
+      label: 'Sharpened — reduced margin to win',
+      rateLibraryId: library!.id,
+      overheadPercent: 8,
+      marginPercent: 12,
+      lines: [
+        { description: 'Veneered doors to lobbies', quantity: 24, uomCode: 'NR', rateItemCode: 'DOOR-VEN' },
+        { description: 'Reception counter', quantity: 6.5, uomCode: 'M', rateItemCode: 'RECEP-SS' },
+        {
+          description: 'Feature wall panelling — design not yet issued',
+          quantity: 1,
+          uomCode: 'SUM',
+          kind: 'provisional_sum',
+          unitRate: 85_000,
+        },
+      ],
+    });
+    await submitEstimate(tx, { estimateId: sharper.estimateId });
+
+    // A no-bid, with its reason. Recording WHY is the point: a no-bid without a
+    // reason is indistinguishable from a tender nobody got round to.
+    const declined = await createTender(tx, {
+      name: 'Airport concourse retail fit-out',
+      clientPartyId: client?.id,
+      currencyCode: 'AED',
+      submissionDueAt: '2026-07-10T12:00:00Z',
+    });
+    await recordBidDecision(tx, {
+      tenderId: declined.tenderId,
+      decision: 'no_bid',
+      reason: 'Programme needs 40 doors a week through the spray booth. We can do 22.',
+    });
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
   console.log(`  contract: /contracts/${contractId}`);
   console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
   console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
+  console.log('  estimating: /estimating/tenders · /estimating/estimates · /estimating/rates');
 
   await closeDatabase();
 }

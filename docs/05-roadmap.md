@@ -471,6 +471,51 @@ detail screens for requisitions, RFQs and stock counts, Arabic translations of
 the interface, and PDF output for certificates and applications. Estimating and
 Production remain the two modules with no screens at all.
 
+### Estimating gets its screens, and its rate library starts telling the truth
+
+Three navigation slots — tenders, estimates, the rate library — and the same
+shape as Inventory: registers in a `service/registers.ts` kept apart from the
+pricing path, because submitting an estimate commits the company to a number and
+listing them does not.
+
+**Cost redaction lives in the service, not the route.** `estimation.margin.view`
+is a separate permission from reading an estimate, and the detail endpoint
+already honoured it. Putting the check in the route would mean the next list to
+be written forgets, and a cost column leaking to everyone is not a bug anyone
+notices from the screen. `listEstimates` takes the flag and DELETES the fields —
+a `totalCost: null` on the wire is indistinguishable from an estimate with no
+cost yet, and still tells the reader something is being withheld.
+
+Three defects found by working the numbers rather than by reading the screen:
+
+- **The rate library's cost column was derived from a cache nothing maintains.**
+  `rate_item.direct_cost` is documented as "computed from the build-up, cached",
+  and no code path writes it — it is zero on every rate the pricing path has
+  created. A register reading it showed a plausible cost of nothing, and the
+  variance beside it went silently null. The cost is now summed from the
+  components in SQL, the same arithmetic `calculateBuildUp` performs, with the
+  cached column only as a fallback for a rate that genuinely has no build-up.
+  A test pins the two together.
+- **The variance compared a selling rate to an actual cost.** Dividing
+  `lastActualCost` into `unitRate` measures the margin and labels it a rate
+  variance: a plausible number answering a different question. It is cost against
+  cost now, and negative is the one that matters — the work costs more than the
+  build-up assumes, so every line priced from that rate is losing the difference.
+- **The estimates register showed the margin that was ASKED for.** An estimate
+  set to 18% with a large provisional sum in it achieves 7.5%, because a PC sum
+  is the client's money passing through and carries no margin. Rendering "18.0%"
+  beside a margin of 10,968.91 on a value of 145,938.38 invites a reader to
+  divide, get a third number, and conclude the screen is broken. Both figures are
+  reported now, achieved first.
+
+The demo seed grew an estimating story, and building it caught a fourth: rates
+were seeded with typed `directCost` and `unitRate` and no components, so every
+BOQ line priced from them came to **zero** and both estimates were worth exactly
+the provisional sum. A rate is a build-up, not a number — the seed now carries
+real components, and its cached figures were computed from them rather than
+typed. It also adds the customer party the seed never had, without which every
+client column rendered empty.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
