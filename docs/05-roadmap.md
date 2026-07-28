@@ -343,8 +343,65 @@ did; the seed now performs the same composition it already performed for
 commitments, and posts 90 sheets.
 
 Still missing before this is a usable product: detail screens for requisitions
-and RFQs, Arabic translations to exercise the RTL support that is wired but
-untested, and PDF output for certificates and applications.
+and RFQs, Arabic translations of the interface, and PDF output for certificates
+and applications.
+
+### The RTL support was wired, untested, and wrong
+
+The previous entry described RTL as "wired but untested". Flipping the demo user
+to Arabic and driving the result found three defects, in a feature whose whole
+justification is that the product targets the Gulf.
+
+**Formatting never followed the user at all.** `money`, `signed` and `date` each
+took a `locale` parameter defaulting to `en-AE`, and not one caller ever passed
+it. An Arabic speaker in Dubai saw `AED 1,234.50` and `28 Jul 2026`. It
+typechecked, it rendered, and it was wrong for exactly the users the feature
+exists for — the quietest way for a feature to be absent while looking present.
+The locale is now established once, by the authenticated layout, and read by the
+formatters through `lib/locale.ts`.
+
+**The first fix for that was also wrong**, and only driving a browser caught it.
+`AsyncLocalStorage.run(locale, () => <Shell>{children}</Shell>)` holds the store
+for the synchronous execution of its callback — and that callback only *creates*
+the element. React renders the children afterwards, by which time the store is
+gone, so every figure still came out in the fallback locale. The store is now a
+`cache()` slot, which is scoped to the React request rather than to a function
+call. The lesson is the one this log keeps recording: a green build is not
+evidence, and the second bug was hiding directly behind the first.
+
+**Latin text in an RTL page was being mangled.** This one is independent of
+translation and would have outlived it. Punctuation is bidi-*neutral*, so it
+takes the paragraph's direction: an English sentence in an Arabic page rendered
+as `.Variations, payment applications and retention`, a search placeholder led
+with its ellipsis, and the pager read `contract 1` — the count looking like an
+index. Every untranslated string on the page had it, and Arabic supplier names
+on an English page have it in reverse, which no amount of translating the
+interface would fix.
+
+The fix is an inline `<bdi>` in the shared primitives, applied to strings only so
+that a flex block in a table cell is never wrapped in an inline box. It had to be
+inline: setting `unicode-bidi: plaintext` on the cells fixes the ordering and
+then resolves `text-align: start` per run too, so English cells align left while
+Arabic ones align right and the column loses its common edge — measurably worse
+than the bug it fixes. That was established by measuring both against the running
+page, not by reading the spec.
+
+Two smaller things fell out of it. `total.toLocaleString()` in the pager formatted
+in the *server's* locale — a machine setting unrelated to the user, silently
+disagreeing with every other figure on the page — and is now `integer()`. And
+`format.ts` gained a transitive `server-only` import, which stopped its own test
+file from collecting; the web app now has a vitest config setting the
+`react-server` resolve condition on both pipelines, so these modules are tested
+the way Next loads them rather than by deleting the marker that keeps the session
+out of the browser bundle.
+
+What is verified now: the shell mirrors (`dir="rtl"`, sidebar right), money
+renders `‏1,145,000.00 د.إ.‏` with **Latin** digits — correct for the Gulf, where
+`ar-EG` would give Arabic-Indic — dates render `28 فبراير 2026`, no screen
+overflows horizontally, and the English path is unchanged. What is **not** done:
+the interface strings are still English. The bidi work is what makes that
+tolerable rather than broken-looking, and it is deliberately built so that each
+run re-orders itself the moment a translation replaces it.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

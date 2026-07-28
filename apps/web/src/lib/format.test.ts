@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { date, directionFor, money, percent, signed, toneForIndex, toneForVariance } from './format';
+import {
+  date,
+  directionFor,
+  integer,
+  money,
+  percent,
+  signed,
+  toneForIndex,
+  toneForVariance,
+} from './format';
 
 describe('money', () => {
   it('formats in the tenant currency, not a hardcoded one', () => {
@@ -101,5 +110,31 @@ describe('date', () => {
   it('handles absent and invalid values', () => {
     expect(date(null)).toBe('—');
     expect(date('not a date')).toBe('—');
+  });
+});
+
+describe('integer', () => {
+  it('formats in the given locale rather than the server one', () => {
+    // `Number.prototype.toLocaleString()` with no argument formats in the
+    // SERVER's locale — a machine setting with no relationship to the user,
+    // which silently disagrees with every other figure on the page.
+    expect(integer(1234567, 'en-AE')).toBe('1,234,567');
+    expect(integer(1234567, 'de-DE')).toBe('1.234.567');
+  });
+
+  it('keeps Latin digits for Arabic in the Gulf', () => {
+    // The distinction the locale plumbing exists to preserve: Arabic-Indic
+    // digits are right in Cairo and wrong in Dubai.
+    expect(integer(1234, 'ar-AE')).toMatch(/[0-9]/);
+    expect(integer(1234, 'ar-EG')).not.toMatch(/[0-9]/);
+  });
+
+  it('rounds rather than showing a fractional count', () => {
+    expect(integer(3.6)).toBe('4');
+  });
+
+  it('handles values that are not finite', () => {
+    expect(integer(Number.NaN)).toBe('—');
+    expect(integer(Number.POSITIVE_INFINITY)).toBe('—');
   });
 });

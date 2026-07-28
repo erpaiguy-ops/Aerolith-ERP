@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 
 import { Shell } from '@/components/Shell';
 import { ApiError } from '@/lib/api';
+import { formattingLocale, setLocale } from '@/lib/locale';
 import { getMe } from '@/lib/session';
 
 /**
@@ -25,6 +26,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // the alternative — making the shell a client component for `usePathname()` —
   // would ship the whole navigation tree to the browser.
   const currentPath = (await headers()).get('x-pathname') ?? '';
+
+  // Established here, before the children render, so every formatting helper
+  // beneath — including the ones in shared components that never see the
+  // session — renders in the user's own locale rather than the `en-AE` fallback.
+  setLocale(formattingLocale(me.user.locale, me.tenant.countryCode));
 
   return (
     <Shell me={me} currentPath={currentPath}>

@@ -8,6 +8,8 @@
  * localisation design.
  */
 
+import { currentLocale } from './locale';
+
 /** Arabic is the reason the shell has to handle direction at all. */
 export const RTL_LOCALES = new Set(['ar', 'he', 'fa', 'ur']);
 
@@ -26,7 +28,7 @@ export function directionFor(locale: string): 'rtl' | 'ltr' {
 export function money(
   amount: number | string | null | undefined,
   currency: string | null | undefined,
-  locale = 'en-AE',
+  locale = currentLocale(),
 ): string {
   if (amount == null || amount === '') return '—';
   const value = typeof amount === 'string' ? Number(amount) : amount;
@@ -47,6 +49,19 @@ export function money(
 }
 
 /**
+ * A whole number — a count, a page number.
+ *
+ * Exists so that no caller reaches for `Number.prototype.toLocaleString()` with
+ * no argument, which formats in the SERVER's locale. That is a machine setting
+ * with no relationship to the user, and it silently disagrees with every other
+ * figure on the page.
+ */
+export function integer(value: number, locale = currentLocale()): string {
+  if (!Number.isFinite(value)) return '—';
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
+}
+
+/**
  * A percentage, with a fixed number of decimals.
  *
  * Takes a number already expressed as a percentage (68.4), not a fraction
@@ -64,7 +79,7 @@ export function percent(value: number | string | null | undefined, decimals = 1)
 export function signed(
   amount: number | string | null | undefined,
   currency: string | null | undefined,
-  locale = 'en-AE',
+  locale = currentLocale(),
 ): string {
   if (amount == null || amount === '') return '—';
   const value = typeof amount === 'string' ? Number(amount) : amount;
@@ -73,7 +88,7 @@ export function signed(
   return value < 0 ? `−${formatted}` : `+${formatted}`;
 }
 
-export function date(value: string | Date | null | undefined, locale = 'en-AE'): string {
+export function date(value: string | Date | null | undefined, locale = currentLocale()): string {
   if (!value) return '—';
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return '—';

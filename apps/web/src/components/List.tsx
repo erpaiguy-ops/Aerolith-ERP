@@ -2,8 +2,9 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { ApiError, apiFetch } from '@/lib/api';
+import { integer } from '@/lib/format';
 import { href, queryString, type ListEnvelope, type Query } from '@/lib/list';
-import { Empty } from './ui';
+import { Bidi, Empty } from './ui';
 
 // Re-exported so an index screen imports everything it needs from one place.
 export { href, listQuery, queryString, type ListEnvelope, type Query } from '@/lib/list';
@@ -64,6 +65,13 @@ export function SearchBox({
         name="q"
         defaultValue={query.q ?? ''}
         placeholder={placeholder}
+        // A placeholder cannot contain an element, so the isolation has to be an
+        // attribute. `auto` orders the placeholder by its own first strong
+        // character — without it "Number, name or client ref…" renders with the
+        // ellipsis leading on an Arabic page — and does the same for whatever
+        // the user types, so an Arabic search term reads correctly as it is
+        // entered.
+        dir="auto"
         // A search box whose placeholder is cut off mid-word ("Order number or
         // suppl") reads as a rendering fault. Wide enough for the longest
         // placeholder these screens use.
@@ -73,7 +81,7 @@ export function SearchBox({
         type="submit"
         className="rounded-md border border-(--color-line) px-3 py-1.5 text-sm hover:bg-(--color-canvas)"
       >
-        Search
+        <Bidi>Search</Bidi>
       </button>
     </form>
   );
@@ -109,7 +117,7 @@ export function FilterChips({
                 : 'border-(--color-line) text-(--color-muted) hover:bg-(--color-canvas)'
             }`}
           >
-            {option.label}
+            <Bidi>{option.label}</Bidi>
           </Link>
         );
       })}
@@ -154,7 +162,7 @@ export function SortTh({
           active ? 'text-(--color-fg)' : ''
         }`}
       >
-        {children}
+        <Bidi>{children}</Bidi>
         <span aria-hidden className={active ? '' : 'opacity-0'}>
           {direction === 'asc' ? '↑' : '↓'}
         </span>
@@ -187,15 +195,23 @@ export function Pager({
     <div className="mt-4 flex items-center justify-between text-sm text-(--color-muted)">
       <p>
         {/* The total is the point of this line. It is very often the only thing
-            the user came to find out. */}
-        <span className="numeric">{total.toLocaleString()}</span> {word}
-        {totalPages > 1 ? (
-          <>
-            {' '}
-            · page <span className="numeric">{page}</span> of{' '}
-            <span className="numeric">{totalPages}</span>
-          </>
-        ) : null}
+            the user came to find out.
+
+            Isolated as one run: "1 contract" is a number followed by a word, and
+            in an RTL paragraph the number is weak while the word is strongly
+            LTR, so the line renders "contract 1" — the count reading as an index.
+            Ordering the whole phrase by its own first strong character fixes it,
+            and keeps working once the noun is translated. */}
+        <Bidi>
+          <span className="numeric">{integer(total)}</span> {word}
+          {totalPages > 1 ? (
+            <>
+              {' '}
+              · page <span className="numeric">{integer(page)}</span> of{' '}
+              <span className="numeric">{integer(totalPages)}</span>
+            </>
+          ) : null}
+        </Bidi>
       </p>
 
       {totalPages > 1 ? (
@@ -234,7 +250,11 @@ function PagerLink({
   label: string;
 }) {
   if (disabled) {
-    return <span className="rounded-md border border-(--color-line) px-2.5 py-1 opacity-40">{label}</span>;
+    return (
+      <span className="rounded-md border border-(--color-line) px-2.5 py-1 opacity-40">
+        <Bidi>{label}</Bidi>
+      </span>
+    );
   }
 
   return (
@@ -242,7 +262,7 @@ function PagerLink({
       href={href(base, query, { page: String(to) })}
       className="rounded-md border border-(--color-line) px-2.5 py-1 hover:bg-(--color-canvas)"
     >
-      {label}
+      <Bidi>{label}</Bidi>
     </Link>
   );
 }

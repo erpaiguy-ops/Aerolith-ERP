@@ -102,6 +102,32 @@ empty screen.
 branch runs two statutory regimes — AED with 5% VAT and WPS SIF files, QAR with no
 VAT and a different WPS format — under one tenant, one database, one binary.
 
+## Rendering: language and country are two different facts
+
+The locale a figure is formatted in is **not** the user's language setting. It is
+the user's language combined with the tenant's country, and conflating them gets
+the Gulf wrong in a way that looks like a data fault:
+
+| Tag | `1234` renders as | Verdict |
+|---|---|---|
+| `ar` | `١٢٣٤` | Arabic-Indic digits — wrong for the Gulf |
+| `ar-EG` | `١٢٣٤` | Correct in Cairo |
+| `ar-AE` | `1234` | Correct in Dubai — Arabic month names, **Latin** digits |
+
+So `formattingLocale('ar', 'AE')` is `ar-AE`, and nobody maintains a table of
+exceptions: ICU already knows. The locale is established once per request by the
+authenticated layout and read by the formatters, so a shared component that never
+sees the session still formats correctly.
+
+Direction is handled separately, on the shell, and the two must not be assumed to
+travel together — a page can be RTL while the text in it is still English. That
+is in fact the current state, and it is why every text run in the shared
+primitives is wrapped in `<bdi>`: bidi-neutral punctuation otherwise takes the
+paragraph direction, and an untranslated English sentence renders with its full
+stop at the wrong end. The same mechanism handles an Arabic supplier name on an
+English page, which is a permanent requirement rather than a stopgap — user data
+does not become monolingual just because the interface gets translated.
+
 ## Where the numbers came from, and what you must do about them
 
 The seeded statutory values (leave entitlements, gratuity scales, overtime

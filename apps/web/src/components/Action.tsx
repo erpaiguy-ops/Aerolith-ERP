@@ -50,7 +50,12 @@ export function ActionMessage({ state }: { state: ActionState }) {
       role="status"
       className={`mt-2 text-sm ${failed ? 'text-(--color-bad)' : 'text-(--color-good)'}`}
     >
-      {failed ? state.error : state.message}
+      {/* `<bdi>` rather than the `Bidi` from `ui.tsx`, which this client module
+          cannot import: it reaches `lib/locale`, which is `server-only`. The
+          isolation matters most here — these messages are sentences, and an
+          untranslated sentence in an RTL page renders with its full stop
+          leading, which on an ERROR message reads as a broken screen. */}
+      <bdi>{failed ? state.error : state.message}</bdi>
     </p>
   );
 }
@@ -81,7 +86,7 @@ export function SubmitButton({
       disabled={pending}
       className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${tones[tone]}`}
     >
-      {pending ? (pendingLabel ?? 'Working…') : children}
+      <bdi>{pending ? (pendingLabel ?? 'Working…') : children}</bdi>
     </button>
   );
 }

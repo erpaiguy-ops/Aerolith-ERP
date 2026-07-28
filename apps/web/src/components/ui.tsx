@@ -15,6 +15,53 @@ const TONE_CLASS: Record<Tone, string> = {
   neutral: 'text-(--color-ink)',
 };
 
+/**
+ * Isolates a run of text from the direction of the page around it.
+ *
+ * On an Arabic (RTL) page, a run of Latin text is laid out by the bidi
+ * algorithm as an LTR island inside an RTL paragraph — but the punctuation at
+ * its edges is *neutral*, so it takes the paragraph's direction and jumps to
+ * the other end. "Variations, payment applications and retention." renders as
+ * ".Variations, payment applications and retention", and a search placeholder
+ * ending in an ellipsis renders with the ellipsis leading. It looks like
+ * corrupted text, and it happens to every untranslated string on the page.
+ *
+ * `<bdi>` is `unicode-bidi: isolate` with the direction taken from the first
+ * strong character, so each run is ordered by its own script and the neutrals
+ * stay where they were written.
+ *
+ * It has to be an INLINE element rather than a property on the block. Setting
+ * `unicode-bidi: plaintext` on the cells fixes the ordering and then resolves
+ * `text-align: start` per run too, so English cells align left while Arabic
+ * ones align right and the column loses a common edge — measurably worse than
+ * the bug it fixes. An inline isolate leaves alignment to the block, which
+ * still knows the page direction.
+ *
+ * This also covers user data permanently: an Arabic supplier name on an English
+ * page has exactly the same problem in reverse, and no amount of translating
+ * the interface would fix it.
+ */
+export function Bidi({ children }: { children: React.ReactNode }) {
+  return <bdi>{children}</bdi>;
+}
+
+/**
+ * Isolates children only when they are text.
+ *
+ * Table cells hold arbitrary nodes — `Money`, `Badge`, a `ProgressBar` whose
+ * outer element is a flex block. Wrapping a block in an inline `<bdi>` would
+ * change how it sizes, so the isolation is applied where it is both needed and
+ * safe: strings and numbers. The components that render their own text — `Money`
+ * via `Intl`, which emits its own direction marks — already handle themselves.
+ */
+function isolated(children: React.ReactNode): React.ReactNode {
+  return typeof children === 'string' || typeof children === 'number' ? (
+    <bdi>{children}</bdi>
+  ) : (
+    children
+  );
+}
+
 export function PageHeader({
   title,
   subtitle,
@@ -27,8 +74,14 @@ export function PageHeader({
   return (
     <div className="mb-6 flex items-start justify-between gap-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {subtitle ? <p className="mt-0.5 text-sm text-(--color-muted)">{subtitle}</p> : null}
+        <h1 className="text-xl font-semibold tracking-tight">
+          <Bidi>{title}</Bidi>
+        </h1>
+        {subtitle ? (
+          <p className="mt-0.5 text-sm text-(--color-muted)">
+            <Bidi>{subtitle}</Bidi>
+          </p>
+        ) : null}
       </div>
       {actions}
     </div>
@@ -51,12 +104,14 @@ export function Card({
       className={`rounded-lg border border-(--color-line) bg-(--color-surface) ${className ?? ''}`}
     >
       {title ? (
-        <h2 className="border-b border-(--color-line) px-4 py-2.5 text-sm font-medium">{title}</h2>
+        <h2 className="border-b border-(--color-line) px-4 py-2.5 text-sm font-medium">
+          <Bidi>{title}</Bidi>
+        </h2>
       ) : null}
       <div className="p-4">{children}</div>
       {footnote ? (
         <p className="border-t border-(--color-line) px-4 py-2 text-xs text-(--color-muted)">
-          {footnote}
+          <Bidi>{footnote}</Bidi>
         </p>
       ) : null}
     </section>
@@ -82,9 +137,17 @@ export function Stat({
 }) {
   return (
     <div>
-      <div className="text-xs text-(--color-muted)">{label}</div>
-      <div className={`numeric mt-0.5 text-lg font-medium ${TONE_CLASS[tone]}`}>{value}</div>
-      {hint ? <div className="mt-0.5 text-xs text-(--color-muted)">{hint}</div> : null}
+      <div className="text-xs text-(--color-muted)">
+        <Bidi>{label}</Bidi>
+      </div>
+      <div className={`numeric mt-0.5 text-lg font-medium ${TONE_CLASS[tone]}`}>
+        {isolated(value)}
+      </div>
+      {hint ? (
+        <div className="mt-0.5 text-xs text-(--color-muted)">
+          <Bidi>{hint}</Bidi>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -182,7 +245,7 @@ export function Th({ children, numeric }: { children?: React.ReactNode; numeric?
         numeric ? 'text-end' : 'text-start'
       }`}
     >
-      {children}
+      {isolated(children)}
     </th>
   );
 }
@@ -197,7 +260,7 @@ export function Td({ children, numeric }: { children: React.ReactNode; numeric?:
         numeric ? 'numeric text-end' : 'text-start'
       }`}
     >
-      {children}
+      {isolated(children)}
     </td>
   );
 }
@@ -209,15 +272,23 @@ export function Badge({ children, tone = 'neutral' }: { children: React.ReactNod
     neutral: 'bg-(--color-canvas) text-(--color-muted)',
   };
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${classes[tone]}`}>{children}</span>
+    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${classes[tone]}`}>
+      {isolated(children)}
+    </span>
   );
 }
 
 export function Empty({ title, detail }: { title: string; detail?: string }) {
   return (
     <div className="rounded-lg border border-dashed border-(--color-line) p-8 text-center">
-      <p className="text-sm font-medium">{title}</p>
-      {detail ? <p className="mt-1 text-sm text-(--color-muted)">{detail}</p> : null}
+      <p className="text-sm font-medium">
+        <Bidi>{title}</Bidi>
+      </p>
+      {detail ? (
+        <p className="mt-1 text-sm text-(--color-muted)">
+          <Bidi>{detail}</Bidi>
+        </p>
+      ) : null}
     </div>
   );
 }

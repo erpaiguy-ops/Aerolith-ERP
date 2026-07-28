@@ -140,11 +140,17 @@ pnpm db:seed        # rule catalogue + country packs
 pnpm verify         # typecheck, lint, boundary check, tests
 ```
 
-Integration tests need a database:
+Integration tests need a database, and it must be **migrated and seeded** —
+without the country packs the localisation suites fail on data, not on logic:
 
 ```bash
 TEST_DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith pnpm test
 ```
+
+Read that as part of `verify`, not an optional extra. With `TEST_DATABASE_URL`
+unset the 229 integration tests do not fail — they are **skipped**, and `pnpm
+verify` prints green having exercised nothing but the pure functions. That is
+the whole API surface quietly not being tested, so set it.
 
 Run the API:
 
