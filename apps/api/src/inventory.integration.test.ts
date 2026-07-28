@@ -156,6 +156,16 @@ suite('Inventory', () => {
     const db = getDatabase();
     const tenants = [TENANT, NO_INVENTORY_TENANT];
     await db.delete(inventorySchema.offcut).where(eq(inventorySchema.offcut.tenantId, TENANT));
+    // Counts go before the movements and the warehouse they point at. A test
+    // that fails part-way otherwise leaves a count behind, the warehouse delete
+    // hits its foreign key, and the NEXT run fails in `beforeAll` on a duplicate
+    // tenant — an unrelated-looking error two steps from its cause.
+    await db
+      .delete(inventorySchema.stockCountLine)
+      .where(eq(inventorySchema.stockCountLine.tenantId, TENANT));
+    await db
+      .delete(inventorySchema.stockCount)
+      .where(eq(inventorySchema.stockCount.tenantId, TENANT));
     await db
       .delete(inventorySchema.stockMovementLine)
       .where(eq(inventorySchema.stockMovementLine.tenantId, TENANT));
@@ -398,7 +408,7 @@ suite('Inventory', () => {
         headers: auth(),
       });
 
-      const barcodes = offcuts.json().offcuts.map((o: { barcode: string }) => o.barcode);
+      const barcodes = offcuts.json().rows.map((o: { barcode: string }) => o.barcode);
       expect(barcodes).toContain('OC-TEST-001');
       expect(barcodes).toContain('OC-TEST-002');
       expect(barcodes).not.toContain('OC-TEST-003');
@@ -457,10 +467,17 @@ suite('Inventory', () => {
         headers: auth(),
       });
 
-      const summary = response.json().summary;
-      expect(summary.count).toBe(2);
-      expect(summary.totalAreaSqm).toBeCloseTo(1.125, 2);
-      expect(summary.totalValue).toBeGreaterThan(0);
+      // The summary is grouped by status, because what was SCRAPPED is as much
+      // a number worth seeing as what is available: it is the running cost of
+      // the minimum-usable-size rule, and a tenant tuning that rule is entitled
+      // to know what it threw away.
+      const summary: { status: string; pieces: number; areaSqm: number; value: number }[] =
+        response.json().summary;
+      const available = summary.find((group) => group.status === 'available');
+
+      expect(available?.pieces).toBe(2);
+      expect(available?.areaSqm).toBeCloseTo(1.125, 2);
+      expect(available?.value).toBeGreaterThan(0);
     });
 
     it('retires an offcut when it is consumed', async () => {
@@ -588,6 +605,235 @@ suite('Inventory', () => {
 
       expect(grns[0]).toBe('GRN-2026-00001');
       expect(new Set(grns).size).toBe(grns.length);
+    });
+  });
+
+  describe('the registers', () => {
+    // The four navigation slots. These are reads, so they assert the shape the
+    // screens depend on and the filters that decide what a user sees.
+
+    it('pages the item catalogue and hides discontinued items by default', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/items',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(Array.isArray(body.rows)).toBe(true);
+      // An empty list still has one page. "Page 1 of 0" is the classic tell.
+      expect(body.totalPages).toBeGreaterThanOrEqual(1);
+      expect(body.sort).toBe('code');
+      expect(body.direction).toBe('asc');
+      expect(body.rows.every((r: { isActive: boolean }) => r.isActive)).toBe(true);
+    });
+
+    it('reports on-hand as null for an item never stocked, not as zero', async () => {
+      // Different facts: nobody has ever put this anywhere, versus the shelf was
+      // checked and is empty. Collapsing them loses the only useful one.
+      const [orphan] = await getDatabase()
+        .insert(schema.item)
+        .values({
+          tenantId: TENANT,
+          code: 'NEVER-STOCKED',
+          name: 'Item that has never moved',
+          type: 'consumable',
+        })
+        .returning({ id: schema.item.id });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/items?q=NEVER-STOCKED',
+        headers: auth(),
+      });
+
+      const row = response.json().rows.find((r: { code: string }) => r.code === 'NEVER-STOCKED');
+      expect(row).toBeDefined();
+      expect(row.onHand).toBeNull();
+
+      await getDatabase().delete(schema.item).where(eq(schema.item.id, orphan!.id));
+    });
+
+    it('still answers a single item position, which is a figure and not a list', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${mdfItemId}`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.itemId).toBe(mdfItemId);
+      expect(typeof body.quantity).toBe('number');
+      expect(body.rows).toBeUndefined();
+    });
+
+    it('pages stock and flags what is below its reorder level', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/stock',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.rows.length).toBeGreaterThan(0);
+
+      const row = body.rows[0];
+      expect(row).toHaveProperty('warehouseCode');
+      expect(row).toHaveProperty('availableQuantity');
+      expect(row).toHaveProperty('belowReorder');
+      // Value is computed in the database so the column adds up to its footer.
+      expect(Number(row.value)).toBeCloseTo(Number(row.quantity) * Number(row.averageCost), 4);
+    });
+
+    it('filters stock to what is below reorder, agreeing with the flag it shows', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/stock?belowReorder=true',
+        headers: auth(),
+      });
+
+      const rows: { belowReorder: boolean }[] = response.json().rows;
+      // The filter and the badge are the same predicate. If they ever diverge,
+      // the screen shows rows it says are fine.
+      expect(rows.every((r) => r.belowReorder)).toBe(true);
+    });
+
+    it('separates a zero balance from no row at all', async () => {
+      const inStock = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/stock?holding=in_stock',
+        headers: auth(),
+      });
+
+      const rows: { quantity: string }[] = inStock.json().rows;
+      expect(rows.every((r) => Number(r.quantity) > 0)).toBe(true);
+    });
+
+    it('values the offcut rack by summing piece costs, not by multiplying area', async () => {
+      // The trap this pins: the column is called `unitCost` but holds the
+      // piece's ABSOLUTE cost. Multiplying by area squares it, and the result
+      // still looks like a plausible number — which is why it needs a test
+      // rather than a reading.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/offcuts',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      const available = body.summary.find(
+        (g: { status: string }) => g.status === 'available',
+      );
+      const rows: { status: string; unitCost: string | null }[] = body.rows;
+
+      const expected = rows
+        .filter((r) => r.status === 'available')
+        .reduce((total, r) => total + Number(r.unitCost ?? 0), 0);
+
+      expect(available.value).toBeCloseTo(expected, 4);
+    });
+
+    it('sorts the offcut register by area, largest first', async () => {
+      // The biggest remnant is the one worth using and the one most expensive
+      // to have forgotten about.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/offcuts',
+        headers: auth(),
+      });
+
+      const areas = response.json().rows.map((r: { areaSqm: string }) => Number(r.areaSqm));
+      expect([...areas].sort((a, b) => b - a)).toEqual(areas);
+    });
+
+    it('rejects a sort column it does not recognise instead of interpolating it', async () => {
+      // Drizzle parameterises values, never identifiers, so an unrecognised
+      // sort key must fall back rather than reach the query.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/offcuts?sort=area_sqm%3B%20drop%20table%20inventory.offcut',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().sort).toBe('areaSqm');
+    });
+
+    it('pages stock counts with their progress and both variance figures', async () => {
+      const db = getDatabase();
+      const [count] = await db
+        .insert(inventorySchema.stockCount)
+        .values({
+          tenantId: TENANT,
+          number: 'SC-TEST-0001',
+          warehouseId: factoryId,
+          status: 'counting',
+          countDate: '2026-06-30',
+        })
+        .returning({ id: inventorySchema.stockCount.id });
+
+      // A third item, because `stock_count_line_uq` is NULLS NOT DISTINCT: two
+      // lines for the same item with no bin and no batch are the same line, and
+      // the constraint exists to stop a count silently splitting in two.
+      const [spare] = await db
+        .insert(schema.item)
+        .values({
+          tenantId: TENANT,
+          code: 'COUNT-SPARE',
+          name: 'Uncounted line item',
+          type: 'consumable',
+        })
+        .returning({ id: schema.item.id });
+
+      await db.insert(inventorySchema.stockCountLine).values([
+        { tenantId: TENANT, countId: count!.id, itemId: mdfItemId, systemQuantity: '50', countedQuantity: '45' },
+        { tenantId: TENANT, countId: count!.id, itemId: hardwareItemId, systemQuantity: '100', countedQuantity: '105' },
+        // Uncounted, so counted-of-total is not the same as total.
+        { tenantId: TENANT, countId: count!.id, itemId: spare!.id, systemQuantity: '10' },
+      ]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/counts',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = response
+        .json()
+        .rows.find((r: { number: string }) => r.number === 'SC-TEST-0001');
+
+      expect(row.lineCount).toBe(3);
+      expect(row.countedLines).toBe(2);
+      // Net answers "is the book right" and cancels out; gross answers "was the
+      // counting right" and does not. A count that is 5 over and 5 short is not
+      // a clean count, and only one of these two numbers says so.
+      expect(Number(row.netVariance)).toBeCloseTo(0, 4);
+      expect(Number(row.grossVariance)).toBeCloseTo(10, 4);
+
+      await db
+        .delete(inventorySchema.stockCountLine)
+        .where(eq(inventorySchema.stockCountLine.countId, count!.id));
+      await db
+        .delete(inventorySchema.stockCount)
+        .where(eq(inventorySchema.stockCount.id, count!.id));
+      await db.delete(schema.item).where(eq(schema.item.id, spare!.id));
+    });
+
+    it('answers 404 on every register for a tenant without the module', async () => {
+      // Not 403: a module the tenant has not bought does not exist to them, and
+      // a different status code would confirm the catalogue.
+      for (const path of ['items', 'stock', 'offcuts', 'counts']) {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/v1/inventory/${path}`,
+          headers: auth(OTHER_TOKEN, NO_INVENTORY_TENANT),
+        });
+        expect(response.statusCode).toBe(404);
+      }
     });
   });
 });

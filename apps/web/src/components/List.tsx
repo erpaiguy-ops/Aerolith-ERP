@@ -20,10 +20,17 @@ export { href, listQuery, queryString, type ListEnvelope, type Query } from '@/l
  *
  * The detail screens already did this. The list screens did not, which meant a
  * typed URL crashed the render instead of answering it.
+ *
+ * `TExtra` is for endpoints that return more than a page — the offcut register
+ * carries a whole-register summary beside its rows, because the value on the
+ * rack must not change as the user pages through it.
  */
-export async function fetchList<TRow>(path: string, query: Query): Promise<ListEnvelope<TRow>> {
+export async function fetchList<TRow, TExtra = unknown>(
+  path: string,
+  query: Query,
+): Promise<ListEnvelope<TRow> & TExtra> {
   try {
-    return await apiFetch<ListEnvelope<TRow>>(`${path}${queryString(query)}`);
+    return await apiFetch<ListEnvelope<TRow> & TExtra>(`${path}${queryString(query)}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;
@@ -284,7 +291,13 @@ export function EmptyList({
   noun: [singular: string, plural: string];
   hint?: string;
 }) {
-  const filtered = Boolean(query.q || query.status || query.side || query.held || query.overdue);
+  // Anything that is not paging or ordering is a filter. Naming the filters
+  // individually meant every new one silently defaulted to "nothing here yet" —
+  // telling a user the feature is unused when in fact their filter excluded
+  // everything, which is the one thing this component exists to distinguish.
+  const filtered = Object.entries(query).some(
+    ([key, value]) => Boolean(value) && !['page', 'pageSize', 'sort', 'direction'].includes(key),
+  );
 
   if (filtered) {
     return (

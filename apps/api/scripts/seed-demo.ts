@@ -50,7 +50,7 @@ import {
   recordProgress,
   projectsSchema,
 } from '@aerolith/module-projects';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { syncModules } from '../src/bootstrap';
 
@@ -94,9 +94,18 @@ async function main() {
       contractsSchema.contractLine,
       contractsSchema.contract,
 
+      // Order matters. An offcut points at the movement that produced it, and a
+      // stock count points at the adjustment that posted it, so both go before
+      // `stockMovement`; bins and batches go before the warehouse that owns them.
+      inventorySchema.offcut,
+      inventorySchema.stockCountLine,
+      inventorySchema.stockCount,
+      inventorySchema.reorderRule,
       inventorySchema.stockMovementLine,
       inventorySchema.stockMovement,
       inventorySchema.stockLevel,
+      inventorySchema.batch,
+      inventorySchema.storageBin,
       inventorySchema.warehouse,
       procurementSchema.matchException,
       procurementSchema.supplierInvoiceLine,
@@ -189,6 +198,11 @@ async function main() {
       { tenantId: TENANT, entityType: 'procurement.goods_receipt', code: 'GRN', name: 'Goods Receipt', pattern: 'GRN-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.supplier_invoice', code: 'SINV', name: 'Supplier Invoice', pattern: 'SINV-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'inventory.receipt', code: 'IGRN', name: 'Stock Receipt', pattern: 'IGRN-{YYYY}-{SEQ}' },
+      // Every movement type the demo posts needs its own series, and posting is
+      // what allocates the number — a missing series does not degrade, it throws.
+      { tenantId: TENANT, entityType: 'inventory.issue', code: 'ISS', name: 'Stock Issue', pattern: 'ISS-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'inventory.transfer', code: 'STR', name: 'Stock Transfer', pattern: 'STR-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'inventory.adjustment', code: 'ADJ', name: 'Stock Adjustment', pattern: 'ADJ-{YYYY}-{SEQ}' },
     ]);
 
     await tx.insert(schema.project).values({
@@ -610,11 +624,229 @@ async function main() {
     });
   });
 
+  console.log('→ stores: a catalogue, a site store, offcuts off the saw, and a count that disagrees');
+  await asUser(async (tx) => {
+    const [mdf] = await tx
+      .select({ id: schema.item.id })
+      .from(schema.item)
+      .where(and(eq(schema.item.tenantId, TENANT), eq(schema.item.code, 'MDF-18')));
+
+    // A catalogue with one row in it demonstrates nothing. These are the four
+    // shapes a joinery item master actually has to carry: a plain board, a
+    // veneered board whose grain constrains the cutlist, a linear edging, and a
+    // counted fitting.
+    // Annotated because the rows differ in shape — a panel carries dimensions, a
+    // fitting does not — and Drizzle's insert overloads cannot resolve a union.
+    const itemRows: (typeof schema.item.$inferInsert)[] = [
+        {
+          tenantId: TENANT,
+          code: 'MDF-VEN-OAK',
+          name: '18mm MDF, oak veneer one face',
+          type: 'panel' as const,
+          lengthMm: '2440',
+          widthMm: '1220',
+          thicknessMm: '18',
+          // The reason the offcut register has to know grain direction: a part
+          // needing long grain cannot be taken across this board.
+          hasGrainDirection: true,
+          isBatchTracked: true,
+          standardCost: '284.00',
+        },
+        {
+          tenantId: TENANT,
+          code: 'EDG-OAK-22',
+          name: 'Oak edging 22mm x 1mm',
+          type: 'raw_material' as const,
+          standardCost: '4.20',
+        },
+        {
+          tenantId: TENANT,
+          code: 'HNG-SC-FO',
+          name: 'Soft-close hinge, full overlay',
+          type: 'hardware' as const,
+          standardCost: '12.00',
+        },
+        {
+          tenantId: TENANT,
+          code: 'LAM-WHT-08',
+          name: '0.8mm white laminate 3050x1300',
+          type: 'panel' as const,
+          lengthMm: '3050',
+          widthMm: '1300',
+          thicknessMm: '0.8',
+          // Discontinued, not deleted: it has moved, so the ledger still needs
+          // it. This is the row that proves the list hides inactive items.
+          isActive: false,
+          standardCost: '96.00',
+        },
+    ];
+
+    const items = await tx
+      .insert(schema.item)
+      .values(itemRows)
+      .returning({ id: schema.item.id, code: schema.item.code });
+
+    const itemId = (code: string) => items.find((i) => i.code === code)!.id;
+
+    const [factory] = await tx
+      .select({ id: inventorySchema.warehouse.id })
+      .from(inventorySchema.warehouse)
+      .where(and(eq(inventorySchema.warehouse.tenantId, TENANT), eq(inventorySchema.warehouse.code, 'FAC')));
+
+    // A site store, so "where is it" is a real question in the demo rather than
+    // a column with one value in it.
+    const [site] = await tx
+      .insert(inventorySchema.warehouse)
+      .values({
+        tenantId: TENANT,
+        code: 'SITE-MT',
+        name: 'Marina Tower site store',
+        type: 'site' as const,
+        projectId: PROJECT,
+      })
+      .returning({ id: inventorySchema.warehouse.id });
+
+    await tx.insert(inventorySchema.storageBin).values([
+      { tenantId: TENANT, warehouseId: factory!.id, code: 'A-01', name: 'Board rack A' },
+      { tenantId: TENANT, warehouseId: factory!.id, code: 'OC-01', name: 'Offcut rack' },
+      { tenantId: TENANT, warehouseId: site!.id, code: 'CONT-1', name: 'Container 1' },
+    ]);
+
+    const [oakBatch] = await tx
+      .insert(inventorySchema.batch)
+      .values({
+        tenantId: TENANT,
+        itemId: itemId('MDF-VEN-OAK'),
+        code: 'B-OAK-2604',
+        supplierBatchRef: 'GP-OAK-88213',
+        // Veneer is matched by batch or the doors do not match each other.
+        grainCode: 'OAK-CROWN',
+        colourCode: 'NAT',
+        receivedOn: '2026-04-08',
+      })
+      .returning({ id: inventorySchema.batch.id });
+
+    // Receive the veneered board and the fittings, so there is something to cut
+    // and something to count.
+    await postMovement(tx, {
+      type: 'receipt',
+      movementDate: '2026-04-08',
+      reference: 'IGRN-DEMO-OAK',
+      lines: [
+        {
+          itemId: itemId('MDF-VEN-OAK'),
+          quantity: 40,
+          toWarehouseId: factory!.id,
+          batchId: oakBatch!.id,
+          unitCost: 284,
+        },
+        { itemId: itemId('EDG-OAK-22'), quantity: 900, toWarehouseId: factory!.id, unitCost: 4.2 },
+        { itemId: itemId('HNG-SC-FO'), quantity: 800, toWarehouseId: factory!.id, unitCost: 12 },
+      ],
+    });
+
+    // Some board goes to site, so one item sits in two places and the warehouse
+    // filter has work to do.
+    await postMovement(tx, {
+      type: 'transfer',
+      movementDate: '2026-04-22',
+      reference: 'STR-DEMO-1',
+      lines: [
+        {
+          itemId: itemId('MDF-VEN-OAK'),
+          quantity: 6,
+          fromWarehouseId: factory!.id,
+          toWarehouseId: site!.id,
+          batchId: oakBatch!.id,
+        },
+      ],
+    });
+
+    // Cutting the doors. This is the movement that fills the offcut register:
+    // the remnants are declared against the parent sheet, so each one carries
+    // its share of what the sheet cost rather than a guess.
+    await postMovement(tx, {
+      type: 'issue',
+      movementDate: '2026-04-24',
+      projectId: PROJECT,
+      reference: 'ISS-DEMO-DOORS',
+      lines: [
+        {
+          itemId: itemId('MDF-VEN-OAK'),
+          quantity: 9,
+          fromWarehouseId: factory!.id,
+          batchId: oakBatch!.id,
+          parentSheet: { lengthMm: 2440, widthMm: 1220 },
+          offcutsProduced: [
+            { lengthMm: 1180, widthMm: 620, thicknessMm: 18, grainDirection: 'length' as const, grainCode: 'OAK-CROWN', colourCode: 'NAT', finishedEdges: 2, barcode: 'OC-2026-0001' },
+            { lengthMm: 2440, widthMm: 310, thicknessMm: 18, grainDirection: 'length' as const, grainCode: 'OAK-CROWN', colourCode: 'NAT', finishedEdges: 1, barcode: 'OC-2026-0002' },
+            { lengthMm: 860, widthMm: 540, thicknessMm: 18, grainDirection: 'width' as const, grainCode: 'OAK-CROWN', colourCode: 'NAT', barcode: 'OC-2026-0003' },
+            // Below the minimum usable size. Deliberately included: the register
+            // should NOT show it, because the rule scrapped it at the saw, and a
+            // demo that only contains passing cases proves the rule never fires.
+            { lengthMm: 300, widthMm: 90, thicknessMm: 18, barcode: 'OC-2026-0004' },
+          ],
+        },
+      ],
+    });
+
+    // Reorder levels, so "what is short" is answerable. The hinge level is set
+    // above what is left on purpose — a register with no exceptions in it does
+    // not show anyone what an exception looks like.
+    await tx.insert(inventorySchema.reorderRule).values([
+      { tenantId: TENANT, itemId: itemId('MDF-VEN-OAK'), warehouseId: factory!.id, minimumQuantity: '20', reorderQuantity: '40', leadTimeDays: 21 },
+      { tenantId: TENANT, itemId: itemId('HNG-SC-FO'), warehouseId: factory!.id, minimumQuantity: '1200', reorderQuantity: '2000', leadTimeDays: 30 },
+      { tenantId: TENANT, itemId: mdf!.id, warehouseId: factory!.id, minimumQuantity: '25', reorderQuantity: '100', leadTimeDays: 14 },
+    ]);
+
+    // A count in progress. The variances are the point: one over, one short, one
+    // exact. A count that agrees with the book everywhere is not evidence that
+    // counting works — it is evidence that nobody counted.
+    const [count] = await tx
+      .insert(inventorySchema.stockCount)
+      .values({
+        tenantId: TENANT,
+        number: 'SC-2026-0001',
+        warehouseId: factory!.id,
+        status: 'counting' as const,
+        countDate: '2026-06-30',
+        notes: 'Half-year count, board rack and fittings.',
+      })
+      .returning({ id: inventorySchema.stockCount.id });
+
+    await tx.insert(inventorySchema.stockCountLine).values([
+      { tenantId: TENANT, countId: count!.id, itemId: itemId('MDF-VEN-OAK'), systemQuantity: '25', countedQuantity: '23', varianceReason: 'Two sheets damaged in handling, not written off yet.', countedAt: new Date('2026-06-30T06:20:00Z') },
+      { tenantId: TENANT, countId: count!.id, itemId: itemId('HNG-SC-FO'), systemQuantity: '800', countedQuantity: '812', varianceReason: 'Returns from site never booked back in.', countedAt: new Date('2026-06-30T06:40:00Z') },
+      { tenantId: TENANT, countId: count!.id, itemId: itemId('EDG-OAK-22'), systemQuantity: '900', countedQuantity: '900', countedAt: new Date('2026-06-30T07:00:00Z') },
+      // Not yet counted. The register reports counted-of-total, so a count that
+      // is half done looks half done rather than finished.
+      { tenantId: TENANT, countId: count!.id, itemId: mdf!.id, systemQuantity: '90' },
+    ]);
+
+    // A clean one from the quarter before, so the register is not one row.
+    const [prior] = await tx
+      .insert(inventorySchema.stockCount)
+      .values({
+        tenantId: TENANT,
+        number: 'SC-2026-0000',
+        warehouseId: factory!.id,
+        status: 'posted' as const,
+        countDate: '2026-03-31',
+        postedAt: new Date('2026-03-31T13:00:00Z'),
+      })
+      .returning({ id: inventorySchema.stockCount.id });
+
+    await tx.insert(inventorySchema.stockCountLine).values([
+      { tenantId: TENANT, countId: prior!.id, itemId: mdf!.id, systemQuantity: '40', countedQuantity: '40', countedAt: new Date('2026-03-31T09:00:00Z') },
+    ]);
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
   console.log(`  contract: /contracts/${contractId}`);
   console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
+  console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
 
   await closeDatabase();
 }

@@ -403,6 +403,74 @@ the interface strings are still English. The bidi work is what makes that
 tolerable rather than broken-looking, and it is deliberately built so that each
 run re-orders itself the moment a translation replaces it.
 
+### Inventory gets its screens — and the read API it never had
+
+Inventory is the reference module and had the most domain logic in the codebase
+— offcut matching, batch tracking, sheet goods by dimension, landed-cost
+valuation, seventy passing unit tests — and **not one screen**. Four navigation
+slots led to "not built yet". The gap was wider than it looked: the module had
+no list endpoints at all. `/inventory/stock` returned an unpaged 500-row cap and
+`/inventory/offcuts` returned every available piece with a flat summary, so this
+was two layers, not one.
+
+The four registers are `listItems`, `listStockOnHand`, `listOffcuts` and
+`listStockCounts`, in a new `service/registers.ts` kept apart from
+`movements.ts`: posting is the module's dangerous surface and reading is not, and
+mixing them makes it harder to see which functions can change stock.
+
+**The item master is a kernel table, and that is the point.** A sheet of 18mm MDF
+is bought by Procurement, estimated by Estimating, cut by Production and stocked
+here, so it belongs to the platform; Inventory owns the *stock* of an item, which
+is why `stock_level` is in this schema and `item` is not. Reading a kernel table
+from a module is allowed — reading another module's tables is what the boundary
+check forbids.
+
+Three decisions worth recording:
+
+- **A zero balance is not a missing row.** A zero says this item has been stocked
+  here and currently is not. Zero rows therefore show by default and excluding
+  them is an explicit filter, and on the item list `onHand` is **null** — not
+  zero — for an item that has never moved anywhere.
+- **The offcut summary spans the register, not the page**, because "what is on
+  the rack worth" must not change as somebody pages through it. Scrapped value
+  sits beside available value deliberately: it is the running cost of the
+  minimum-usable-size rule, and a tenant tuning that rule is entitled to see what
+  it threw away.
+- **Counts report net and gross variance.** Net answers "is the book value
+  right" and cancels out; a count where one bin is fifty over and another fifty
+  short nets to zero and is not a clean count. Gross answers "was the counting
+  right", and only one of the two says so.
+
+**A bug caught by arithmetic, not by tests.** `offcut.unitCost` is misnamed: it
+holds the piece's ABSOLUTE cost, not a rate per square metre — both branches that
+write it produce an absolute figure. The register's value summary was written as
+`sum(area × unitCost)`, which squares the area. Checked by hand against the seed
+— parent sheet 2.9768 m² at 284, remnants of 0.7316 + 0.7564 + 0.4644 m² costing
+69.80 + 72.16 + 44.31 — the correct total is 186.27 and the buggy one is about
+127. Both look like plausible money. There is now a test that pins the summary to
+the sum of the rows it is summarising.
+
+Two duplicate endpoints were merged rather than left side by side: `/inventory/stock`
+already existed unpaged, and answering "list the stock" two ways with two shapes
+is how an API rots. `?itemId=` still returns a single position — a figure, not a
+list — because splitting those would mean two names for one noun.
+
+**A finding that is not Inventory, and matters more than it.** The demo API could
+not log in when pointed at the application database role. `kernel.membership` is
+RLS-scoped by `app.tenant_id`, but login has to read it *before* a tenant is
+known, so `loadMemberships` returns nothing and every login fails with "not a
+member of any active workspace". The integration tests connect as the table
+OWNER, so 240 passing tests never exercised the configuration the documentation
+insists on — the non-superuser role that makes RLS real. This is left unfixed on
+purpose: the remedy is a security decision (a self-scoped policy on membership,
+or a definer-rights lookup for the auth path) that deserves its own change and
+its own tests, not a line smuggled into an inventory PR.
+
+Still missing before this is a usable product: the login/RLS defect above,
+detail screens for requisitions, RFQs and stock counts, Arabic translations of
+the interface, and PDF output for certificates and applications. Estimating and
+Production remain the two modules with no screens at all.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

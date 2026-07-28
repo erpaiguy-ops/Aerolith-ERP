@@ -49,6 +49,51 @@ export function money(
 }
 
 /**
+ * A stock quantity, with its unit.
+ *
+ * Separate from `money` because a quantity has no currency and separate from
+ * `integer` because 3.5 sheets is a real figure. Trailing zeros are dropped —
+ * the database holds `900.0000` and the storekeeper says 900 — but a genuine
+ * fraction is kept.
+ */
+export function quantity(
+  value: number | string | null | undefined,
+  uom?: string | null,
+  locale = currentLocale(),
+): string {
+  if (value == null || value === '') return '—';
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(n)) return '—';
+
+  const formatted = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(n);
+  return uom ? `${formatted} ${uom}` : formatted;
+}
+
+/**
+ * Panel dimensions, as a joiner writes them.
+ *
+ * `2440 × 1220 × 18` rather than three columns, because the three numbers are
+ * one fact — a board size is recognised as a shape, not read as measurements.
+ * Trailing zeros are dropped: the database holds `2440.00` and nobody says that.
+ */
+export function dimensions(
+  length: string | number | null | undefined,
+  width: string | number | null | undefined,
+  thickness?: string | number | null,
+): string {
+  const parts = [length, width, thickness]
+    .filter((value) => value != null && value !== '')
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    // `parseFloat` of the fixed form, so 18.00 → 18 and 0.80 → 0.8.
+    .map((value) => String(Number.parseFloat(value.toFixed(2))));
+
+  // Fewer than two numbers is not a size. A lone length rendered as "2440"
+  // reads as a quantity.
+  return parts.length >= 2 ? parts.join(' × ') : '—';
+}
+
+/**
  * A whole number — a count, a page number.
  *
  * Exists so that no caller reaches for `Number.prototype.toLocaleString()` with

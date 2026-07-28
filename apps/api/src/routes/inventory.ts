@@ -6,17 +6,26 @@
  * endpoint. That check is the runtime half of requirement 19; the navigation
  * filter in /me is the visible half.
  */
-import { schema, withTenant } from '@aerolith/kernel';
+import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
+  COUNT_SORTS,
+  ITEM_SORTS,
   InvalidMovementError,
+  OFFCUT_SORTS,
+  STOCK_SORTS,
   inventorySchema,
+  listItems,
+  listOffcuts,
+  listStockCounts,
+  listStockOnHand,
   postMovement,
   selectBestOffcut,
   stockOnHand,
+  summariseOffcuts,
   toNumber,
   type Panel,
 } from '@aerolith/module-inventory';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
@@ -99,7 +108,109 @@ const matchBody = z.object({
   kerfMm: z.number().min(0).optional(),
 });
 
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+  warehouseId?: string;
+  itemId?: string;
+}
+
 export async function inventoryRoutes(app: FastifyInstance) {
+  // --- Registers ----------------------------------------------------------
+  //
+  // The module's four navigation slots. All reads, all paged the same way, and
+  // all behind `requireModule` for the same reason as everything else here.
+
+  app.get<{ Querystring: ListQuery & { type?: string; stocked?: string; inactive?: string } }>(
+    '/inventory/items',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.item.read');
+
+      const params = parseListParams(request.query, {
+        sortable: ITEM_SORTS,
+        // A catalogue is read by code. Sorting by anything else makes a user
+        // scan for the row they already know the number of.
+        defaultSort: 'code',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listItems(tx, params, {
+            type: request.query.type,
+            stockedOnly: request.query.stocked === 'true',
+            includeInactive: request.query.inactive === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery }>('/inventory/offcuts', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock.read');
+
+    const params = parseListParams(request.query, {
+      sortable: OFFCUT_SORTS,
+      // Biggest first: the largest remnant is the one worth using, and the one
+      // most expensive to have forgotten about.
+      defaultSort: 'areaSqm',
+      defaultDirection: 'desc',
+    });
+
+    // The summary is returned alongside the page rather than as a second
+    // endpoint: "what is on the rack worth" is the question the register exists
+    // to answer, and it must not change as the user pages through it.
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => {
+        const [page, summary] = await Promise.all([
+          listOffcuts(tx, params, {
+            status: request.query.status,
+            warehouseId: request.query.warehouseId,
+            itemId: request.query.itemId,
+          }),
+          summariseOffcuts(tx, {
+            warehouseId: request.query.warehouseId,
+            itemId: request.query.itemId,
+          }),
+        ]);
+        return { ...page, summary };
+      }),
+    );
+  });
+
+  app.get<{ Querystring: ListQuery & { open?: string } }>(
+    '/inventory/counts',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.stock.read');
+
+      const params = parseListParams(request.query, {
+        sortable: COUNT_SORTS,
+        defaultSort: 'countDate',
+        defaultDirection: 'desc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listStockCounts(tx, params, {
+            status: request.query.status,
+            warehouseId: request.query.warehouseId,
+            openOnly: request.query.open === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
   // --- Warehouses ---------------------------------------------------------
 
   app.get('/inventory/warehouses', async (request, reply) => {
@@ -142,55 +253,55 @@ export async function inventoryRoutes(app: FastifyInstance) {
 
   // --- Stock --------------------------------------------------------------
 
-  app.get<{ Querystring: { itemId?: string; warehouseId?: string } }>(
-    '/inventory/stock',
-    async (request, reply) => {
-      const principal = await authenticate(request);
-      if (!(await requireModule(principal, reply))) return reply;
-      requirePermission(principal, 'inventory.stock.read');
+  /**
+   * A single item's position, or the paged register.
+   *
+   * Two questions, deliberately one endpoint: `?itemId=` asks "how much of this
+   * do we have", which is a figure, and the bare call asks "what is in stock",
+   * which is a list. Splitting them would mean two names for one noun.
+   */
+  app.get<{
+    Querystring: ListQuery & { holding?: string; belowReorder?: string };
+  }>('/inventory/stock', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock.read');
 
+    if (request.query.itemId && !request.query.page && !request.query.sort) {
       return withPrincipal(principal, () =>
         withTenant(async (tx) => {
-          if (request.query.itemId) {
-            const position = await stockOnHand(tx, {
-              tenantId: principal.context.tenantId,
-              itemId: request.query.itemId,
-              warehouseId: request.query.warehouseId,
-            });
-            return { itemId: request.query.itemId, ...position };
-          }
-
-          const levels = await tx
-            .select({
-              itemId: inventorySchema.stockLevel.itemId,
-              itemCode: schema.item.code,
-              itemName: schema.item.name,
-              warehouseId: inventorySchema.stockLevel.warehouseId,
-              quantity: inventorySchema.stockLevel.quantity,
-              availableQuantity: inventorySchema.stockLevel.availableQuantity,
-              averageCost: inventorySchema.stockLevel.averageCost,
-            })
-            .from(inventorySchema.stockLevel)
-            // A join to kernel.item is allowed; a join to another MODULE's table
-            // would not be. See docs/02-architecture.md.
-            .leftJoin(schema.item, eq(schema.item.id, inventorySchema.stockLevel.itemId))
-            .where(
-              and(
-                eq(inventorySchema.stockLevel.tenantId, principal.context.tenantId),
-                request.query.warehouseId
-                  ? eq(inventorySchema.stockLevel.warehouseId, request.query.warehouseId)
-                  : undefined,
-                sql`${inventorySchema.stockLevel.quantity} <> 0`,
-              ),
-            )
-            .orderBy(asc(schema.item.code))
-            .limit(500);
-
-          return { levels };
+          const position = await stockOnHand(tx, {
+            tenantId: principal.context.tenantId,
+            itemId: request.query.itemId!,
+            warehouseId: request.query.warehouseId,
+          });
+          return { itemId: request.query.itemId, ...position };
         }),
       );
-    },
-  );
+    }
+
+    const params = parseListParams(request.query, {
+      sortable: STOCK_SORTS,
+      defaultSort: 'itemCode',
+      defaultDirection: 'asc',
+    });
+
+    const holding =
+      request.query.holding === 'in_stock' || request.query.holding === 'zero'
+        ? request.query.holding
+        : undefined;
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listStockOnHand(tx, params, {
+          warehouseId: request.query.warehouseId,
+          itemId: request.query.itemId,
+          holding,
+          belowReorderOnly: request.query.belowReorder === 'true',
+        }),
+      ),
+    );
+  });
 
   // --- Movements ----------------------------------------------------------
 
@@ -240,50 +351,6 @@ export async function inventoryRoutes(app: FastifyInstance) {
   );
 
   // --- Offcut register ----------------------------------------------------
-
-  app.get<{ Querystring: { itemId?: string; warehouseId?: string } }>(
-    '/inventory/offcuts',
-    async (request, reply) => {
-      const principal = await authenticate(request);
-      if (!(await requireModule(principal, reply))) return reply;
-      requirePermission(principal, 'inventory.stock.read');
-
-      return withPrincipal(principal, () =>
-        withTenant(async (tx) => {
-          const offcuts = await tx
-            .select()
-            .from(inventorySchema.offcut)
-            .where(
-              and(
-                eq(inventorySchema.offcut.tenantId, principal.context.tenantId),
-                eq(inventorySchema.offcut.status, 'available'),
-                request.query.itemId
-                  ? eq(inventorySchema.offcut.itemId, request.query.itemId)
-                  : undefined,
-                request.query.warehouseId
-                  ? eq(inventorySchema.offcut.warehouseId, request.query.warehouseId)
-                  : undefined,
-              ),
-            )
-            // Largest first: what a storekeeper wants to see on the rack list.
-            .orderBy(desc(inventorySchema.offcut.areaSqm))
-            .limit(500);
-
-          const totalAreaSqm = offcuts.reduce((sum, o) => sum + toNumber(o.areaSqm), 0);
-          const totalValue = offcuts.reduce((sum, o) => sum + toNumber(o.unitCost), 0);
-
-          return {
-            offcuts,
-            summary: {
-              count: offcuts.length,
-              totalAreaSqm: Math.round(totalAreaSqm * 10000) / 10000,
-              totalValue: Math.round(totalValue * 100) / 100,
-            },
-          };
-        }),
-      );
-    },
-  );
 
   /**
    * Find the offcut to cut a part from.

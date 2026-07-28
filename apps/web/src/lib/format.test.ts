@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   date,
   directionFor,
+  dimensions,
   integer,
   money,
   percent,
+  quantity,
   signed,
   toneForIndex,
   toneForVariance,
@@ -136,5 +138,56 @@ describe('integer', () => {
   it('handles values that are not finite', () => {
     expect(integer(Number.NaN)).toBe('—');
     expect(integer(Number.POSITIVE_INFINITY)).toBe('—');
+  });
+});
+
+describe('dimensions', () => {
+  it('reads as a board size, not three measurements', () => {
+    expect(dimensions('2440.00', '1220.00', '18.00')).toBe('2440 × 1220 × 18');
+  });
+
+  it('drops the trailing zeros the database carries', () => {
+    // numeric(12,2) stores 2440.00 and 0.80. Nobody says either of those.
+    expect(dimensions('3050.00', '1300.00', '0.80')).toBe('3050 × 1300 × 0.8');
+  });
+
+  it('omits a thickness that was never recorded', () => {
+    expect(dimensions('2440', '1220')).toBe('2440 × 1220');
+    expect(dimensions('2440', '1220', null)).toBe('2440 × 1220');
+  });
+
+  it('refuses to render a single number as a size', () => {
+    // A lone length rendered as "2440" reads as a quantity, which is the one
+    // thing it must not be mistaken for on a stock screen.
+    expect(dimensions('2440', null)).toBe('—');
+    expect(dimensions(null, null)).toBe('—');
+    expect(dimensions('0', '0')).toBe('—');
+  });
+});
+
+describe('quantity', () => {
+  it('drops trailing zeros but keeps a real fraction', () => {
+    // numeric(18,4) gives "900.0000" for something a storekeeper calls 900.
+    expect(quantity('900.0000')).toBe('900');
+    expect(quantity('3.5000')).toBe('3.5');
+  });
+
+  it('appends the unit only when there is one', () => {
+    expect(quantity('12', 'NR')).toBe('12 NR');
+    expect(quantity('12', null)).toBe('12');
+    expect(quantity('12')).toBe('12');
+  });
+
+  it('formats in the given locale rather than the server one', () => {
+    expect(quantity(1234.5, null, 'en-AE')).toBe('1,234.5');
+    expect(quantity(1234.5, null, 'de-DE')).toBe('1.234,5');
+  });
+
+  it('renders an em dash for absent values rather than 0', () => {
+    // "0" claims the shelf was checked and is empty. Null means nobody looked.
+    expect(quantity(null)).toBe('—');
+    expect(quantity(undefined)).toBe('—');
+    expect(quantity('')).toBe('—');
+    expect(quantity('not a number')).toBe('—');
   });
 });

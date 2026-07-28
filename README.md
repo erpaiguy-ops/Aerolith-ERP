@@ -42,11 +42,24 @@ labelled parts, becomes scanned progress.
 - **Estimation module** — tendering with bid/no-bid decisions, BOQ pricing from a
   versioned rate library, margin scenarios, and conversion of a won tender into a
   work order
-- **501 tests**, including integration suites that prove tenant isolation holds and
+- **Projects and Contract Administration** — WBS with rules of credit, earned
+  value, payment applications valued from progress, variations and the notice
+  clock that preserves entitlement
+- **Procurement** — requisitions, RFQ comparison on landed cost, orders, goods
+  receipt and three-way matching, with the exception queue that catches an
+  invoice for goods nobody received
+- **Web app** (Next.js) — the shell, index screens and write flows for Projects,
+  Contracts, Procurement and Inventory, right-to-left aware and formatted in the
+  user's own locale
+- **897 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — the web app, Projects and Contract Administration.
+**Not built yet** — screens for Estimating and Production, Arabic translations of
+the interface, and PDF output. One known defect is recorded at the end of
+[`docs/05-roadmap.md`](docs/05-roadmap.md): login fails when the API connects as
+the non-superuser application role, because `kernel.membership` is RLS-scoped by
+tenant and login must read it before a tenant is known.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ### Estimation
@@ -148,7 +161,7 @@ TEST_DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith pnpm test
 ```
 
 Read that as part of `verify`, not an optional extra. With `TEST_DATABASE_URL`
-unset the 229 integration tests do not fail — they are **skipped**, and `pnpm
+unset the 240 integration tests do not fail — they are **skipped**, and `pnpm
 verify` prints green having exercised nothing but the pure functions. That is
 the whole API surface quietly not being tested, so set it.
 
@@ -164,6 +177,10 @@ pnpm --filter @aerolith/api dev
 | `GET /health` | Liveness |
 | `GET /api/v1/modules/catalogue` | Every module this deployment can serve |
 | `GET /api/v1/me` | The caller's tenant, modules, navigation and permissions |
+| `GET /api/v1/inventory/items` | Item catalogue, paged |
+| `GET /api/v1/inventory/stock` | Stock on hand, paged — or one item's position with `?itemId=` |
+| `GET /api/v1/inventory/offcuts` | Offcut register, paged, with a whole-register value summary |
+| `GET /api/v1/inventory/counts` | Stock counts with progress and variance |
 | `GET /api/v1/localisation/countries` | Countries available to adopt |
 | `POST /api/v1/localisation/adopt` | Adopt a country; pre-fills the tenant's requirements |
 | `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |

@@ -45,4 +45,21 @@ export {
   type PostMovementResult,
 } from './service/movements';
 
+export {
+  COUNT_SORTS,
+  ITEM_SORTS,
+  OFFCUT_SORTS,
+  STOCK_SORTS,
+  listItems,
+  listOffcuts,
+  listStockCounts,
+  listStockOnHand,
+  summariseOffcuts,
+  type ItemListRow,
+  type OffcutListRow,
+  type OffcutSummary,
+  type StockCountListRow,
+  type StockListRow,
+} from './service/registers';
+
 export { INVENTORY_RLS, buildInventoryRls, buildInventoryGrants } from './db/security';
