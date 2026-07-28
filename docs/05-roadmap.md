@@ -605,6 +605,55 @@ Verified by running the API against `aerolith_app` and driving all 21 screens:
 42 rows rendered, no errors. That is the first time the application has run in
 the configuration the documentation has always described.
 
+### The last six registers — every navigation destination now leads somewhere
+
+Notices, retention, RFQs, job costing, cross-project progress and snags. Counted
+rather than claimed this time: **27 of 27**.
+
+All six are cross-entity on purpose. The per-contract and per-project views
+already existed and answer a different question; these answer "where is the
+business", which no per-job screen can produce. Each one is built around the
+single fact it exists to surface:
+
+- **Notices** flag *contractual* items past their reply date, separately from
+  merely late ones. An unanswered RFI is an irritation; an unanswered notice on
+  which an extension of time depends is a claim expiring while nobody watches.
+- **Retention** separates held from claimable-today. Retention is the largest sum
+  on a joinery job nobody owns, and it comes back by asking — a single total
+  gives nobody anything to act on.
+- **RFQs** flag an enquiry that closed with fewer than two prices. One quote is
+  not a market test.
+- **Job costing** keeps actual and accrued apart, and shows a reversed entry
+  struck through rather than hidden, because a cost is corrected by a
+  compensating entry exactly as a ledger is.
+- **Progress** shows what each percentage was *measured from* — counted units,
+  a milestone tick, or somebody's opinion — with the bar hatched when it was
+  typed.
+- **Snags** treat `rejected` as open. A defect the subcontractor disputes is
+  still a defect, and counting it as closed is how it reappears at handover.
+
+Four things were caught by driving the screens rather than reading them:
+
+- **`start_finish` was invented.** The real rule of credit is `started_finished`,
+  so the "measured from" column fell through to its default and rendered the rule
+  name twice. Checked against the enum and against what the database actually
+  contained.
+- **`invited` promised a number the data cannot produce.** Nothing in the system
+  creates a quote record at the point of inviting a supplier, so "suppliers
+  invited" was really "suppliers who have responded" — the field is `suppliers`
+  now, and its comment says why.
+- **`projects.progress.read` does not exist.** The endpoint is gated on
+  `projects.project.read`; the only progress permission is `progress.record`,
+  which is a write, and gating a read behind it would deny the number to everyone
+  allowed to see it and not to change it. Every one of the 52 permission keys the
+  API uses was then checked against the declared catalogue.
+- **The seeded enquiries were drafts**, so the uncompetitive flag could never
+  fire and the register demonstrated its two most useful signals switched off.
+
+Retention had one design error of my own: the summary reported `dueValue` and
+`overdueValue` computing the same predicate — a distinction that does not exist
+without a grace period. Three states, not four.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

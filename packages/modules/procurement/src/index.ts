@@ -80,3 +80,5 @@ export {
   type SupplierInvoiceListRow,
   type RfqComparison,
 } from './service/purchasing';
+
+export { RFQ_SORTS, listRfqs, type RfqListRow } from './service/rfq-register';

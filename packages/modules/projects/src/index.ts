@@ -56,3 +56,17 @@ export {
   type RecordProgressResult,
   type WbsNodeInput,
 } from './service/projects';
+
+export {
+  COST_SORTS,
+  PROGRESS_SORTS,
+  SNAG_SORTS,
+  listCostEntries,
+  listProgress,
+  listSnags,
+  summariseCosts,
+  type CostEntryListRow,
+  type CostCategoryTotal,
+  type ProgressListRow,
+  type SnagListRow,
+} from './service/registers';

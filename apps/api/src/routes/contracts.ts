@@ -9,7 +9,9 @@
  */
 import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
+  CORRESPONDENCE_SORTS,
   ContractsError,
+  RETENTION_SORTS,
   activateContract,
   approveVariation,
   certifyApplication,
@@ -21,13 +23,16 @@ import {
   getNoticeExposure,
   getVariationPosition,
   listContracts,
+  listCorrespondence,
   listPaymentApplications,
+  listRetention,
   listVariations,
   noticeStatus,
   recordVariationNotice,
   recordPracticalCompletion,
   scheduleRetentionRelease,
   submitApplication,
+  summariseRetention,
 } from '@aerolith/module-contracts';
 import { ProjectsError, getWbsRollUp, projectsSchema } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
@@ -187,7 +192,86 @@ const CONTRACT_SORTS = [
   'createdAt',
 ] as const;
 
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+}
+
 export async function contractRoutes(app: FastifyInstance) {
+  // --- Registers ----------------------------------------------------------
+
+  app.get<{
+    Querystring: ListQuery & {
+      contractId?: string;
+      type?: string;
+      open?: string;
+      contractual?: string;
+    };
+  }>('/contracts/correspondence', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.contract.read');
+
+    const params = parseListParams(request.query, {
+      sortable: CORRESPONDENCE_SORTS,
+      // Soonest response deadline first. This register exists because a notice
+      // nobody answered on time is an entitlement quietly lost.
+      defaultSort: 'responseDueOn',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listCorrespondence(tx, params, {
+          contractId: request.query.contractId,
+          type: request.query.type,
+          status: request.query.status,
+          openOnly: request.query.open === 'true',
+          contractualOnly: request.query.contractual === 'true',
+        }),
+      ),
+    );
+  });
+
+  app.get<{ Querystring: ListQuery & { contractId?: string; state?: string } }>(
+    '/contracts/retention',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'contracts.contract.read');
+
+      const params = parseListParams(request.query, {
+        sortable: RETENTION_SORTS,
+        defaultSort: 'dueOn',
+        defaultDirection: 'asc',
+      });
+
+      const state =
+        request.query.state === 'held' ||
+        request.query.state === 'due' ||
+        request.query.state === 'released'
+          ? request.query.state
+          : undefined;
+
+      return withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          // The summary spans the register, not the page. The total held is the
+          // number this screen exists to produce and it must not change as
+          // somebody pages through it.
+          const [page, summary] = await Promise.all([
+            listRetention(tx, params, { contractId: request.query.contractId, state }),
+            summariseRetention(tx, { contractId: request.query.contractId }),
+          ]);
+          return { ...page, summary };
+        }),
+      );
+    },
+  );
+
   // --- The index ----------------------------------------------------------
 
   /**

@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { closeDatabase, createDatabase, getDatabase, schema } from '@aerolith/kernel';
 import { contractsSchema } from '@aerolith/module-contracts';
 import { projectsSchema } from '@aerolith/module-projects';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -1334,4 +1334,167 @@ it('lists variations with the notice clock resolved per row', async () => {
     });
   });
 
+
+  describe('the last six registers', () => {
+    it('flags a contractual item past its deadline, and not a merely late RFI', async () => {
+      const db = getDatabase();
+      const [head] = await db
+        .select({ id: contractsSchema.contract.id })
+        .from(contractsSchema.contract)
+        .where(eq(contractsSchema.contract.tenantId, TENANT))
+        .limit(1);
+
+      await db.insert(contractsSchema.correspondence).values([
+        {
+          tenantId: TENANT,
+          contractId: head!.id,
+          type: 'notice',
+          reference: 'REG-NOT-1',
+          subject: 'Late and contractual',
+          issuedOn: '2026-01-01',
+          responseDueOn: '2026-01-15',
+          isContractual: true,
+        },
+        {
+          tenantId: TENANT,
+          contractId: head!.id,
+          type: 'rfi',
+          reference: 'REG-RFI-1',
+          subject: 'Late but not contractual',
+          issuedOn: '2026-01-01',
+          responseDueOn: '2026-01-15',
+          isContractual: false,
+        },
+      ]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/correspondence?q=REG-',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rows: { reference: string; isAtRisk: boolean }[] = response.json().rows;
+
+      // Both are overdue. Only one costs anything, and conflating them is how a
+      // register full of chased RFIs hides the notice that mattered.
+      expect(rows.find((r) => r.reference === 'REG-NOT-1')?.isAtRisk).toBe(true);
+      expect(rows.find((r) => r.reference === 'REG-RFI-1')?.isAtRisk).toBe(false);
+
+      await db
+        .delete(contractsSchema.correspondence)
+        .where(eq(contractsSchema.correspondence.tenantId, TENANT));
+    });
+
+    it('separates retention held from retention claimable today', async () => {
+      const db = getDatabase();
+      const [head] = await db
+        .select({ id: contractsSchema.contract.id })
+        .from(contractsSchema.contract)
+        .where(eq(contractsSchema.contract.tenantId, TENANT))
+        .limit(1);
+
+      const before = (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/contracts/retention',
+          headers: auth(),
+        })
+      ).json().summary;
+
+      const made = await db
+        .insert(contractsSchema.retentionRelease)
+        .values([
+          { tenantId: TENANT, contractId: head!.id, trigger: 'practical_completion', amount: '1000.00', dueOn: '2026-01-01' },
+          { tenantId: TENANT, contractId: head!.id, trigger: 'end_of_dlp', amount: '2500.00', dueOn: '2099-01-01' },
+          { tenantId: TENANT, contractId: head!.id, trigger: 'negotiated', amount: '400.00', dueOn: '2026-01-01', releasedOn: '2026-02-01' },
+        ])
+        .returning({ id: contractsSchema.retentionRelease.id });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/retention',
+        headers: auth(),
+      });
+
+      const summary = response.json().summary;
+      // Asserted as a DELTA against the register before these rows existed.
+      // Earlier tests in this suite schedule retention of their own, so an
+      // absolute total here would be asserting on the order tests happen to run
+      // in rather than on the categorisation being tested.
+      expect(summary.heldValue - before.heldValue).toBeCloseTo(2500, 2);
+      expect(summary.dueValue - before.dueValue).toBeCloseTo(1000, 2);
+      expect(summary.releasedValue - before.releasedValue).toBeCloseTo(400, 2);
+
+      // By id. Deleting by trigger would take out retention other tests
+      // scheduled under the same trigger names and depend on.
+      await db.delete(contractsSchema.retentionRelease).where(
+        inArray(
+          contractsSchema.retentionRelease.id,
+          made.map((row) => row.id),
+        ),
+      );
+    });
+
+    it('counts a snag as blocking handover only while it is critical AND open', async () => {
+      const db = getDatabase();
+      await db.insert(projectsSchema.snag).values([
+        { tenantId: TENANT, projectId: PROJECT, reference: 'REG-S-1', description: 'Critical, disputed', severity: 'critical', status: 'rejected', raisedOn: '2026-01-01' },
+        { tenantId: TENANT, projectId: PROJECT, reference: 'REG-S-2', description: 'Critical, done', severity: 'critical', status: 'closed', raisedOn: '2026-01-01' },
+        { tenantId: TENANT, projectId: PROJECT, reference: 'REG-S-3', description: 'Minor, open', severity: 'minor', status: 'open', raisedOn: '2026-01-01' },
+      ]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects/snags?q=REG-S-',
+        headers: auth(),
+      });
+
+      const rows: { reference: string; blocksHandover: boolean }[] = response.json().rows;
+      // A snag the subcontractor rejected is still a snag. Treating `rejected`
+      // as closed is exactly how a critical defect reappears at handover.
+      expect(rows.find((r) => r.reference === 'REG-S-1')?.blocksHandover).toBe(true);
+      expect(rows.find((r) => r.reference === 'REG-S-2')?.blocksHandover).toBe(false);
+      expect(rows.find((r) => r.reference === 'REG-S-3')?.blocksHandover).toBe(false);
+
+      await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.tenantId, TENANT));
+    });
+
+    it('keeps a reversed cost on the ledger and marks it, rather than hiding it', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects/costs',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      for (const row of body.rows) {
+        expect(row).toHaveProperty('isReversed');
+      }
+      // Actual and accrued are reported apart. An accrual is a cost incurred and
+      // not yet invoiced; summing them into one figure is how a cost report
+      // stops being true during the job.
+      for (const group of body.summary) {
+        expect(group).toHaveProperty('actual');
+        expect(group).toHaveProperty('accrued');
+      }
+    });
+
+    it('reports what a progress figure was measured from, not just the figure', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects/progress',
+        headers: auth(),
+      });
+
+      const rows: { ruleOfCredit: string; isSelfAssessed: boolean }[] = response.json().rows;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        // The flag must follow the rule, or a typed percentage renders exactly
+        // like a counted one and the whole mechanism is decorative.
+        expect(row.isSelfAssessed).toBe(row.ruleOfCredit === 'manual');
+      }
+    });
+  });
 });

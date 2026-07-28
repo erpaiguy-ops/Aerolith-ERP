@@ -74,3 +74,14 @@ export {
   type CreateContractInput,
   type CreateVariationInput,
 } from './service/contracts';
+
+export {
+  CORRESPONDENCE_SORTS,
+  RETENTION_SORTS,
+  listCorrespondence,
+  listRetention,
+  summariseRetention,
+  type CorrespondenceListRow,
+  type RetentionListRow,
+  type RetentionSummary,
+} from './service/registers';

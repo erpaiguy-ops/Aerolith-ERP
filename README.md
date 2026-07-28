@@ -49,17 +49,14 @@ labelled parts, becomes scanned progress.
   receipt and three-way matching, with the exception queue that catches an
   invoice for goods nobody received
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
-  Contracts, Procurement, Inventory, Estimating and Production. **21 of 27**
-  navigation destinations are built; the rest render an explicit "not built yet"
-  inside the shell rather than a 404. Right-to-left aware and formatted in the
+  Contracts, Procurement, Inventory, Estimating and Production. **every** navigation
+  destination is built — 27 of 27. Right-to-left aware and formatted in the
   user's own locale
-- **914 tests**, including integration suites that prove tenant isolation holds and
+- **919 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — six screens (Notice Register, Retention, RFQs, Job Costing,
-cross-project Progress, Snags), Arabic translations of the interface, and PDF
-output.
+**Not built yet** — Arabic translations of the interface, and PDF output.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ### Estimation

@@ -7,12 +7,19 @@
  */
 import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
+  COST_SORTS,
+  PROGRESS_SORTS,
   ProjectsError,
+  SNAG_SORTS,
   approveBudget,
   createBudgetVersion,
   createWbs,
   getCostEntries,
+  listCostEntries,
+  listProgress,
+  listSnags,
   getCostSummary,
+  summariseCosts,
   getProjectPosition,
   getWbsRollUp,
   listProjects,
@@ -137,7 +144,116 @@ const PROJECT_SORTS = [
   'createdAt',
 ] as const;
 
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+  projectId?: string;
+}
+
 export async function projectRoutes(app: FastifyInstance) {
+  // --- Registers ----------------------------------------------------------
+  //
+  // Cross-project on purpose. The per-project views already exist; these answer
+  // "where is the business", which no per-project screen can produce.
+
+  app.get<{ Querystring: ListQuery & { severity?: string; open?: string; overdue?: string } }>(
+    '/projects/snags',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'projects.snag.read');
+
+      const params = parseListParams(request.query, {
+        sortable: SNAG_SORTS,
+        // By target date: a snag list ordered any other way buries the one that
+        // was due last week, and critical snags are what stop a handover.
+        defaultSort: 'targetDate',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listSnags(tx, params, {
+            projectId: request.query.projectId,
+            status: request.query.status,
+            severity: request.query.severity,
+            openOnly: request.query.open === 'true',
+            overdueOnly: request.query.overdue === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { category?: string; kind?: string; hideReversed?: string } }>(
+    '/projects/costs',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'projects.cost.read');
+
+      const params = parseListParams(request.query, {
+        sortable: COST_SORTS,
+        defaultSort: 'postedOn',
+        defaultDirection: 'desc',
+      });
+
+      const kind =
+        request.query.kind === 'accrual' || request.query.kind === 'actual'
+          ? request.query.kind
+          : undefined;
+
+      return withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          const [page, summary] = await Promise.all([
+            listCostEntries(tx, params, {
+              projectId: request.query.projectId,
+              category: request.query.category,
+              kind,
+              hideReversed: request.query.hideReversed === 'true',
+            }),
+            summariseCosts(tx, { projectId: request.query.projectId }),
+          ]);
+          return { ...page, summary };
+        }),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { periodEnd?: string; selfAssessed?: string } }>(
+    '/projects/progress',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      // `projects.project.read`, because there is no progress-specific READ
+      // permission — only `progress.record`, which is a write. Measured progress
+      // is part of a project's position and no more sensitive than it; gating a
+      // read behind a write permission would deny it to everyone who is meant to
+      // see the number and not allowed to change it.
+      requirePermission(principal, 'projects.project.read');
+
+      const params = parseListParams(request.query, {
+        sortable: PROGRESS_SORTS,
+        defaultSort: 'periodEnd',
+        defaultDirection: 'desc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listProgress(tx, params, {
+            projectId: request.query.projectId,
+            periodEnd: request.query.periodEnd,
+            selfAssessedOnly: request.query.selfAssessed === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
   // --- The index ----------------------------------------------------------
 
   app.get<{

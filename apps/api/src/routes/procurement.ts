@@ -43,7 +43,9 @@ import {
   listMatchExceptions,
   listPurchaseOrders,
   listRequisitions,
+  listRfqs,
   listSupplierInvoices,
+  RFQ_SORTS,
   procurementSchema,
   receiveGoods,
   recordQuote,
@@ -358,6 +360,33 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // --- RFQs and quotes ---
+
+  app.get<{ Querystring: ListQuery & { projectId?: string; open?: string } }>(
+    '/procurement/rfqs',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'procurement.rfq.read');
+
+      const params = parseListParams(request.query, {
+        sortable: RFQ_SORTS,
+        // Soonest closing first — the enquiry that shuts on Thursday is the one
+        // a buyer needs to chase this morning.
+        defaultSort: 'responseDueOn',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listRfqs(tx, params, {
+            status: request.query.status,
+            projectId: request.query.projectId,
+            openOnly: request.query.open === 'true',
+          }),
+        ),
+      );
+    },
+  );
 
   app.post('/procurement/rfqs', async (request, reply) => {
     const principal = await authenticate(request);

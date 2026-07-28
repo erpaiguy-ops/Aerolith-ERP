@@ -32,11 +32,13 @@ import {
   approveRequisition,
   createPurchaseOrder,
   createRequisition,
+  createRfq,
   issuePurchaseOrder,
   linkCommitment,
   linkReceiptPostings,
   procurementSchema,
   receiveGoods,
+  recordQuote,
   registerInvoice,
 } from '@aerolith/module-procurement';
 import {
@@ -46,6 +48,7 @@ import {
   createContract,
   createPaymentApplication,
   createVariation,
+  scheduleRetentionRelease,
   submitApplication,
   contractsSchema,
 } from '@aerolith/module-contracts';
@@ -147,6 +150,13 @@ async function main() {
       procurementSchema.goodsReceipt,
       procurementSchema.purchaseOrderLine,
       procurementSchema.purchaseOrder,
+      // Quotes hang off the enquiry and lines off both, so deepest first. A
+      // purchase order may point at the quote it was awarded from, which is why
+      // these come after the order above rather than before it.
+      procurementSchema.quoteLine,
+      procurementSchema.quote,
+      procurementSchema.rfqLine,
+      procurementSchema.rfq,
       procurementSchema.requisitionLine,
       procurementSchema.requisition,
 
@@ -228,6 +238,7 @@ async function main() {
       { tenantId: TENANT, entityType: 'production.work_order', code: 'WO', name: 'Work Order', pattern: 'WO-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.requisition', code: 'PR', name: 'Requisition', pattern: 'PR-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.purchase_order', code: 'PO', name: 'Purchase Order', pattern: 'PO-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'procurement.rfq', code: 'RFQ', name: 'Request for Quotation', pattern: 'RFQ-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.goods_receipt', code: 'GRN', name: 'Goods Receipt', pattern: 'GRN-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.supplier_invoice', code: 'SINV', name: 'Supplier Invoice', pattern: 'SINV-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'inventory.receipt', code: 'IGRN', name: 'Stock Receipt', pattern: 'IGRN-{YYYY}-{SEQ}' },
@@ -1278,6 +1289,235 @@ async function main() {
     ]);
   });
 
+  console.log('→ the registers nobody had a screen for: notices, retention, an enquiry, snags');
+  await asUser(async (tx) => {
+    const [head] = await tx
+      .select({ id: contractsSchema.contract.id })
+      .from(contractsSchema.contract)
+      .where(eq(contractsSchema.contract.tenantId, TENANT))
+      .limit(1);
+
+    // The notice register. Two of these are contractual and one is past its
+    // deadline — which is the state the register exists to make visible, because
+    // an unanswered notice is an entitlement quietly expiring.
+    await tx.insert(contractsSchema.correspondence).values([
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        type: 'rfi',
+        reference: 'RFI-014',
+        subject: 'Veneer direction at lift lobby returns — drawing conflict',
+        direction: 'outgoing',
+        issuedOn: '2026-06-18',
+        responseDueOn: '2026-06-25',
+        respondedOn: '2026-06-24',
+        status: 'closed',
+      },
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        type: 'notice',
+        reference: 'NOT-003',
+        subject: 'Notice of delay — client fit-out access to level 12 withheld',
+        direction: 'outgoing',
+        issuedOn: '2026-07-02',
+        responseDueOn: '2026-07-16',
+        status: 'open',
+        // Missing the reply window here forfeits the extension of time.
+        isContractual: true,
+      },
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        type: 'eot_claim',
+        reference: 'EOT-001',
+        subject: 'Extension of time — 14 days, access and revised joinery details',
+        direction: 'outgoing',
+        issuedOn: '2026-07-09',
+        responseDueOn: '2026-07-23',
+        status: 'open',
+        isContractual: true,
+      },
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        type: 'ncr',
+        reference: 'NCR-002',
+        subject: 'Non-conformance — substrate moisture content above specification',
+        direction: 'incoming',
+        issuedOn: '2026-07-20',
+        responseDueOn: '2026-08-03',
+        status: 'open',
+      },
+    ]);
+
+    // Retention. Half at practical completion, half at the end of the defects
+    // period — the schedule comes from the contract terms, which came from the
+    // country pack.
+    await scheduleRetentionRelease(tx, { contractId: head!.id });
+
+    await tx.insert(contractsSchema.retentionRelease).values([
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        trigger: 'practical_completion',
+        amount: '57250.00',
+        // Deliberately in the past and unreleased. Retention is the largest sum
+        // on a joinery job that nobody owns, and it comes back by asking.
+        dueOn: '2026-06-30',
+      },
+      {
+        tenantId: TENANT,
+        contractId: head!.id,
+        trigger: 'end_of_dlp',
+        amount: '57250.00',
+        dueOn: '2027-06-30',
+      },
+    ]);
+
+    // Snags, including one critical and open — which is what stops a handover.
+    await tx.insert(projectsSchema.snag).values([
+      {
+        tenantId: TENANT,
+        projectId: PROJECT,
+        reference: 'SNG-0007',
+        location: 'Level 12 — lift lobby A',
+        description: 'Veneer join visible at 1.8m on return panel; grain mismatch either side.',
+        severity: 'critical',
+        status: 'in_progress',
+        raisedOn: '2026-07-05',
+        targetDate: '2026-07-19',
+      },
+      {
+        tenantId: TENANT,
+        projectId: PROJECT,
+        reference: 'SNG-0008',
+        location: 'Level 12 — reception',
+        description: 'Solid surface seam at counter return proud by ~1mm.',
+        severity: 'major',
+        status: 'ready_for_inspection',
+        raisedOn: '2026-07-11',
+        targetDate: '2026-08-08',
+        backChargeAmount: '2400.00',
+      },
+      {
+        tenantId: TENANT,
+        projectId: PROJECT,
+        reference: 'SNG-0009',
+        location: 'Level 12 — corridor',
+        description: 'Two door closers adjusted; latching correctly on re-test.',
+        severity: 'minor',
+        status: 'closed',
+        raisedOn: '2026-06-28',
+        targetDate: '2026-07-12',
+        closedOn: '2026-07-08',
+      },
+    ]);
+
+    // An enquiry out to the market that closed with only one price. Two is where
+    // a comparison starts meaning anything, so the register flags it.
+    const suppliers = await tx
+      .select({ id: schema.party.id, code: schema.party.code })
+      .from(schema.party)
+      .where(and(eq(schema.party.tenantId, TENANT), eq(schema.party.isSupplier, true)));
+
+    const enquiry = await createRfq(tx, {
+      title: 'Ironmongery package — levels 10 to 14',
+      projectId: PROJECT,
+      countryCode: 'AE',
+      currencyCode: 'AED',
+      responseDueOn: '2026-07-17',
+      surplusIsStock: true,
+      lines: [
+        { description: 'Soft-close hinge, full overlay', quantity: 1200, uomCode: 'NR' },
+        { description: 'Lever handle on rose, satin stainless', quantity: 240, uomCode: 'NR' },
+      ],
+    });
+
+    const [enquiryLine] = await tx
+      .select({ id: procurementSchema.rfqLine.id })
+      .from(procurementSchema.rfqLine)
+      .where(eq(procurementSchema.rfqLine.rfqId, enquiry.rfqId))
+      .limit(1);
+
+    await recordQuote(tx, {
+      rfqId: enquiry.rfqId,
+      supplierId: suppliers.find((s) => s.code === 'SUP-HAF')!.id,
+      reference: 'HAF-Q-4471',
+      receivedOn: '2026-07-15',
+      currencyCode: 'AED',
+      freight: 850,
+      dutyPercent: 5,
+      leadTimeDays: 28,
+      lines: [
+        {
+          rfqLineId: enquiryLine!.id,
+          description: 'Soft-close hinge, full overlay',
+          quantity: 1200,
+          uomCode: 'NR',
+          unitPrice: 11.4,
+          minimumOrderQuantity: 1000,
+        },
+      ],
+    });
+
+    // Issued, not left in draft. `createRfq` opens an enquiry as a draft and
+    // there is no issue service yet, but an enquiry that never went out cannot
+    // be late and cannot be uncompetitive — so the demo would show the register
+    // with its two most useful signals permanently switched off.
+    await tx
+      .update(procurementSchema.rfq)
+      .set({ status: 'issued', issuedOn: '2026-07-03' })
+      .where(eq(procurementSchema.rfq.id, enquiry.rfqId));
+
+    // A second enquiry, properly contested, so the register is not one row of
+    // bad news.
+    const contested = await createRfq(tx, {
+      title: 'Solid surface — reception counters',
+      projectId: PROJECT,
+      countryCode: 'AE',
+      currencyCode: 'AED',
+      responseDueOn: '2026-08-14',
+      lines: [{ description: 'Solid surface sheet, 12mm', quantity: 40, uomCode: 'NR' }],
+    });
+
+    const [contestedLine] = await tx
+      .select({ id: procurementSchema.rfqLine.id })
+      .from(procurementSchema.rfqLine)
+      .where(eq(procurementSchema.rfqLine.rfqId, contested.rfqId))
+      .limit(1);
+
+    for (const [code, price, ref] of [
+      ['SUP-GULF', 412, 'GP-Q-8890'],
+      ['SUP-HAF', 398, 'HAF-Q-4482'],
+    ] as const) {
+      await recordQuote(tx, {
+        rfqId: contested.rfqId,
+        supplierId: suppliers.find((s) => s.code === code)!.id,
+        reference: ref,
+        receivedOn: '2026-07-24',
+        currencyCode: 'AED',
+        freight: 600,
+        dutyPercent: 5,
+        leadTimeDays: 21,
+        lines: [
+          {
+            rfqLineId: contestedLine!.id,
+            description: 'Solid surface sheet, 12mm',
+            quantity: 40,
+            uomCode: 'NR',
+            unitPrice: price,
+          },
+        ],
+      });
+    }
+
+    await tx
+      .update(procurementSchema.rfq)
+      .set({ status: 'issued', issuedOn: '2026-07-20' })
+      .where(eq(procurementSchema.rfq.id, contested.rfqId));
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
@@ -1285,6 +1525,7 @@ async function main() {
   console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
   console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
   console.log('  estimating: /estimating/tenders · /estimating/estimates · /estimating/rates');
+  console.log('  registers: /contracts/correspondence · /contracts/retention · /procurement/rfqs · /projects/costs · /projects/progress · /projects/snags');
   console.log('  factory:  /production/orders · /production/board · /production/cutlist · /production/finishing · /production/routings');
 
   await closeDatabase();
