@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -103,7 +105,12 @@ export default async function OrdersPage({
             {result.rows.map((row) => (
               <tr key={row.id} className="hover:bg-(--color-canvas)">
                 <Td>
-                  <span className="numeric">{row.number ?? '—'}</span>
+                  <Link
+                    href={`/procurement/orders/${row.id}`}
+                    className="numeric text-(--color-accent) hover:underline"
+                  >
+                    {row.number ?? '—'}
+                  </Link>
                 </Td>
                 <Td>
                   <span className="block">{row.supplierName ?? '—'}</span>

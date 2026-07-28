@@ -1294,4 +1294,113 @@ suite('Procurement', () => {
     });
   });
 
+
+  describe('8 — what the detail screens depend on', () => {
+    it('returns the invoice with its lines and exceptions in one call', async () => {
+      // The invoice screen renders all three together. Three round trips to
+      // build one page is a slower screen and three chances to render a
+      // half-consistent view of the same invoice.
+      const db = getDatabase();
+      const [invoice] = await db
+        .select()
+        .from(procurementSchema.supplierInvoice)
+        .where(
+          and(
+            eq(procurementSchema.supplierInvoice.tenantId, TENANT),
+            eq(procurementSchema.supplierInvoice.supplierReference, 'INV-8802'),
+          ),
+        );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/procurement/invoices/${invoice!.id}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.invoice.supplierReference).toBe('INV-8802');
+      expect(body.invoice.status).toBe('on_hold');
+      expect(body.lines.length).toBeGreaterThan(0);
+      expect(body.exceptions.length).toBeGreaterThan(0);
+
+      // The screen shows billed against expected side by side; the gap is the
+      // whole question, and it has to come from the server rather than being
+      // recomputed in the browser from a price the browser had to guess.
+      expect(body.lines[0].expectedValue).not.toBeNull();
+    });
+
+    it('refuses to release an invoice that is not held', async () => {
+      // The screen only offers the form on a held invoice. That is a courtesy;
+      // this is the control. A caller that is not the form must still be told no.
+      const db = getDatabase();
+      const [matched] = await db
+        .select()
+        .from(procurementSchema.supplierInvoice)
+        .where(
+          and(
+            eq(procurementSchema.supplierInvoice.tenantId, TENANT),
+            eq(procurementSchema.supplierInvoice.supplierReference, 'INV-8801'),
+          ),
+        );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/procurement/invoices/${matched!.id}/release`,
+        headers: auth(),
+        payload: { reason: 'trying it on' },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error).toMatch(/only a held invoice/i);
+    });
+
+    it('refuses a release with a reason of only whitespace', async () => {
+      // The form requires it and the API requires it. A blank reason recorded
+      // against a released invoice is worse than no field at all: it looks like
+      // an answer.
+      const db = getDatabase();
+      const [held] = await db
+        .select()
+        .from(procurementSchema.supplierInvoice)
+        .where(
+          and(
+            eq(procurementSchema.supplierInvoice.tenantId, TENANT),
+            eq(procurementSchema.supplierInvoice.status, 'on_hold'),
+          ),
+        );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/procurement/invoices/${held!.id}/release`,
+        headers: auth(),
+        payload: { reason: '   ' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('treats approving an already-approved requisition as a no-op', async () => {
+      // The list only offers the button on a draft, but a double submission or a
+      // stale page must not error — and must not approve twice.
+      const first = await app.inject({
+        method: 'POST',
+        url: `/api/v1/procurement/requisitions/${requisitionId}/approve`,
+        headers: auth(),
+      });
+
+      expect(first.statusCode).toBe(200);
+
+      const db = getDatabase();
+      const [row] = await db
+        .select()
+        .from(procurementSchema.requisition)
+        .where(eq(procurementSchema.requisition.id, requisitionId));
+
+      // Still sourcing from section 2 — approving again did not drag it back.
+      expect(row!.status).toBe('sourcing');
+    });
+  });
+
 });

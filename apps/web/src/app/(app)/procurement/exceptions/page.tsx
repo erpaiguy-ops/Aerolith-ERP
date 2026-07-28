@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -124,7 +126,19 @@ export default async function ExceptionsPage({
                   </span>
                 </Td>
                 <Td>
-                  <span className="numeric block">{row.supplierReference ?? '—'}</span>
+                  {/* Straight to the screen where it can be answered. An
+                      exception queue that cannot be acted on from the queue is
+                      a report, not a queue. */}
+                  {row.supplierInvoiceId ? (
+                    <Link
+                      href={`/procurement/invoices/${row.supplierInvoiceId}`}
+                      className="numeric block text-(--color-accent) hover:underline"
+                    >
+                      {row.supplierReference ?? 'Invoice'}
+                    </Link>
+                  ) : (
+                    <span className="numeric block">{row.supplierReference ?? '—'}</span>
+                  )}
                   <span className="text-xs text-(--color-muted)">{row.supplierName ?? '—'}</span>
                 </Td>
                 <Td numeric>

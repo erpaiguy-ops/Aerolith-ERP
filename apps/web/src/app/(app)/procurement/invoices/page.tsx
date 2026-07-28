@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -114,7 +116,12 @@ export default async function InvoicesPage({
                 <Td>
                   {/* The SUPPLIER's number leads, not ours. It is what a chasing
                       phone call quotes, and what the paper on the desk says. */}
-                  <span className="numeric block">{row.supplierReference}</span>
+                  <Link
+                    href={`/procurement/invoices/${row.id}`}
+                    className="numeric block text-(--color-accent) hover:underline"
+                  >
+                    {row.supplierReference}
+                  </Link>
                   {row.purchaseOrderNumber ? (
                     <span className="numeric text-xs text-(--color-muted)">
                       {row.purchaseOrderNumber}

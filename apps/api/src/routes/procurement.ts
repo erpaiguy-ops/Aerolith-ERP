@@ -719,7 +719,13 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
     requirePermission(principal, 'procurement.invoice.release');
 
     const { id } = request.params as { id: string };
-    const parsed = z.object({ reason: z.string().min(1) }).safeParse(request.body);
+    // `.trim()` before `.min(1)`, so a reason of three spaces is refused here
+    // rather than four layers down, and the value that reaches the audit log has
+    // no stray whitespace around it. The service keeps its own guard: this is
+    // the boundary check, not the control.
+    const parsed = z
+      .object({ reason: z.string().trim().min(1) })
+      .safeParse(request.body);
     if (!parsed.success) return bad(reply, parsed.error.issues);
 
     const withProjects = await entitled(principal, 'projects');

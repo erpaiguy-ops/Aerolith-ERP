@@ -182,10 +182,43 @@ returning ids for the browser to resolve, and the invoice list carries an open
 exception count per row, because "on hold" without a number is a queue nobody
 triages.
 
-Still missing before this is a usable product: **write flows in the UI**
-(everything is still read-only), detail screens for the procurement documents,
-Arabic translations to exercise the RTL support that is wired but untested, and
-PDF output for certificates and applications.
+### Write flows — delivered
+
+The UI could be read and navigated but nothing could be *done* — including on the
+exception queue, whose entire purpose is to demand an action. Three writes now
+work end to end, chosen to cover the three shapes an ERP action comes in:
+
+- **Release a held invoice** — dangerous, needs a typed reason, permission-gated.
+  On a new supplier invoice screen reached straight from the exception queue.
+- **Issue a purchase order** — dangerous, with a cross-module side effect
+  (the commitment against the project budget), on a new purchase order screen.
+- **Approve a requisition** — one click, inline on the list.
+
+Server Actions throughout, so the password and the session token never leave the
+server, and the session cookie is `SameSite=Lax` on top of the Origin check
+Next performs. There is exactly one `use client` island — a submit button that
+shows pending state — and it degrades: without JavaScript the form still posts
+and the action still runs.
+
+Two decisions worth recording:
+
+- **Success is reported by durable state, never by a transient message.**
+  Releasing revalidates the page, the invoice is no longer held, and the whole
+  card — the message element included — is removed from the DOM before anything
+  could read it. A confirmation that deletes itself on success is worse than
+  none: it looks like it worked and says nothing. So a released invoice renders
+  a panel showing when, and the reason. The action's own message earns its place
+  on **failure**, where the form is still on screen to show it. That defect was
+  found by driving a browser; every build was green through it.
+- **Permission-gated controls are hidden, not disabled, and the API refuses them
+  regardless.** A disabled button invites a user to go and ask for the
+  permission; naming who *can* act is more useful. The UI gate is a courtesy and
+  the tests assert the API refuses the same call.
+
+Still missing before this is a usable product: the remaining write flows
+(recording progress, raising a variation, receiving goods), detail screens for
+requisitions and RFQs, Arabic translations to exercise the RTL support that is
+wired but untested, and PDF output for certificates and applications.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

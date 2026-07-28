@@ -467,6 +467,9 @@ async function main() {
       countryCode: 'AE',
       supplierReference: 'GP-11402',
       invoiceDate: '2026-04-03',
+      // Passed explicitly, or it defaults to today and the demo shows an invoice
+      // dated April, received in July, and already overdue on arrival.
+      receivedOn: '2026-04-06',
       currencyCode: 'AED',
       lines: [
         {
@@ -518,6 +521,7 @@ async function main() {
       countryCode: 'AE',
       supplierReference: 'HAF-55012',
       invoiceDate: '2026-04-19',
+      receivedOn: '2026-04-21',
       currencyCode: 'AED',
       lines: [
         {

@@ -39,13 +39,17 @@ export function Card({
   title,
   children,
   footnote,
+  className,
 }: {
   title?: string;
   children: React.ReactNode;
   footnote?: string;
+  className?: string;
 }) {
   return (
-    <section className="rounded-lg border border-(--color-line) bg-(--color-surface)">
+    <section
+      className={`rounded-lg border border-(--color-line) bg-(--color-surface) ${className ?? ''}`}
+    >
       {title ? (
         <h2 className="border-b border-(--color-line) px-4 py-2.5 text-sm font-medium">{title}</h2>
       ) : null}
@@ -67,7 +71,12 @@ export function Stat({
   hint,
 }: {
   label: string;
-  value: string;
+  /**
+   * A node, not just a string, so a figure can be rendered by `Money` or a
+   * `Badge` and still sit in the grid with everything else. The `numeric` class
+   * below is harmless on text and correct on the numbers, which is most of them.
+   */
+  value: React.ReactNode;
   tone?: Tone;
   hint?: string;
 }) {
@@ -154,7 +163,9 @@ export function Table({
   );
 }
 
-export function Th({ children, numeric }: { children: React.ReactNode; numeric?: boolean }) {
+// `children` is optional so a table can carry an unlabelled action column —
+// a header reading "Actions" above a single button is noise.
+export function Th({ children, numeric }: { children?: React.ReactNode; numeric?: boolean }) {
   return (
     <th
       // `pe-4` is padding-INLINE-end, not padding-right: it flips with the

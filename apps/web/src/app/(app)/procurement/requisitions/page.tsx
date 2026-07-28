@@ -1,3 +1,4 @@
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -7,9 +8,29 @@ import {
   fetchList,
   listQuery,
 } from '@/components/List';
-import { Badge, Card, Money, PageHeader, Table, Td } from '@/components/ui';
+import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can, runAction, type ActionState } from '@/lib/actions';
+import { apiFetch } from '@/lib/api';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+/**
+ * Approves the spend on a requisition.
+ *
+ * One click and no confirmation, deliberately. It is reversible in the sense
+ * that matters — nothing is committed to a supplier until an order is issued —
+ * and a confirmation dialogue on a routine authorisation trains people to click
+ * through dialogues, which is exactly what you do not want when they reach the
+ * one that releases a held invoice.
+ */
+async function approve(id: string, _state: ActionState, _form: FormData): Promise<ActionState> {
+  'use server';
+
+  return runAction(
+    () => apiFetch(`/procurement/requisitions/${id}/approve`, { method: 'POST' }),
+    { revalidate: ['/procurement/requisitions'], success: 'Approved.' },
+  );
+}
 
 interface RequisitionRow {
   id: string;
@@ -51,6 +72,7 @@ export default async function RequisitionsPage({
   const me = await getMe();
 
   const result = await fetchList<RequisitionRow>('/procurement/requisitions', query);
+  const mayApprove = can(me.permissions, 'procurement.requisition.approve');
 
   return (
     <>
@@ -90,6 +112,7 @@ export default async function RequisitionsPage({
                 <SortTh base={BASE} query={query} column="requiredBy" current={result.sort} direction={result.direction}>
                   Needed by
                 </SortTh>
+                <Th />
               </tr>
             }
           >
@@ -142,6 +165,16 @@ export default async function RequisitionsPage({
                       {date(row.requiredBy)}
                       {late ? ` · ${Math.abs(days!)}d late` : null}
                     </span>
+                  </Td>
+                  <Td>
+                    {/* Only a draft can be approved, and only by somebody who
+                        holds the permission. The API enforces both; this just
+                        avoids offering an action that would be refused. */}
+                    {row.status === 'draft' && mayApprove ? (
+                      <ActionForm action={approve.bind(null, row.id)}>
+                        <SubmitButton pendingLabel="Approving…">Approve</SubmitButton>
+                      </ActionForm>
+                    ) : null}
                   </Td>
                 </tr>
               );
