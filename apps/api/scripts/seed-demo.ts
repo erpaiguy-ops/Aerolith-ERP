@@ -27,6 +27,7 @@ import {
   submitEstimate,
 } from '@aerolith/module-estimation';
 import { inventorySchema, postMovement } from '@aerolith/module-inventory';
+import { createWorkOrder, productionSchema, releaseWorkOrder } from '@aerolith/module-production';
 import {
   approveRequisition,
   createPurchaseOrder,
@@ -104,6 +105,19 @@ async function main() {
       // Order matters. An offcut points at the movement that produced it, and a
       // stock count points at the adjustment that posted it, so both go before
       // `stockMovement`; bins and batches go before the warehouse that owns them.
+      // Production: parts, operations and scans hang off the work order; a
+      // finishing batch points at parts, and a cutting plan at the order.
+      productionSchema.finishingBatchPart,
+      productionSchema.finishingBatch,
+      productionSchema.productionScan,
+      productionSchema.cuttingPlan,
+      productionSchema.workOrderOperation,
+      productionSchema.workOrderPart,
+      productionSchema.workOrder,
+      productionSchema.routingOperation,
+      productionSchema.routing,
+      productionSchema.workCentre,
+
       // Estimating: lines and components hang off the estimate, the estimate off
       // the tender, and rate items off the library. Deepest first.
       estimationSchema.estimateLineComponent,
@@ -1070,6 +1084,200 @@ async function main() {
     });
   });
 
+  console.log('→ production: work centres, a routing, an order on the floor and a booth curing');
+  await asUser(async (tx) => {
+    const centres = await tx
+      .insert(productionSchema.workCentre)
+      .values([
+        { tenantId: TENANT, code: 'SAW', name: 'Beam saw', type: 'beam_saw' as const, setupMinutes: '15', runMinutesPerUnit: '2.5000', costPerHour: '180.0000' },
+        { tenantId: TENANT, code: 'EB', name: 'Edgebander', type: 'edgebander' as const, setupMinutes: '10', runMinutesPerUnit: '1.8000', costPerHour: '150.0000' },
+        { tenantId: TENANT, code: 'CNC', name: 'CNC router', type: 'cnc' as const, setupMinutes: '25', runMinutesPerUnit: '4.0000', costPerHour: '320.0000' },
+        // A batch process, and the reason finishing is modelled separately: the
+        // booth takes a load and the cure clock then runs regardless of how many
+        // are in it.
+        { tenantId: TENANT, code: 'SPRAY', name: 'Spray booth 1', type: 'spray_booth' as const, setupMinutes: '20', runMinutesPerUnit: '0.8000', costPerHour: '210.0000', isBatchProcess: true, batchCapacityUnits: 40 },
+        { tenantId: TENANT, code: 'ASSY', name: 'Assembly bay', type: 'assembly' as const, setupMinutes: '5', runMinutesPerUnit: '12.0000', costPerHour: '140.0000' },
+      ])
+      .returning({ id: productionSchema.workCentre.id, code: productionSchema.workCentre.code });
+
+    const centre = (code: string) => centres.find((c) => c.code === code)!.id;
+
+    const [carcassRouting] = await tx
+      .insert(productionSchema.routing)
+      .values({
+        tenantId: TENANT,
+        code: 'RT-CARC',
+        name: 'Carcass — saw, band, machine, assemble',
+        description: 'Standard wardrobe and cupboard carcass.',
+        isDefault: true,
+      })
+      .returning({ id: productionSchema.routing.id });
+
+    const [doorRouting] = await tx
+      .insert(productionSchema.routing)
+      .values({
+        tenantId: TENANT,
+        code: 'RT-DOOR',
+        name: 'Veneered door — saw, band, spray, cure',
+        description: 'Anything that goes through the booth.',
+      })
+      .returning({ id: productionSchema.routing.id });
+
+    await tx.insert(productionSchema.routingOperation).values([
+      { tenantId: TENANT, routingId: carcassRouting!.id, sequence: 10, name: 'Cut to size', workCentreId: centre('SAW'), setupMinutes: '15', runMinutesPerUnit: '2.5000' },
+      { tenantId: TENANT, routingId: carcassRouting!.id, sequence: 20, name: 'Edge band', workCentreId: centre('EB'), setupMinutes: '10', runMinutesPerUnit: '1.8000' },
+      { tenantId: TENANT, routingId: carcassRouting!.id, sequence: 30, name: 'Drill and machine', workCentreId: centre('CNC'), setupMinutes: '25', runMinutesPerUnit: '4.0000' },
+      { tenantId: TENANT, routingId: carcassRouting!.id, sequence: 40, name: 'Assemble', workCentreId: centre('ASSY'), setupMinutes: '5', runMinutesPerUnit: '12.0000', isQualityGate: true },
+
+      { tenantId: TENANT, routingId: doorRouting!.id, sequence: 10, name: 'Cut to size', workCentreId: centre('SAW'), setupMinutes: '15', runMinutesPerUnit: '2.5000' },
+      { tenantId: TENANT, routingId: doorRouting!.id, sequence: 20, name: 'Edge band', workCentreId: centre('EB'), setupMinutes: '10', runMinutesPerUnit: '1.8000' },
+      // Cure is carried on the operation, not left as idle time to be optimised
+      // away. Paint does not stop drying at five o'clock.
+      { tenantId: TENANT, routingId: doorRouting!.id, sequence: 30, name: 'Spray and cure', workCentreId: centre('SPRAY'), setupMinutes: '20', runMinutesPerUnit: '0.8000', cureMinutes: 240 },
+    ]);
+
+    const [oak] = await tx
+      .select({ id: schema.item.id })
+      .from(schema.item)
+      .where(and(eq(schema.item.tenantId, TENANT), eq(schema.item.code, 'MDF-VEN-OAK')));
+
+    const doors = await createWorkOrder(tx, {
+      description: 'Lobby doors — Marina Tower level 12',
+      quantity: 24,
+      projectId: PROJECT,
+      routingId: doorRouting!.id,
+      priority: 10,
+      plannedStartDate: '2026-05-04',
+      parts: [
+        { label: 'Door leaf', materialItemId: oak!.id, lengthMm: 2100, widthMm: 900, thicknessMm: 18, quantity: 24, grainAlong: 'length' as const },
+        { label: 'Door lipping', materialItemId: oak!.id, lengthMm: 2100, widthMm: 40, thicknessMm: 18, quantity: 48, grainAlong: 'length' as const },
+      ],
+    });
+    await releaseWorkOrder(tx, { workOrderId: doors.workOrderId });
+
+    // A second order, still in the office. Not everything on the list is on the
+    // floor, and a register where every row is identical teaches nothing.
+    await createWorkOrder(tx, {
+      description: 'Reception joinery — carcasses',
+      quantity: 6,
+      projectId: PROJECT,
+      routingId: carcassRouting!.id,
+      priority: 50,
+      plannedStartDate: '2026-06-15',
+      parts: [
+        { label: 'Carcass side', materialItemId: oak!.id, lengthMm: 2400, widthMm: 600, thicknessMm: 18, quantity: 12 },
+        { label: 'Shelf', materialItemId: oak!.id, lengthMm: 1180, widthMm: 580, thicknessMm: 18, quantity: 30 },
+      ],
+    });
+
+    // Some doors are through the saw and the bander. Progress is derived from
+    // scans, so the register shows it without anybody typing a percentage.
+    await tx
+      .update(productionSchema.workOrderPart)
+      .set({ completedQuantity: 18 })
+      .where(
+        and(
+          eq(productionSchema.workOrderPart.workOrderId, doors.workOrderId),
+          eq(productionSchema.workOrderPart.partNumber, 1),
+        ),
+      );
+
+    const [firstOp] = await tx
+      .select({ id: productionSchema.workOrderOperation.id })
+      .from(productionSchema.workOrderOperation)
+      .where(
+        and(
+          eq(productionSchema.workOrderOperation.workOrderId, doors.workOrderId),
+          eq(productionSchema.workOrderOperation.sequence, 10),
+        ),
+      );
+    await tx
+      .update(productionSchema.workOrderOperation)
+      .set({ status: 'completed', completedQuantity: 24, actualMinutes: '78.00' })
+      .where(eq(productionSchema.workOrderOperation.id, firstOp!.id));
+
+    // A cutting plan that used the rack. The saving is the whole argument for
+    // the offcut register, and it is only visible if a plan records what it took.
+    const [planOffcuts] = await tx
+      .select({ id: inventorySchema.offcut.id })
+      .from(inventorySchema.offcut)
+      .where(eq(inventorySchema.offcut.tenantId, TENANT))
+      .limit(1);
+
+    await tx.insert(productionSchema.cuttingPlan).values({
+      tenantId: TENANT,
+      workOrderId: doors.workOrderId,
+      version: 1,
+      plan: { boards: 11, note: 'Generated against live stock — rack first, then new sheets.' },
+      options: { kerfMm: 3.2, grainAware: true },
+      sheetsUsed: 11,
+      offcutsUsed: 1,
+      // Two figures, deliberately. Gross treats a large reusable remnant as
+      // waste; net excludes remnants big enough to go back on the rack and is
+      // the economically honest number.
+      grossYieldPercent: '61.40',
+      netYieldPercent: '82.70',
+      materialCost: '3124.0000',
+      consumedOffcutIds: planOffcuts ? [planOffcuts.id] : [],
+      isCommitted: true,
+      committedAt: new Date('2026-05-06T07:15:00Z'),
+    });
+
+    // A load in the booth with the cure clock running, and one already through.
+    const doorParts = await tx
+      .select({ id: productionSchema.workOrderPart.id })
+      .from(productionSchema.workOrderPart)
+      .where(eq(productionSchema.workOrderPart.workOrderId, doors.workOrderId));
+
+    const [curing] = await tx
+      .insert(productionSchema.finishingBatch)
+      .values({
+        tenantId: TENANT,
+        number: 'FIN-2026-0002',
+        workCentreId: centre('SPRAY'),
+        status: 'curing' as const,
+        colourCode: 'RAL9010',
+        sheenCode: 'MATT-20',
+        coatNumber: 2,
+        totalCoats: 2,
+        cureMinutes: 240,
+        // Relative to now, deliberately. A fixed date makes the cure clock read
+        // "ready 1,948 hours ago" whenever the demo is run, which is the one
+        // thing this screen exists to show working.
+        sprayedAt: new Date(Date.now() - 150 * 60_000),
+        cureCompletesAt: new Date(Date.now() + 90 * 60_000),
+      })
+      .returning({ id: productionSchema.finishingBatch.id });
+
+    const [held] = await tx
+      .insert(productionSchema.finishingBatch)
+      .values({
+        tenantId: TENANT,
+        number: 'FIN-2026-0003',
+        workCentreId: centre('SPRAY'),
+        status: 'queued' as const,
+        colourCode: 'RAL9010',
+        sheenCode: 'MATT-20',
+        coatNumber: 1,
+        totalCoats: 2,
+        cureMinutes: 240,
+        // Spraying outside spec produces rework, so the load waits. A held load
+        // is not a queued one, and the register says which.
+        isOnHold: true,
+        holdReason: 'Booth humidity 71% — above the 65% spec for this lacquer.',
+        conditions: { humidityPercent: 71, temperatureC: 33 },
+      })
+      .returning({ id: productionSchema.finishingBatch.id });
+
+    await tx.insert(productionSchema.finishingBatchPart).values([
+      { tenantId: TENANT, batchId: curing!.id, partId: doorParts[0]!.id, quantity: 18 },
+      { tenantId: TENANT, batchId: held!.id, partId: doorParts[0]!.id, quantity: 6 },
+      // Rework back through the booth. Counted separately or a busy booth looks
+      // productive while it is redoing its own work.
+      { tenantId: TENANT, batchId: held!.id, partId: doorParts[1]!.id, quantity: 4, isRework: true },
+    ]);
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
@@ -1077,6 +1285,7 @@ async function main() {
   console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
   console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
   console.log('  estimating: /estimating/tenders · /estimating/estimates · /estimating/rates');
+  console.log('  factory:  /production/orders · /production/board · /production/cutlist · /production/finishing · /production/routings');
 
   await closeDatabase();
 }

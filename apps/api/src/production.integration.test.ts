@@ -747,5 +747,125 @@ suite('Production', () => {
       invalidateTenantModules(TENANT);
     });
   });
-});
 
+  describe('the registers', () => {
+    it('pages work orders by priority, which is the order they actually run in', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/work-orders',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(Array.isArray(body.rows)).toBe(true);
+      expect(body.sort).toBe('priority');
+      expect(body.direction).toBe('asc');
+
+      const priorities = body.rows.map((r: { priority: number }) => r.priority);
+      expect([...priorities].sort((a, b) => a - b)).toEqual(priorities);
+    });
+
+    it('counts progress in pieces, not in cutting-list rows', async () => {
+      // A list of two rows can be seventy-two pieces. Counting completed pieces
+      // against ROWS renders "18 of 2", which is what shipped until it was
+      // driven in a browser.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/work-orders',
+        headers: auth(),
+      });
+
+      const withParts = response
+        .json()
+        .rows.find((r: { partCount: number }) => r.partCount > 0);
+
+      if (withParts) {
+        expect(withParts.partsPlanned).toBeGreaterThanOrEqual(withParts.partCount);
+        expect(withParts.partsCompleted).toBeLessThanOrEqual(withParts.partsPlanned);
+        if (withParts.progressPercent != null) {
+          expect(withParts.progressPercent).toBeCloseTo(
+            (withParts.partsCompleted / withParts.partsPlanned) * 100,
+            1,
+          );
+        }
+      }
+    });
+
+    it('summarises a routing by the stations it passes through', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/routings',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = response.json().rows[0];
+      if (row) {
+        expect(row.operationCount).toBeGreaterThan(0);
+        // In sequence, because a routing is recognised by its path far more
+        // readily than by its name.
+        expect(typeof row.workCentres === 'string' || row.workCentres === null).toBe(true);
+      }
+    });
+
+    it('reports the cure clock as minutes remaining, signed', async () => {
+      // Negative means the load is ready and nobody has moved it — a booth
+      // standing idle, which is the most expensive state on that screen.
+      const db = getDatabase();
+      const [centre] = await db
+        .select({ id: productionSchema.workCentre.id })
+        .from(productionSchema.workCentre)
+        .where(eq(productionSchema.workCentre.tenantId, TENANT))
+        .limit(1);
+
+      const [batch] = await db
+        .insert(productionSchema.finishingBatch)
+        .values({
+          tenantId: TENANT,
+          number: 'FIN-REGISTER-TEST',
+          workCentreId: centre!.id,
+          status: 'curing',
+          cureMinutes: 240,
+          sprayedAt: new Date(Date.now() - 60 * 60_000),
+          cureCompletesAt: new Date(Date.now() + 30 * 60_000),
+        })
+        .returning({ id: productionSchema.finishingBatch.id });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/finishing?q=FIN-REGISTER-TEST',
+        headers: auth(),
+      });
+
+      const row = response.json().rows[0];
+      expect(row.number).toBe('FIN-REGISTER-TEST');
+      expect(row.cureMinutesRemaining).toBeGreaterThan(25);
+      expect(row.cureMinutesRemaining).toBeLessThanOrEqual(30);
+
+      await db
+        .delete(productionSchema.finishingBatch)
+        .where(eq(productionSchema.finishingBatch.id, batch!.id));
+    });
+
+    it('pages cutting plans and reports what came off the rack', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/cutting-plans',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.sort).toBe('createdAt');
+      for (const row of body.rows) {
+        // Both yield figures travel together. Gross treats a large reusable
+        // remnant as waste; net is the economically honest number, and one
+        // without the other is misleading in opposite directions.
+        expect(row).toHaveProperty('grossYieldPercent');
+        expect(row).toHaveProperty('netYieldPercent');
+        expect(row.offcutsConsumed).toBeGreaterThanOrEqual(0);
+      }
+    });
+  });
+});

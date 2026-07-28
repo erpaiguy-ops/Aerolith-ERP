@@ -7,25 +7,42 @@
  * does the joining. That is the payoff of the modular monolith over
  * microservices: this would otherwise be a distributed saga.
  */
-import { schema, withTenant } from '@aerolith/kernel';
+import { parseListParams, schema, withTenant } from '@aerolith/kernel';
 import { optimise, renderPlanSvgs, toCuttingList, type Part, type StockItem } from '@aerolith/cutlist';
 import { inventorySchema, toNumber } from '@aerolith/module-inventory';
 import {
+  CUTTING_PLAN_SORTS,
+  FINISHING_SORTS,
+  ROUTING_SORTS,
+  WORK_ORDER_SORTS,
   WorkOrderError,
   createWorkOrder,
   estimateCompletion,
   getWorkOrderProgress,
+  listCuttingPlans,
+  listFinishingBatches,
+  listRoutings,
+  listWorkOrders,
   productionSchema,
   recordScan,
   releaseWorkOrder,
   saveCuttingPlan,
 } from '@aerolith/module-production';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import { modulesForTenant } from '../bootstrap';
 import { authenticate, requirePermission, withPrincipal, type Principal } from '../context';
+
+interface ListQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  status?: string;
+}
 
 const MODULE = 'production';
 
@@ -110,38 +127,6 @@ export async function productionRoutes(app: FastifyInstance) {
       throw error;
     }
   });
-
-  app.get<{ Querystring: { status?: string; limit?: string } }>(
-    '/production/work-orders',
-    async (request, reply) => {
-      const principal = await authenticate(request);
-      if (!(await requireModule(principal, reply))) return reply;
-      requirePermission(principal, 'production.work_order.read');
-
-      return withPrincipal(principal, () =>
-        withTenant(async (tx) => {
-          const orders = await tx
-            .select()
-            .from(productionSchema.workOrder)
-            .where(
-              and(
-                eq(productionSchema.workOrder.tenantId, principal.context.tenantId),
-                request.query.status
-                  ? eq(productionSchema.workOrder.status, request.query.status as never)
-                  : undefined,
-              ),
-            )
-            .orderBy(
-              asc(productionSchema.workOrder.priority),
-              desc(productionSchema.workOrder.createdAt),
-            )
-            .limit(Math.min(Number(request.query.limit ?? 50), 200));
-
-          return { workOrders: orders };
-        }),
-      );
-    },
-  );
 
   app.get<{ Params: { id: string } }>('/production/work-orders/:id', async (request, reply) => {
     const principal = await authenticate(request);
@@ -256,6 +241,115 @@ export async function productionRoutes(app: FastifyInstance) {
         if (error instanceof WorkOrderError) return reply.code(409).send({ error: error.message });
         throw error;
       }
+    },
+  );
+
+  // --- Registers ----------------------------------------------------------
+
+  app.get<{ Querystring: ListQuery & { projectId?: string; open?: string; late?: string } }>(
+    '/production/work-orders',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.work_order.read');
+
+      const params = parseListParams(request.query, {
+        sortable: WORK_ORDER_SORTS,
+        // By priority, which is what decides the order work actually runs in
+        // when work centres are contended. Sorting a shop-floor list by number
+        // shows the office's view, not the floor's.
+        defaultSort: 'priority',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listWorkOrders(tx, params, {
+            status: request.query.status,
+            projectId: request.query.projectId,
+            openOnly: request.query.open === 'true',
+            lateOnly: request.query.late === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { workOrderId?: string; committed?: string } }>(
+    '/production/cutting-plans',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.work_order.read');
+
+      const params = parseListParams(request.query, {
+        sortable: CUTTING_PLAN_SORTS,
+        defaultSort: 'createdAt',
+        defaultDirection: 'desc',
+      });
+
+      const committed =
+        request.query.committed === 'yes' || request.query.committed === 'no'
+          ? request.query.committed
+          : undefined;
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listCuttingPlans(tx, params, {
+            workOrderId: request.query.workOrderId,
+            committed,
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { workCentreId?: string; open?: string } }>(
+    '/production/finishing',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.work_order.read');
+
+      const params = parseListParams(request.query, {
+        sortable: FINISHING_SORTS,
+        // Soonest out of the booth first. A cured load nobody has moved is a
+        // booth standing idle, and that is the most expensive thing on this
+        // screen.
+        defaultSort: 'cureCompletesAt',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listFinishingBatches(tx, params, {
+            status: request.query.status,
+            workCentreId: request.query.workCentreId,
+            openOnly: request.query.open === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Querystring: ListQuery & { inactive?: string } }>(
+    '/production/routings',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.work_order.read');
+
+      const params = parseListParams(request.query, {
+        sortable: ROUTING_SORTS,
+        defaultSort: 'code',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listRoutings(tx, params, { includeInactive: request.query.inactive === 'true' }),
+        ),
+      );
     },
   );
 

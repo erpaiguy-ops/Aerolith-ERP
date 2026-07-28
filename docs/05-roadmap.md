@@ -516,6 +516,43 @@ real components, and its cached figures were computed from them rather than
 typed. It also adds the customer party the seed never had, without which every
 client column rendered empty.
 
+### Production gets its screens — every nav slot in the app now leads somewhere
+
+Five slots: work orders, the shop floor board, cutting plans, finishing and
+routings. Four are paged registers; the board deliberately is not.
+
+**The board is a shape, not a list.** Every other screen here is a list with a
+pager, because a list answers "find me the one I am looking for". The board
+answers "what is queued where", which a foreman reads all at once — and a page 2
+would hide the station that is idle. The endpoint already returned it grouped by
+work centre for the same reason.
+
+Two defects, both found by driving the screens rather than by reading them:
+
+- **Progress was counted in pieces against ROWS.** `partCount` is rows on the
+  cutting list and `partsCompleted` is pieces, and a list of two rows can be
+  seventy-two pieces — so the register rendered "18 of 2". The service now
+  reports planned pieces separately, and the screen counts pieces against pieces
+  with the row count beside it. The comment in the service warning that these
+  were different questions was written by the same hand that then mixed them.
+- **The cure clock read "ready 1,948h 51m ago".** The seeded spray load carried
+  a fixed date, so the one screen whose entire point is a live constraint showed
+  a dead one every time the demo was run. The load is seeded relative to `now()`
+  now, and the duration helper degrades to days past 48 hours rather than
+  printing four-digit hours.
+
+A third duplicate endpoint was merged: `GET /production/work-orders` already
+existed, unpaged and capped at 200 — the same collision Inventory had, found the
+same way, by Fastify refusing to start. Worth recording that the route survey
+which missed it was a regex that did not match `app.get<{...}>(` split across
+lines. It has now missed the same thing twice; grep for the path literal.
+
+The demo seed grew a factory: five work centres including a batch spray booth,
+two routings, an order released to the floor with part of it through the saw, a
+committed cutting plan that took a piece off the offcut rack, a load curing with
+the clock running, and one held because booth humidity is above the lacquer's
+spec.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
