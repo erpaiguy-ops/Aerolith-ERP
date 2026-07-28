@@ -49,13 +49,17 @@ labelled parts, becomes scanned progress.
   receipt and three-way matching, with the exception queue that catches an
   invoice for goods nobody received
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
-  Contracts, Procurement, Inventory, Estimating and Production. Right-to-left
-  aware and formatted in the user's own locale
+  Contracts, Procurement, Inventory, Estimating and Production. **21 of 27**
+  navigation destinations are built; the rest render an explicit "not built yet"
+  inside the shell rather than a 404. Right-to-left aware and formatted in the
+  user's own locale
 - **908 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — Arabic translations of the interface, and PDF output. One known defect is recorded at the end of
+**Not built yet** — six screens (Notice Register, Retention, RFQs, Job Costing,
+cross-project Progress, Snags), Arabic translations of the interface, and PDF
+output. One known defect is recorded at the end of
 [`docs/05-roadmap.md`](docs/05-roadmap.md): login fails when the API connects as
 the non-superuser application role, because `kernel.membership` is RLS-scoped by
 tenant and login must read it before a tenant is known.

@@ -516,10 +516,15 @@ real components, and its cached figures were computed from them rather than
 typed. It also adds the customer party the seed never had, without which every
 client column rendered empty.
 
-### Production gets its screens — every nav slot in the app now leads somewhere
+### Production gets its screens
 
 Five slots: work orders, the shop floor board, cutting plans, finishing and
 routings. Four are paged registers; the board deliberately is not.
+
+That takes the application to **21 of 27 navigation destinations built**. The six
+still routing to "not built yet" are the Notice Register and Retention under
+Contracts, RFQs under Procurement, and Job Costing, cross-project Progress and
+Snags under Projects. Every module now has screens; no module is complete.
 
 **The board is a shape, not a list.** Every other screen here is a list with a
 pager, because a list answers "find me the one I am looking for". The board
