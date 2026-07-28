@@ -312,10 +312,39 @@ never have been read — recording the notice revalidates the page, and the pane
 holding the message is replaced by the "notice given" card. The lateness is
 stated on that card instead, and the dead branch is gone.
 
-Still missing before this is a usable product: receiving goods in the UI, detail
-screens for requisitions and RFQs, Arabic translations to exercise the RTL
-support that is wired but untested, and PDF output for certificates and
-applications.
+### Goods receipt — the procurement chain closed
+
+The last dead end in procurement: an order could be issued but not received
+against, so the chain could not be completed by a person. There is now a goods
+receipt register (the final "not built yet" procurement slot) and a receive form
+on the order screen.
+
+- **A blank line is not a zero.** Only lines with a typed quantity are sent.
+  Posting zero for every untouched line would write a receipt claiming nothing
+  arrived — and one that looks deliberate rather than empty.
+- **The quantity box is not capped at what is outstanding.** Over-delivery
+  happens, the goods are in the yard either way, and a form that refuses to
+  record what physically arrived just gets worked around. It is accepted and
+  flagged, and the check runs before anything is written so the decision is taken
+  at the gate while the lorry is still there.
+- **The over-delivery flag lives on the delivery, not in a message.** This was
+  the third instance of the same lesson: receiving the last of an order makes it
+  no longer receivable, so the form — and any message beside it — disappears
+  before it can be read. The order screen now lists its deliveries, and the flag
+  is rendered there permanently.
+
+Two latent problems surfaced while doing it. `apps/api/tsconfig.json` only
+included `src`, so **nothing under `scripts/` was ever typechecked** — the demo
+seed had a `TenantContext` missing two required fields and nobody knew. Scripts
+are in scope now, which found that immediately. And the demo seed called
+`receiveGoods` without mirroring the route's stock composition, so a seeded
+delivery never reached stock while one recorded through the UI a minute later
+did; the seed now performs the same composition it already performed for
+commitments, and posts 90 sheets.
+
+Still missing before this is a usable product: detail screens for requisitions
+and RFQs, Arabic translations to exercise the RTL support that is wired but
+untested, and PDF output for certificates and applications.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

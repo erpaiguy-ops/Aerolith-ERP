@@ -2284,3 +2284,136 @@ export async function listSupplierInvoices(
     params,
   );
 }
+
+export interface GoodsReceiptListRow {
+  id: string;
+  number: string | null;
+  receivedOn: string;
+  deliveryNoteReference: string | null;
+  overDelivered: boolean;
+  purchaseOrderId: string;
+  purchaseOrderNumber: string | null;
+  supplierId: string;
+  supplierName: string | null;
+  projectCode: string | null;
+  /** Lines on the delivery note. */
+  lineCount: number;
+  /** Total accrued against the job, in base currency. */
+  accrualValue: number;
+  inspectionNotes: string | null;
+}
+
+/**
+ * Goods receipts, newest first.
+ *
+ * The line count and accrual come from correlated subqueries rather than a join
+ * with a group by, so the page size still governs how many rows come back. Both
+ * are on the row because a receipt register read without them answers only "did
+ * something arrive" — and the questions people actually bring to it are "how
+ * much did it cost the job" and "was any of it a problem".
+ */
+export async function listGoodsReceipts(
+  tx: Transaction,
+  params: ListParams,
+  filters: { purchaseOrderId?: string; supplierId?: string; overDeliveredOnly?: boolean } = {},
+): Promise<ListResult<GoodsReceiptListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(goodsReceipt.tenantId, tenantId)];
+  if (filters.purchaseOrderId) {
+    conditions.push(eq(goodsReceipt.purchaseOrderId, filters.purchaseOrderId));
+  }
+  if (filters.supplierId) conditions.push(eq(goodsReceipt.supplierId, filters.supplierId));
+  if (filters.overDeliveredOnly) conditions.push(eq(goodsReceipt.overDelivered, true));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(goodsReceipt.number, pattern),
+        // The supplier's delivery note is the number written on the paper the
+        // driver handed over, so it is what somebody chasing a delivery quotes.
+        ilike(goodsReceipt.deliveryNoteReference, pattern),
+        ilike(purchaseOrder.number, pattern),
+        ilike(schema.party.name, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: goodsReceipt.number,
+    receivedOn: goodsReceipt.receivedOn,
+    createdAt: goodsReceipt.createdAt,
+  }[params.sort as string] ?? goodsReceipt.receivedOn;
+
+  const rows = await tx
+    .select({
+      id: goodsReceipt.id,
+      number: goodsReceipt.number,
+      receivedOn: goodsReceipt.receivedOn,
+      deliveryNoteReference: goodsReceipt.deliveryNoteReference,
+      overDelivered: goodsReceipt.overDelivered,
+      purchaseOrderId: goodsReceipt.purchaseOrderId,
+      purchaseOrderNumber: purchaseOrder.number,
+      supplierId: goodsReceipt.supplierId,
+      supplierName: schema.party.name,
+      projectCode: schema.project.code,
+      inspectionNotes: goodsReceipt.inspectionNotes,
+      lineCount: sql<number>`(
+        select count(*)::int from procurement."goods_receipt_line" grl
+        where grl.goods_receipt_id = ${goodsReceipt.id} and grl.tenant_id = ${tenantId}
+      )`,
+      accrualValue: sql<string>`(
+        select coalesce(sum(grl.accrual_value), 0) from procurement."goods_receipt_line" grl
+        where grl.goods_receipt_id = ${goodsReceipt.id} and grl.tenant_id = ${tenantId}
+      )`,
+    })
+    .from(goodsReceipt)
+    .leftJoin(
+      purchaseOrder,
+      and(
+        eq(purchaseOrder.id, goodsReceipt.purchaseOrderId),
+        eq(purchaseOrder.tenantId, tenantId),
+      ),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, goodsReceipt.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, purchaseOrder.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(goodsReceipt.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(goodsReceipt)
+    .leftJoin(
+      purchaseOrder,
+      and(
+        eq(purchaseOrder.id, goodsReceipt.purchaseOrderId),
+        eq(purchaseOrder.tenantId, tenantId),
+      ),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, goodsReceipt.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      ...row,
+      lineCount: Number(row.lineCount ?? 0),
+      accrualValue: num(row.accrualValue),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
+}

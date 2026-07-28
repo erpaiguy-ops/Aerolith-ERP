@@ -1403,4 +1403,87 @@ suite('Procurement', () => {
     });
   });
 
+
+  describe('9 — the goods receipt register', () => {
+    it('lists receipts with the line count and what each charged the job', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/receipts',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.total).toBeGreaterThan(0);
+
+      // A receipt register without the accrual says only that something
+      // arrived. The useful question is what the job was charged the day it
+      // landed, months before the invoice.
+      const withValue = body.rows.filter((r: { accrualValue: number }) => r.accrualValue > 0);
+      expect(withValue.length).toBeGreaterThan(0);
+      for (const row of body.rows) {
+        expect(row.lineCount).toBeGreaterThan(0);
+        expect(row.purchaseOrderNumber).toBeTruthy();
+      }
+    });
+
+    it('filters down to the over-delivered ones', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/receipts?overDelivered=true',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.total).toBeGreaterThan(0);
+      expect(body.rows.every((r: { overDelivered: boolean }) => r.overDelivered)).toBe(true);
+    });
+
+    it('searches by the supplier delivery note, not just our own number', async () => {
+      // DN-4471 is the number written on the paper the driver handed over, and
+      // so the one anybody chasing a delivery will quote.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/receipts?q=DN-4471',
+        headers: auth(),
+      });
+
+      expect(response.json().total).toBe(1);
+    });
+
+    it('scopes the register to one order when asked', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/procurement/receipts?purchaseOrderId=${orderId}`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.total).toBeGreaterThan(0);
+      expect(
+        body.rows.every((r: { purchaseOrderId: string }) => r.purchaseOrderId === orderId),
+      ).toBe(true);
+    });
+
+    it('lets the storeman read the register but not the invoices', async () => {
+      // Receiving and paying are different jobs. The register is the storeman's
+      // own record and they can read it; what an invoice says is not their
+      // business and the separation is what makes three-way matching mean
+      // anything.
+      const receipts = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/receipts',
+        headers: auth(STOREMAN_TOKEN),
+      });
+      expect(receipts.statusCode).toBe(200);
+
+      const invoices = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/invoices',
+        headers: auth(STOREMAN_TOKEN),
+      });
+      expect(invoices.statusCode).toBe(403);
+    });
+  });
+
 });

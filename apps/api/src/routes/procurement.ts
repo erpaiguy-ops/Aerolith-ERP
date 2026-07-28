@@ -39,6 +39,7 @@ import {
   issuePurchaseOrder,
   linkCommitment,
   linkReceiptPostings,
+  listGoodsReceipts,
   listMatchExceptions,
   listPurchaseOrders,
   listRequisitions,
@@ -268,6 +269,8 @@ const INVOICE_SORTS = [
 ] as const;
 
 const EXCEPTION_SORTS = ['amount', 'code', 'createdAt'] as const;
+
+const RECEIPT_SORTS = ['number', 'receivedOn', 'createdAt'] as const;
 
 interface ListQuery {
   page?: string;
@@ -641,6 +644,38 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
             stockPosted: movementId != null,
             costAccrued: links.some((link) => link.costEntryId != null),
           };
+        }),
+      ),
+    );
+  });
+
+  // --- Goods receipts ---
+
+  app.get<{
+    Querystring: ListQuery & {
+      purchaseOrderId?: string;
+      supplierId?: string;
+      overDelivered?: string;
+    };
+  }>('/procurement/receipts', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'procurement.receipt.read');
+
+    const params = parseListParams(request.query, {
+      sortable: RECEIPT_SORTS,
+      // Newest delivery first: this register is read to find out what arrived,
+      // and the answer is nearly always about today or yesterday.
+      defaultSort: 'receivedOn',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listGoodsReceipts(tx, params, {
+          purchaseOrderId: request.query.purchaseOrderId,
+          supplierId: request.query.supplierId,
+          overDeliveredOnly: request.query.overDelivered === 'true',
         }),
       ),
     );

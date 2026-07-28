@@ -19,12 +19,14 @@ import {
   withTenant,
   withoutTenantGuard,
 } from '@aerolith/kernel';
+import { inventorySchema, postMovement } from '@aerolith/module-inventory';
 import {
   approveRequisition,
   createPurchaseOrder,
   createRequisition,
   issuePurchaseOrder,
   linkCommitment,
+  linkReceiptPostings,
   procurementSchema,
   receiveGoods,
   registerInvoice,
@@ -92,6 +94,10 @@ async function main() {
       contractsSchema.contractLine,
       contractsSchema.contract,
 
+      inventorySchema.stockMovementLine,
+      inventorySchema.stockMovement,
+      inventorySchema.stockLevel,
+      inventorySchema.warehouse,
       procurementSchema.matchException,
       procurementSchema.supplierInvoiceLine,
       procurementSchema.supplierInvoice,
@@ -182,6 +188,7 @@ async function main() {
       { tenantId: TENANT, entityType: 'procurement.purchase_order', code: 'PO', name: 'Purchase Order', pattern: 'PO-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.goods_receipt', code: 'GRN', name: 'Goods Receipt', pattern: 'GRN-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'procurement.supplier_invoice', code: 'SINV', name: 'Supplier Invoice', pattern: 'SINV-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'inventory.receipt', code: 'IGRN', name: 'Stock Receipt', pattern: 'IGRN-{YYYY}-{SEQ}' },
     ]);
 
     await tx.insert(schema.project).values({
@@ -207,9 +214,17 @@ async function main() {
         userId: USER,
         actorType: 'user',
         locale: 'en',
+        timezone: 'Asia/Dubai',
         countryCode: 'AE',
         currencyCode: 'AED',
+        // Empty: the seed calls services directly rather than going through the
+        // route layer, so nothing here consults the permission set. A request
+        // arrives with it populated.
         permissions: new Set<string>(),
+        // A uuid because the audit log stores it as one. Fixed rather than
+        // random so every row this script writes correlates to one identifiable
+        // "request" — "show me everything the demo seed did" is a query.
+        requestId: '00000000-0000-4000-8000-00000000d0ed',
       },
       () => withTenant(fn),
     );
@@ -379,6 +394,32 @@ async function main() {
     // as the contract terms above, different table.
     await adoptCountry(tx, { tenantId: TENANT, countryCode: 'AE', isPrimary: true });
 
+    const [mdfItem] = await tx
+      .insert(schema.item)
+      .values({
+        tenantId: TENANT,
+        code: 'MDF-18',
+        name: '18mm MDF 2440x1220',
+        type: 'panel',
+        lengthMm: '2440',
+        widthMm: '1220',
+        thicknessMm: '18',
+        hasGrainDirection: false,
+      })
+      .returning({ id: schema.item.id });
+
+    // A warehouse, so receiving in the demo actually posts stock rather than
+    // silently skipping it — the composition is the thing worth demonstrating.
+    const [factory] = await tx
+      .insert(inventorySchema.warehouse)
+      .values({
+        tenantId: TENANT,
+        code: 'FAC',
+        name: 'Main Factory',
+        type: 'factory',
+      })
+      .returning({ id: inventorySchema.warehouse.id });
+
     const suppliers = await tx
       .insert(schema.party)
       .values([
@@ -417,10 +458,12 @@ async function main() {
       promisedDeliveryDate: '2026-04-05',
       lines: [
         {
+          itemId: mdfItem!.id,
           description: '18mm MDF 2440x1220',
           quantity: 140,
           uomCode: 'NR',
           unitPrice: 96,
+          warehouseId: factory!.id,
           wbsNodeId: nodes.get('J-WARD'),
         },
       ],
@@ -450,13 +493,45 @@ async function main() {
       .from(procurementSchema.purchaseOrderLine)
       .where(eq(procurementSchema.purchaseOrderLine.purchaseOrderId, board.purchaseOrderId));
 
-    await receiveGoods(tx, {
+    const delivery = await receiveGoods(tx, {
       purchaseOrderId: board.purchaseOrderId,
       countryCode: 'AE',
       receivedOn: '2026-04-02',
       deliveryNoteReference: 'DN-7781',
       lines: [{ purchaseOrderLineId: boardLine!.id, quantityReceived: 90 }],
     });
+
+    // The same composition the API route performs, mirrored here for the same
+    // reason the commitment above is: this script calls services directly, and a
+    // demo whose seeded delivery never reached stock would disagree with one
+    // recorded through the UI a minute later.
+    const stockable = delivery.postings.filter((p) => p.itemId && p.quantityAccepted > 0);
+    if (stockable.length > 0) {
+      const movement = await postMovement(tx, {
+        type: 'receipt',
+        movementDate: delivery.receivedOn,
+        projectId: PROJECT,
+        partyId: gulf,
+        sourceModule: 'procurement',
+        sourceEntityType: 'procurement.goods_receipt',
+        sourceEntityId: delivery.goodsReceiptId,
+        reference: delivery.number,
+        lines: stockable.map((posting) => ({
+          itemId: posting.itemId!,
+          quantity: posting.quantityAccepted,
+          toWarehouseId: posting.warehouseId,
+          unitCost: posting.unitPriceBase,
+        })),
+      });
+
+      await linkReceiptPostings(tx, {
+        goodsReceiptId: delivery.goodsReceiptId,
+        postings: stockable.map((posting) => ({
+          goodsReceiptLineId: posting.goodsReceiptLineId,
+          stockMovementId: movement.movementId,
+        })),
+      });
+    }
 
     // Billed for the whole order against a part delivery. Nothing about this
     // invoice looks wrong on its own — only the cumulative position catches it,
