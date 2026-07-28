@@ -1,7 +1,7 @@
 import Link from 'next/link';
 
 import { directionFor } from '@/lib/format';
-import { isActiveGroup, isActivePath, type Me, type NavItem } from '@/lib/navigation';
+import { activeNavPath, isActiveGroup, type Me, type NavItem } from '@/lib/navigation';
 
 /**
  * The application shell.
@@ -23,6 +23,10 @@ export function Shell({
   children: React.ReactNode;
 }) {
   const dir = directionFor(me.user.locale);
+  // Resolved once for the whole sidebar: deciding per item highlights every
+  // ancestor that prefix-matches, and the nav then disagrees with itself about
+  // where the user is.
+  const activePath = activeNavPath(me.navigation, currentPath);
 
   return (
     <div dir={dir} className="flex min-h-screen">
@@ -33,7 +37,12 @@ export function Shell({
 
         <nav className="p-2">
           {me.navigation.map((group) => (
-            <NavGroup key={group.key} item={group} currentPath={currentPath} />
+            <NavGroup
+              key={group.key}
+              item={group}
+              currentPath={currentPath}
+              activePath={activePath}
+            />
           ))}
         </nav>
 
@@ -74,12 +83,20 @@ export function Shell({
   );
 }
 
-function NavGroup({ item, currentPath }: { item: NavItem; currentPath: string }) {
+function NavGroup({
+  item,
+  currentPath,
+  activePath,
+}: {
+  item: NavItem;
+  currentPath: string;
+  activePath: string | undefined;
+}) {
   const children = item.children ?? [];
   const open = isActiveGroup(item, currentPath);
 
   if (children.length === 0 && item.path) {
-    return <NavLink item={item} currentPath={currentPath} />;
+    return <NavLink item={item} activePath={activePath} />;
   }
 
   return (
@@ -89,16 +106,23 @@ function NavGroup({ item, currentPath }: { item: NavItem; currentPath: string })
       </div>
       <div className={open ? '' : ''}>
         {children.map((child) => (
-          <NavLink key={child.key} item={child} currentPath={currentPath} />
+          <NavLink key={child.key} item={child} activePath={activePath} />
         ))}
       </div>
     </div>
   );
 }
 
-function NavLink({ item, currentPath }: { item: NavItem; currentPath: string }) {
+function NavLink({
+  item,
+  activePath,
+}: {
+  item: NavItem;
+  /** The one item that should look current, resolved once for the whole nav. */
+  activePath: string | undefined;
+}) {
   if (!item.path) return null;
-  const active = isActivePath(item.path, currentPath);
+  const active = item.path === activePath;
 
   return (
     <Link

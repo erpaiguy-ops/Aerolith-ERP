@@ -56,6 +56,25 @@ export function isActiveGroup(item: NavItem, currentPath: string): boolean {
 }
 
 /** Every leaf with a path, flattened — for the command palette and breadcrumbs. */
+/**
+ * The single nav item that should render as current.
+ *
+ * `isActivePath` prefix-matches, which is right on its own — `/projects/abc123`
+ * belongs to `/projects`. But when two items both match, deciding per item
+ * highlights BOTH: standing on `/contracts/applications` lit up "Contracts" as
+ * well, so the sidebar disagreed with itself about where the user was.
+ *
+ * The longest match wins, because the most specific item is the one the user
+ * actually navigated to. Returns undefined when nothing matches, which is a real
+ * state — a detail screen under a path no nav item covers.
+ */
+export function activeNavPath(items: NavItem[], currentPath: string): string | undefined {
+  return flattenNav(items)
+    .map((item) => item.path)
+    .filter((path): path is string => Boolean(path) && isActivePath(path, currentPath))
+    .sort((a, b) => b.length - a.length)[0];
+}
+
 export function flattenNav(items: NavItem[]): NavItem[] {
   return items.flatMap((item) => [
     ...(item.path ? [item] : []),

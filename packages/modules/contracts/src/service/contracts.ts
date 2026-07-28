@@ -1393,3 +1393,162 @@ export async function listContracts(
     params,
   );
 }
+
+export interface ApplicationListRow {
+  id: string;
+  number: string | null;
+  sequence: number;
+  status: string;
+  contractId: string;
+  contractNumber: string | null;
+  contractName: string;
+  projectCode: string | null;
+  counterpartyName: string | null;
+  currencyCode: string | null;
+  periodTo: string;
+  submittedOn: string | null;
+  certifiedOn: string | null;
+  dueOn: string | null;
+  paidOn: string | null;
+  totalApplied: number;
+  certifiedTotal: number | null;
+  /** Certified less applied. Negative is a disallowance. Null until certified. */
+  disallowed: number | null;
+  /** Certified, past due, unpaid. */
+  isOverdue: boolean;
+  /** Submitted and awaiting a certificate. The clock the client is running. */
+  awaitingCertificate: boolean;
+}
+
+/**
+ * Payment applications across every contract.
+ *
+ * Cross-contract on purpose: the question this answers is "what have we applied
+ * for and not been paid", which is a cash-flow question about the business, not
+ * about one job. A per-contract view answers a different question and is one
+ * filter away.
+ *
+ * `disallowed` is carried on the row rather than left to the reader to subtract.
+ * The gap between applied and certified is the single most useful commercial
+ * fact here — a client who certifies 85% of everything is a pattern you can
+ * price against — and it is invisible if two columns have to be compared by eye.
+ */
+export async function listPaymentApplications(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; contractId?: string; outstandingOnly?: boolean } = {},
+): Promise<ListResult<ApplicationListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(paymentApplication.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(paymentApplication.status, filters.status as never));
+  if (filters.contractId) conditions.push(eq(paymentApplication.contractId, filters.contractId));
+  if (filters.outstandingOnly) {
+    // Everything the business is still waiting on: applied and uncertified, or
+    // certified and unpaid. Not a status — it spans two of them.
+    conditions.push(
+      inArray(paymentApplication.status, ['submitted', 'certified', 'disputed'] as never[]),
+    );
+    conditions.push(sql`${paymentApplication.paidOn} is null`);
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(paymentApplication.number, pattern),
+        ilike(paymentApplication.certificateReference, pattern),
+        ilike(contract.number, pattern),
+        ilike(contract.name, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: paymentApplication.number,
+    status: paymentApplication.status,
+    periodTo: paymentApplication.periodTo,
+    dueOn: paymentApplication.dueOn,
+    totalApplied: paymentApplication.totalApplied,
+    createdAt: paymentApplication.createdAt,
+  }[params.sort as string] ?? paymentApplication.periodTo;
+
+  const joined = () =>
+    tx
+      .select({
+        id: paymentApplication.id,
+        number: paymentApplication.number,
+        sequence: paymentApplication.sequence,
+        status: paymentApplication.status,
+        contractId: paymentApplication.contractId,
+        contractNumber: contract.number,
+        contractName: contract.name,
+        projectCode: schema.project.code,
+        counterpartyName: schema.party.name,
+        currencyCode: contract.currencyCode,
+        periodTo: paymentApplication.periodTo,
+        submittedOn: paymentApplication.submittedOn,
+        certifiedOn: paymentApplication.certifiedOn,
+        dueOn: paymentApplication.dueOn,
+        paidOn: paymentApplication.paidOn,
+        totalApplied: paymentApplication.totalApplied,
+        certifiedTotal: paymentApplication.certifiedTotal,
+        isOverdue: sql<boolean>`(
+          ${paymentApplication.dueOn} is not null
+          and ${paymentApplication.dueOn} < current_date
+          and ${paymentApplication.paidOn} is null
+          and ${paymentApplication.certifiedOn} is not null
+        )`,
+      })
+      .from(paymentApplication)
+      .innerJoin(
+        contract,
+        and(eq(contract.id, paymentApplication.contractId), eq(contract.tenantId, tenantId)),
+      )
+      .leftJoin(
+        schema.project,
+        and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+      )
+      .leftJoin(
+        schema.party,
+        and(eq(schema.party.id, contract.counterpartyId), eq(schema.party.tenantId, tenantId)),
+      );
+
+  const rows = await joined()
+    .where(where)
+    .orderBy(
+      params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn),
+      asc(paymentApplication.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(paymentApplication)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, paymentApplication.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => {
+      const applied = num(row.totalApplied);
+      const certified = row.certifiedTotal == null ? null : num(row.certifiedTotal);
+
+      return {
+        ...row,
+        totalApplied: applied,
+        certifiedTotal: certified,
+        disallowed: certified == null ? null : certified - applied,
+        isOverdue: Boolean(row.isOverdue),
+        awaitingCertificate: row.status === 'submitted',
+      };
+    }),
+    counted?.total ?? 0,
+    params,
+  );
+}

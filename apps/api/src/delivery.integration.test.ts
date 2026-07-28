@@ -1105,6 +1105,86 @@ it('returns the project id on the contract position', async () => {
       expect(measurable.length).toBeGreaterThan(0);
     });
 
+it('lists payment applications across contracts with the disallowance on the row', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/applications',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.total).toBeGreaterThan(0);
+
+      const certified = body.rows.filter((r: { certifiedTotal: number | null }) => r.certifiedTotal != null);
+      expect(certified.length).toBeGreaterThan(0);
+
+      // Carried on the row, not left for the reader to subtract two columns by
+      // eye. A client who trims every valuation is a pattern you can price
+      // against, and only if somebody can total it.
+      for (const row of certified) {
+        expect(row.disallowed).toBeCloseTo(row.certifiedTotal - row.totalApplied, 2);
+      }
+
+      // IPC 1 was certified below what was applied for.
+      expect(certified.some((r: { disallowed: number }) => r.disallowed < 0)).toBe(true);
+    });
+
+    it('filters applications down to what is still outstanding', async () => {
+      // Spans two statuses — applied-and-uncertified plus certified-and-unpaid —
+      // so it could not be a status filter.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/applications?outstanding=true',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(
+        body.rows.every((r: { paidOn: string | null; status: string }) => r.paidOn === null),
+      ).toBe(true);
+      expect(
+        body.rows.every((r: { status: string }) =>
+          ['submitted', 'certified', 'disputed'].includes(r.status),
+        ),
+      ).toBe(true);
+    });
+
+    it('returns one application with its lines and its contract', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/applications',
+        headers: auth(),
+      });
+      const first = list.json().rows[0];
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/applications/${first.id}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.application.id).toBe(first.id);
+      // The currency comes back with it: a certificate screen that renders an
+      // amount without naming the currency is one nobody can safely act on.
+      expect(body.contract.currencyCode).toBe('AED');
+      expect(Array.isArray(body.lines)).toBe(true);
+    });
+
+    it('404s an application that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/applications/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
     it('gates the project list on the permission, not just the module', async () => {
       // The site engineer has `projects.project.read`, so they see the list.
       const engineer = await app.inject({

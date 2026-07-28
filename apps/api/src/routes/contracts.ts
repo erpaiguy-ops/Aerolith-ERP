@@ -21,6 +21,7 @@ import {
   getNoticeExposure,
   getVariationPosition,
   listContracts,
+  listPaymentApplications,
   recordPracticalCompletion,
   scheduleRetentionRelease,
   submitApplication,
@@ -156,6 +157,15 @@ const applicationBody = z.object({
 });
 
 
+const APPLICATION_SORTS = [
+  'number',
+  'status',
+  'periodTo',
+  'dueOn',
+  'totalApplied',
+  'createdAt',
+] as const;
+
 const CONTRACT_SORTS = [
   'number',
   'name',
@@ -167,6 +177,48 @@ const CONTRACT_SORTS = [
 
 export async function contractRoutes(app: FastifyInstance) {
   // --- The index ----------------------------------------------------------
+
+  /**
+   * Payment applications across every contract.
+   *
+   * Registered BEFORE `/contracts/:id/...` would otherwise claim it: Fastify
+   * routes on specificity rather than declaration order, so this is safe, but
+   * keeping it adjacent to the contract list is where a reader looks for it.
+   */
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      sort?: string;
+      direction?: string;
+      q?: string;
+      status?: string;
+      contractId?: string;
+      outstanding?: string;
+    };
+  }>('/contracts/applications', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.application.read');
+
+    const params = parseListParams(request.query, {
+      sortable: APPLICATION_SORTS,
+      // Most recent period first: an applications register is read newest-down,
+      // because the one being argued about is nearly always the last one.
+      defaultSort: 'periodTo',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listPaymentApplications(tx, params, {
+          status: request.query.status,
+          contractId: request.query.contractId,
+          outstandingOnly: request.query.outstanding === 'true',
+        }),
+      ),
+    );
+  });
 
   app.get<{
     Querystring: {
@@ -431,6 +483,66 @@ export async function contractRoutes(app: FastifyInstance) {
       if (error instanceof ContractsError) return reply.code(409).send({ error: error.message });
       throw error;
     }
+  });
+
+  /**
+   * One payment application, with its measured lines and the contract it sits on.
+   *
+   * The contract's number and currency come back with it rather than being
+   * fetched separately: a certificate screen that renders an amount without
+   * naming the currency is a screen nobody can safely act on.
+   */
+  app.get<{ Params: { id: string } }>('/contracts/applications/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.application.read');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => {
+        const tenantId = principal.context.tenantId;
+
+        const [application] = await tx
+          .select()
+          .from(contractsSchema.paymentApplication)
+          .where(
+            and(
+              eq(contractsSchema.paymentApplication.tenantId, tenantId),
+              eq(contractsSchema.paymentApplication.id, request.params.id),
+            ),
+          );
+
+        if (!application) return reply.code(404).send({ error: 'Not found.' });
+
+        const [head] = await tx
+          .select({
+            id: contractsSchema.contract.id,
+            number: contractsSchema.contract.number,
+            name: contractsSchema.contract.name,
+            currencyCode: contractsSchema.contract.currencyCode,
+            paymentTermDays: contractsSchema.contract.paymentTermDays,
+            retentionPercent: contractsSchema.contract.retentionPercent,
+          })
+          .from(contractsSchema.contract)
+          .where(
+            and(
+              eq(contractsSchema.contract.tenantId, tenantId),
+              eq(contractsSchema.contract.id, application.contractId),
+            ),
+          );
+
+        const lines = await tx
+          .select()
+          .from(contractsSchema.paymentApplicationLine)
+          .where(
+            and(
+              eq(contractsSchema.paymentApplicationLine.tenantId, tenantId),
+              eq(contractsSchema.paymentApplicationLine.applicationId, request.params.id),
+            ),
+          );
+
+        return { application, contract: head ?? null, lines };
+      }),
+    );
   });
 
   app.post<{ Params: { id: string } }>('/contracts/applications/:id/submit', async (request, reply) => {

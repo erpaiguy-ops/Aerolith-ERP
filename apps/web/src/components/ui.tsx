@@ -98,7 +98,14 @@ export function Money({
   currency: string | null | undefined;
   tone?: Tone;
 }) {
-  return <span className={`numeric ${TONE_CLASS[tone]}`}>{money(amount, currency)}</span>;
+  // `whitespace-nowrap` because a negative figure otherwise breaks after the
+  // minus sign — "Retention held: −" on one line and the amount on the next
+  // reads as a stray dash, not as a deduction.
+  return (
+    <span className={`numeric whitespace-nowrap ${TONE_CLASS[tone]}`}>
+      {money(amount, currency)}
+    </span>
+  );
 }
 
 /**

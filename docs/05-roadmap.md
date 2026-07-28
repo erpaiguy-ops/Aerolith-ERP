@@ -244,10 +244,42 @@ trains people to ignore the one occasion it matters. The roll-up now takes
 self-assessment as its own input, separate from the percentage carrier, with a
 test pinning both directions.
 
-Still missing before this is a usable product: the remaining write flows
-(raising a variation, receiving goods, certifying an application), detail screens
-for requisitions and RFQs, Arabic translations to exercise the RTL support that
-is wired but untested, and PDF output for certificates and applications.
+### The money loop closes
+
+Drafting an application from progress left a dead end: it sat in draft with no
+way to submit it or record what the client certified. Both now work, on a
+cross-contract **payment applications register** that fills the nav slot which
+had been reading "not built yet".
+
+The register is deliberately cross-contract. "What have we applied for and not
+been paid" is a cash-flow question about the business, not about one job; a
+per-contract view answers a different question and is one filter away. The
+`Outstanding only` filter spans two statuses — applied-and-uncertified plus
+certified-and-unpaid — which is why it is not a status chip.
+
+**The disallowance is a first-class figure.** Certified is kept beside applied,
+never over it, and the gap is carried on the row rather than left for a reader to
+subtract two columns by eye. A client who trims every valuation is a pattern you
+can price the next tender against, and it is invisible unless somebody totals it.
+The register banners the total; the detail screen shows it as an amount and a
+percentage with the reason beside it.
+
+Two user-visible defects a screenshot caught, both in shared components and so
+both affecting every screen:
+
+- A negative figure wrapped after its minus sign, so "Retention held: −" sat on
+  one line and the amount on the next, reading as a stray dash rather than a
+  deduction.
+- Standing on `/contracts/applications` highlighted **both** "Contracts" and
+  "Payment Applications" in the sidebar, because each item decided independently
+  and prefix matching made both true. The active item is now resolved once, most
+  specific wins — a nav that disagrees with itself about where you are is worse
+  than one that is merely plain.
+
+Still missing before this is a usable product: raising a variation and receiving
+goods in the UI, detail screens for requisitions and RFQs, Arabic translations to
+exercise the RTL support that is wired but untested, and PDF output for
+certificates and applications.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

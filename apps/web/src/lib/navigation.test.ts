@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   accessState,
+  activeNavPath,
   flattenNav,
   isActiveGroup,
   isActivePath,
@@ -123,5 +124,38 @@ describe('access state', () => {
       me({ unavailableModules: [{ key: 'accounts', reason: 'Not present.' }] }),
     );
     expect(state.kind).toBe('ready');
+  });
+});
+
+describe('activeNavPath', () => {
+  const nav = [
+    {
+      key: 'contracts',
+      label: 'Contracts',
+      order: 30,
+      children: [
+        { key: 'c.list', label: 'Contracts', path: '/contracts', order: 10 },
+        { key: 'c.apps', label: 'Payment Applications', path: '/contracts/applications', order: 30 },
+      ],
+    },
+  ];
+
+  it('picks the most specific match when two items both prefix-match', () => {
+    // Standing on the applications register used to light up "Contracts" too,
+    // so the sidebar disagreed with itself about where the user was.
+    expect(activeNavPath(nav, '/contracts/applications')).toBe('/contracts/applications');
+  });
+
+  it('still resolves a detail page to its list', () => {
+    // `/contracts/abc-123` is not a nav item; it belongs to `/contracts`.
+    expect(activeNavPath(nav, '/contracts/abc-123')).toBe('/contracts');
+  });
+
+  it('resolves a detail page under the more specific item', () => {
+    expect(activeNavPath(nav, '/contracts/applications/abc-123')).toBe('/contracts/applications');
+  });
+
+  it('returns nothing when the user is somewhere the nav does not cover', () => {
+    expect(activeNavPath(nav, '/settings')).toBeUndefined();
   });
 });
