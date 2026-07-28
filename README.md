@@ -53,16 +53,13 @@ labelled parts, becomes scanned progress.
   navigation destinations are built; the rest render an explicit "not built yet"
   inside the shell rather than a 404. Right-to-left aware and formatted in the
   user's own locale
-- **908 tests**, including integration suites that prove tenant isolation holds and
+- **914 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
 **Not built yet** — six screens (Notice Register, Retention, RFQs, Job Costing,
 cross-project Progress, Snags), Arabic translations of the interface, and PDF
-output. One known defect is recorded at the end of
-[`docs/05-roadmap.md`](docs/05-roadmap.md): login fails when the API connects as
-the non-superuser application role, because `kernel.membership` is RLS-scoped by
-tenant and login must read it before a tenant is known.
+output.
 See [`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ### Estimation
@@ -160,8 +157,15 @@ Integration tests need a database, and it must be **migrated and seeded** —
 without the country packs the localisation suites fail on data, not on logic:
 
 ```bash
-TEST_DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith pnpm test
+TEST_DATABASE_URL=postgres://aerolith:aerolith@localhost:5432/aerolith \
+TEST_APP_DATABASE_URL=postgres://aerolith_app:aerolith_app@localhost:5432/aerolith \
+pnpm test
 ```
+
+Set **both**. `TEST_DATABASE_URL` connects as the table owner, which RLS policies
+do not apply to — so a suite using only that one is testing a database with
+isolation effectively switched off. `TEST_APP_DATABASE_URL` connects as the role
+the API actually uses in production, and it is what the isolation suite needs.
 
 Read that as part of `verify`, not an optional extra. With `TEST_DATABASE_URL`
 unset the 240 integration tests do not fail — they are **skipped**, and `pnpm

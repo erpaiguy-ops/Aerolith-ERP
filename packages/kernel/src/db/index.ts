@@ -10,7 +10,7 @@ import pg from 'pg';
 
 import { requireTenantContext } from '../tenancy/context';
 import * as schema from './schema';
-import { setTenantGuard } from './rls';
+import { setTenantGuard, setUserGuard } from './rls';
 
 export type Database = NodePgDatabase<typeof schema>;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -84,13 +84,49 @@ export async function withTenantId<T>(
 }
 
 /**
+ * Runs `fn` identified as a user, with NO tenant guard.
+ *
+ * The authentication path only. Login has to read `kernel.membership` to find
+ * out which tenants a user belongs to, and it cannot set a tenant guard first
+ * because discovering the tenant IS the operation. `withoutTenantGuard` returns
+ * nothing there — RLS working exactly as designed, and login failing for every
+ * user as a result.
+ *
+ * This sets `app.user_id`, which one policy on one table consults, for SELECT
+ * only. It grants no write anywhere, and it does not widen reads of any other
+ * table: everything else still requires the tenant guard.
+ */
+export async function withUserId<T>(
+  userId: string,
+  fn: (tx: Transaction) => Promise<T>,
+): Promise<T> {
+  return getDatabase().transaction(async (tx) => {
+    await setUserGuard(tx, userId);
+    return fn(tx);
+  });
+}
+
+/**
  * Escape hatch for cross-tenant work: migrations, the outbox dispatcher, the
  * tenant provisioning flow and platform administration. Named to be greppable —
  * every call site should be reviewable.
  *
- * Reads of tenant-scoped tables through this will return NOTHING when the app
- * role is in use, because RLS is forced. That is the intended failure mode; use
- * `withTenantId` when you know the tenant.
+ * **Reads of tenant-scoped tables through this return NOTHING under the
+ * application role.** RLS is forced and no guard is set. That is correct
+ * behaviour and a trap: the query does not fail, it comes back empty, and empty
+ * is indistinguishable from "there is nothing there". Two real bugs shipped this
+ * way — login telling every user they belonged to no workspace, and every module
+ * answering 404 because its entitlements read as absent.
+ *
+ * So this is never the right call for a tenant-scoped table. Use:
+ *
+ *  - `withTenant` when the tenant context is already established;
+ *  - `withTenantId` when the tenant is known but no context exists yet;
+ *  - `withUserId` for the one case where the tenant CANNOT be known — the
+ *    authentication path discovering which tenants a user belongs to.
+ *
+ * Reserve this for tables that carry no `tenant_id` at all (`app_user`,
+ * `session`, `tenant`) and for genuine platform-level work.
  */
 export async function withoutTenantGuard<T>(fn: (tx: Transaction) => Promise<T>): Promise<T> {
   return getDatabase().transaction(fn);

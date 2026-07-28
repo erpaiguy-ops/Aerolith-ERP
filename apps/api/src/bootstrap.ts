@@ -14,6 +14,7 @@ import {
   ModuleRegistry,
   registerModuleRules,
   schema,
+  withTenantId,
   withoutTenantGuard,
   type ModuleManifest,
   type ResolvedModules,
@@ -117,7 +118,13 @@ export async function modulesForTenant(tenantId: string): Promise<ResolvedModule
   const cached = cache.get(tenantId);
   if (cached) return cached;
 
-  const entitlements = await withoutTenantGuard(async (tx) =>
+  // `withTenantId`, not `withoutTenantGuard`. `kernel.tenant_module` is
+  // tenant-scoped, so under the application role an unguarded read returns
+  // nothing — and "no entitlements" is indistinguishable from "bought nothing",
+  // so every module answers 404 and the whole application looks unentitled. The
+  // tenant is already known here, so no policy needs widening; the guard just
+  // has to be set.
+  const entitlements = await withTenantId(tenantId, async (tx) =>
     tx
       .select({ moduleKey: schema.tenantModule.moduleKey })
       .from(schema.tenantModule)

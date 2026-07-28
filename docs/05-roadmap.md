@@ -456,15 +456,8 @@ is how an API rots. `?itemId=` still returns a single position — a figure, not
 list — because splitting those would mean two names for one noun.
 
 **A finding that is not Inventory, and matters more than it.** The demo API could
-not log in when pointed at the application database role. `kernel.membership` is
-RLS-scoped by `app.tenant_id`, but login has to read it *before* a tenant is
-known, so `loadMemberships` returns nothing and every login fails with "not a
-member of any active workspace". The integration tests connect as the table
-OWNER, so 240 passing tests never exercised the configuration the documentation
-insists on — the non-superuser role that makes RLS real. This is left unfixed on
-purpose: the remedy is a security decision (a self-scoped policy on membership,
-or a definer-rights lookup for the auth path) that deserves its own change and
-its own tests, not a line smuggled into an inventory PR.
+not log in when pointed at the application database role. See the entry below,
+where it is fixed.
 
 Still missing before this is a usable product: the login/RLS defect above,
 detail screens for requisitions, RFQs and stock counts, Arabic translations of
@@ -557,6 +550,60 @@ two routings, an order released to the floor with part of it through the saw, a
 committed cutting plan that took a piece off the offcut rack, a load curing with
 the clock running, and one held because booth humidity is above the lacquer's
 spec.
+
+### The application could not run as the application role
+
+The API connects as `aerolith_app`, a non-superuser with no table ownership, and
+that is the entire reason Row Level Security is real here rather than decorative.
+It had never actually been run that way.
+
+Pointed at that role, **login failed for every user** with "not a member of any
+active workspace". `kernel.membership` is tenant-scoped, and `loadMemberships`
+has to read it before any tenant is known — discovering the tenant *is* the
+operation, so no guard can be set. RLS returned nothing, correctly, and the
+message was indistinguishable from a genuine absence of membership.
+
+The fix is one additional **permissive SELECT policy** on that one table:
+
+```sql
+CREATE POLICY self_read ON kernel.membership FOR SELECT TO aerolith_app
+  USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
+```
+
+Postgres ORs permissive policies together, so this widens reads for `membership`
+alone and leaves every write policy exactly as strict as it was. It is
+deliberately SELECT-only: a user who could write their own membership could sign
+themselves into any tenant, which is a far worse bug than the one being fixed.
+`withUserId` sets the guard, and only the authentication path calls it.
+
+**Fixing login exposed a second layer.** With login working, every screen
+returned 404 — `modulesForTenant` read `kernel.tenant_module` through
+`withoutTenantGuard`, and under the app role "no entitlements" is
+indistinguishable from "bought nothing", so every module reported itself as not
+purchased. The tenant is known there, so it simply needed `withTenantId`. An
+audit of every `withoutTenantGuard` call site against the tenant-scoped table
+list found exactly these two; the only other hit is the demo seed, which connects
+as the owner.
+
+**Why no test caught either.** Every integration suite connects as the table
+OWNER, which policies scoped `TO aerolith_app` do not apply to. Nine hundred
+tests were green against a database where RLS was, for them, switched off. The
+kernel isolation suite already had an app-role connection and a
+`TEST_APP_DATABASE_URL` that CI has been setting all along and nothing consumed;
+it now covers the pre-tenant path — that a user can read their own memberships
+and nobody else's, that the self-scope grants no write, and that entitlements are
+invisible without a guard. Dropping the policy makes the first of those fail,
+which was checked rather than assumed.
+
+The comment on `withoutTenantGuard` said reads returning nothing was "the
+intended failure mode". It is correct behaviour and a trap, and saying so is what
+led both call sites astray: the query does not fail, it comes back empty, and
+empty reads as absence. The comment now names the three alternatives and says to
+reserve the escape hatch for tables with no `tenant_id` at all.
+
+Verified by running the API against `aerolith_app` and driving all 21 screens:
+42 rows rendered, no errors. That is the first time the application has run in
+the configuration the documentation has always described.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

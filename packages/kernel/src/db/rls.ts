@@ -83,6 +83,23 @@ export interface RlsOptions {
   appendOnly?: ReadonlySet<string>;
   /** Tables keyed on something other than `tenant_id`, e.g. `tenant.id`. */
   selfKeyed?: Record<string, string>;
+  /**
+   * Tables a user may SELECT their own rows from, keyed by the column holding
+   * the user id — regardless of the tenant guard.
+   *
+   * This exists for exactly one problem: authentication has to read
+   * `kernel.membership` to discover which tenants a user belongs to, and it must
+   * do that BEFORE a tenant is known. Tenant-scoping that read makes it return
+   * nothing, so login fails for every user with the message that they belong to
+   * no workspace. The tenant guard cannot be set, because finding the tenant is
+   * the operation.
+   *
+   * The grant is deliberately narrow. It is SELECT only — a user must never be
+   * able to write their own membership, which would be self-service escalation
+   * into any tenant — and it applies only to the tables named here, so the rest
+   * of the schema keeps pure tenant isolation.
+   */
+  selfReadableByUser?: Record<string, string>;
 }
 
 /**
@@ -96,6 +113,7 @@ export function buildRlsStatementsFor(options: RlsOptions): string[] {
   const { schemaName, tables } = options;
   const appendOnly = options.appendOnly ?? new Set<string>();
   const selfKeyed = options.selfKeyed ?? {};
+  const selfReadableByUser = options.selfReadableByUser ?? {};
   const statements: string[] = [];
 
   for (const table of tables) {
@@ -130,6 +148,18 @@ export function buildRlsStatementsFor(options: RlsOptions): string[] {
         `CREATE POLICY tenant_isolation_delete ON ${qualified} FOR DELETE TO ${APP_ROLE} USING (${predicate});`,
       );
     }
+
+    // An ADDITIONAL permissive SELECT policy. Postgres ORs permissive policies
+    // together, so this widens reads for this table only and leaves every write
+    // policy above exactly as strict as it was.
+    const userColumn = selfReadableByUser[table];
+    statements.push(`DROP POLICY IF EXISTS self_read ON ${qualified};`);
+    if (userColumn) {
+      statements.push(
+        `CREATE POLICY self_read ON ${qualified} FOR SELECT TO ${APP_ROLE} ` +
+          `USING (${userColumn} = nullif(current_setting('app.user_id', true), '')::uuid);`,
+      );
+    }
   }
 
   return statements;
@@ -158,6 +188,8 @@ const KERNEL_RLS: RlsOptions = {
   // `tenant` itself is special: a row is visible when its own id matches the
   // session tenant.
   selfKeyed: { tenant: 'id' },
+  // Authentication reads this before any tenant is known. See the field's note.
+  selfReadableByUser: { membership: 'user_id' },
 };
 
 export function buildRlsStatements(): string[] {
@@ -174,6 +206,17 @@ export function buildGrantStatements(): string[] {
 /** Applies the tenant guard for the current transaction. */
 export async function setTenantGuard(tx: PgDatabase<any, any, any>, tenantId: string) {
   await tx.execute(sql`select set_config('app.tenant_id', ${tenantId}, true)`);
+}
+
+/**
+ * Identifies the acting user for the current transaction.
+ *
+ * Only `kernel.membership` reads this, and only to let authentication discover
+ * which tenants a user belongs to before a tenant guard can exist. Setting it
+ * grants no write anywhere.
+ */
+export async function setUserGuard(tx: PgDatabase<any, any, any>, userId: string) {
+  await tx.execute(sql`select set_config('app.user_id', ${userId}, true)`);
 }
 
 /**

@@ -20,7 +20,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 
-import { withTenantId, withoutTenantGuard, type Transaction } from '../db';
+import { withTenantId, withUserId, withoutTenantGuard, type Transaction } from '../db';
 import { appUser, membership, session, tenant } from '../db/schema';
 import { hashPassword, needsRehash, verifyPassword } from './password';
 
@@ -192,7 +192,12 @@ async function recordFailedAttempt(userId: string, count: number): Promise<void>
 async function loadMemberships(
   userId: string,
 ): Promise<{ tenantId: string; name: string; slug: string; isOwner: boolean }[]> {
-  const rows = await withoutTenantGuard(async (tx) =>
+  // `withUserId`, not `withoutTenantGuard`. `kernel.membership` is tenant-scoped,
+  // and no tenant guard can be set here because finding the tenant is what this
+  // function does — so under the application role the unguarded read returns
+  // nothing and every login fails with "not a member of any active workspace".
+  // The user guard satisfies a SELECT-only policy on this one table.
+  const rows = await withUserId(userId, async (tx) =>
     tx
       .select({ tenantId: membership.tenantId, isOwner: membership.isOwner })
       .from(membership)

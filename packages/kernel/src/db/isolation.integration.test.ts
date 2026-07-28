@@ -11,7 +11,7 @@
  *   TEST_APP_DATABASE_URL=postgres://aerolith_app:aerolith_app@localhost:5432/aerolith \
  *   pnpm test
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -334,5 +334,140 @@ suite('tenant isolation and country adoption', () => {
         }),
       ).rejects.toThrow(/permission denied/i);
     });
+  });
+
+  /**
+   * The pre-tenant path.
+   *
+   * Authentication has to read `kernel.membership` to discover which tenants a
+   * user belongs to, and it must do that BEFORE any tenant is known. These tests
+   * run as the NON-OWNER role on purpose: the API connects that way in
+   * production, every other suite connects as the owner, and that gap is exactly
+   * why login was broken for every user without a single test failing.
+   */
+  describe('authentication before a tenant is known', () => {
+    const alice = 'aaaaaaaa-0000-4000-8000-00000000a001';
+    const bob = 'bbbbbbbb-0000-4000-8000-00000000b001';
+
+    /** As the app role, identified as a user, with NO tenant guard — like login. */
+    async function asUser<T>(
+      userId: string,
+      fn: (tx: Parameters<Parameters<typeof app.transaction>[0]>[0]) => Promise<T>,
+    ): Promise<T> {
+      return app.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('app.user_id', ${userId}, true)`);
+        return fn(tx);
+      });
+    }
+
+    beforeAll(async () => {
+      await owner
+        .insert(schema.appUser)
+        .values([
+          { id: alice, email: 'alice@isolation.test', name: 'Alice', passwordHash: 'x' },
+          { id: bob, email: 'bob@isolation.test', name: 'Bob', passwordHash: 'x' },
+        ])
+        .onConflictDoNothing();
+
+      await owner
+        .insert(schema.membership)
+        .values([
+          { tenantId: tenantA, userId: alice, status: 'active', isOwner: true },
+          { tenantId: tenantB, userId: bob, status: 'active', isOwner: true },
+        ])
+        .onConflictDoNothing();
+    });
+
+    afterAll(async () => {
+      await owner.delete(schema.membership).where(inArray(schema.membership.userId, [alice, bob]));
+      await owner.delete(schema.appUser).where(inArray(schema.appUser.id, [alice, bob]));
+    });
+
+    it('lets a user read their own memberships with no tenant guard set', async () => {
+      // The whole fix. Without it this returns nothing, `loadMemberships` finds
+      // no workspace, and every login fails with "not a member of any active
+      // workspace" — while the owner-connected test suite stays green.
+      const rows = await asUser(alice, (tx) =>
+        tx.select().from(schema.membership).where(eq(schema.membership.userId, alice)),
+      );
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.tenantId).toBe(tenantA);
+    });
+
+    it('does not let a user read anybody else’s memberships', async () => {
+      // The policy is keyed on the user id in the row, not on the id in the
+      // query — so asking for Bob's rows while identified as Alice returns
+      // nothing rather than Bob's tenant.
+      const rows = await asUser(alice, (tx) =>
+        tx.select().from(schema.membership).where(eq(schema.membership.userId, bob)),
+      );
+
+      expect(rows).toEqual([]);
+    });
+
+    it('still shows nothing when neither guard is set', async () => {
+      const rows = await app.select().from(schema.membership);
+      expect(rows).toEqual([]);
+    });
+
+    it('refuses to let a user grant themselves a membership', async () => {
+      // The self-scope is SELECT only. If it were not, any authenticated user
+      // could write themselves into any tenant — self-service escalation, and a
+      // far worse bug than the one being fixed.
+      await expect(
+        asUser(alice, (tx) =>
+          tx
+            .insert(schema.membership)
+            .values({ tenantId: tenantB, userId: alice, status: 'active' }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('refuses to let a user promote their own membership to owner', async () => {
+      await asUser(alice, async (tx) => {
+        const result = await tx
+          .update(schema.membership)
+          .set({ isOwner: true })
+          .where(eq(schema.membership.userId, alice));
+        // The UPDATE policy is still tenant-scoped and no tenant guard is set,
+        // so the statement matches nothing rather than being refused outright.
+        expect(result.rowCount).toBe(0);
+      });
+    });
+
+    it('hides module entitlements without a tenant guard', async () => {
+      // Why `modulesForTenant` needs `withTenantId`. Read unguarded, this comes
+      // back empty, and "no entitlements" is indistinguishable from "bought
+      // nothing" — so every module answers 404 and the whole application looks
+      // unentitled to a user who is correctly signed in.
+      await owner
+        .insert(schema.tenantModule)
+        .values({ tenantId: tenantA, moduleKey: 'inventory', status: 'enabled' })
+        .onConflictDoNothing();
+
+      const unguarded = await app
+        .select()
+        .from(schema.tenantModule)
+        .where(eq(schema.tenantModule.tenantId, tenantA));
+      expect(unguarded).toEqual([]);
+
+      const guarded = await asTenantModule(tenantA);
+      expect(guarded.map((m) => m.moduleKey)).toContain('inventory');
+
+      await owner
+        .delete(schema.tenantModule)
+        .where(eq(schema.tenantModule.tenantId, tenantA));
+    });
+
+    async function asTenantModule(tenantId: string) {
+      return app.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('app.tenant_id', ${tenantId}, true)`);
+        return tx
+          .select()
+          .from(schema.tenantModule)
+          .where(eq(schema.tenantModule.tenantId, tenantId));
+      });
+    }
   });
 });
