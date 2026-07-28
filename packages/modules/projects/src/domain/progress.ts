@@ -127,6 +127,21 @@ export interface WbsNode {
   budgetCost?: number;
   /** Absent on a parent node: a parent's progress is derived, never claimed. */
   progress?: ProgressInput;
+  /**
+   * Whether this node's percentage was SELF-ASSESSED rather than measured.
+   *
+   * Defaults to the progress input's rule, which is right when that input
+   * carries the raw measurement. It has to be settable because a caller reading
+   * nodes back from the database already holds a resolved percentage and passes
+   * it through a `manual` carrier — re-deriving from the rule there would
+   * double-apply the manual ceiling to a node measured last month.
+   *
+   * Without this the carrier makes EVERY node look self-assessed and the "some
+   * of this figure is an opinion" warning is on permanently. A warning that is
+   * always on is not a warning: it trains people to ignore the one occasion it
+   * matters.
+   */
+  selfAssessed?: boolean;
 }
 
 export interface RolledUpNode {
@@ -195,7 +210,7 @@ export function rollUpProgress(nodes: WbsNode[]): Map<string, RolledUpNode> {
     let totalCost = ownCost;
     let earned = node.progress ? node.budgetValue * ownPercent : 0;
     let earnedCost = node.progress ? ownCost * ownPercent : 0;
-    let manual = node.progress?.ruleOfCredit === 'manual';
+    let manual = node.selfAssessed ?? node.progress?.ruleOfCredit === 'manual';
 
     for (const child of rolledChildren) {
       totalBudget += child.totalBudgetValue;

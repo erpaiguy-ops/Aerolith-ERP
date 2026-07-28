@@ -215,10 +215,39 @@ Two decisions worth recording:
   permission; naming who *can* act is more useful. The UI gate is a courtesy and
   the tests assert the API refuses the same call.
 
+### The wedge, made usable
+
+The chain the whole product is arranged around — measured progress becoming a
+payment application — was provable by API and impossible in the UI. Both ends
+now work:
+
+- **`/projects/:id/progress`** renders one input per WBS leaf, chosen by that
+  node's rule of credit: a units box, started/finished checkboxes, weighted
+  milestone ticks, or a capped percentage field that only appears for somebody
+  holding `projects.progress.override`. Sending the wrong evidence for a rule is
+  ignored by the service rather than quietly accepted, so the form is built so it
+  cannot be sent — a user never wonders why the number they typed did nothing.
+  Only leaves are offered: a parent's percentage is the value-weighted roll-up of
+  its children, and an input for it would be overwritten by the next roll-up.
+- **"Value from progress"** on the contract screen drafts a cumulative payment
+  application from that roll-up. Contract lines with no WBS link come back
+  **named** in the result, and the screen repeats them: an unvalued BOQ line is
+  work that has been done and is not being billed for.
+
+**A real bug this surfaced.** `getWbsRollUp` passes every node's already-resolved
+percentage through a `manual` carrier — correctly, because re-deriving from the
+node's rule would double-apply the manual ceiling to a node measured last month.
+But `containsManualClaims` was inferred from that same carrier, so it was
+**always true**: every project screen has been warning that "some of this figure
+is an opinion" regardless. A warning that is always on is not a warning; it
+trains people to ignore the one occasion it matters. The roll-up now takes
+self-assessment as its own input, separate from the percentage carrier, with a
+test pinning both directions.
+
 Still missing before this is a usable product: the remaining write flows
-(recording progress, raising a variation, receiving goods), detail screens for
-requisitions and RFQs, Arabic translations to exercise the RTL support that is
-wired but untested, and PDF output for certificates and applications.
+(raising a variation, receiving goods, certifying an application), detail screens
+for requisitions and RFQs, Arabic translations to exercise the RTL support that
+is wired but untested, and PDF output for certificates and applications.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

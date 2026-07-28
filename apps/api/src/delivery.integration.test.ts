@@ -1062,6 +1062,49 @@ suite('Projects and Contract Administration', () => {
       expect(response.json().hasMore).toBe(false);
     });
 
+it('returns the project id on the contract position', async () => {
+      // The contract screen values an application from progress, which needs the
+      // job. Without this it would have to fetch the contract row again just to
+      // find one uuid — and the panel would silently not render if it were null.
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/${contractId}/position`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().projectId).toBe(PROJECT);
+    });
+
+    it('returns everything the progress form is built from', async () => {
+      // The form renders one input per node, chosen by the node's rule of
+      // credit. A units box on a milestone node would be ignored by the service
+      // rather than quietly accepted, so the shape below is what stops a user
+      // typing a number that does nothing.
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/wbs`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const nodes = response.json().nodes;
+
+      for (const node of nodes) {
+        expect(node).toHaveProperty('ruleOfCredit');
+        expect(node).toHaveProperty('creditMilestones');
+        expect(node).toHaveProperty('percentComplete');
+        // Leaves are the only measurable lines, so the form needs the parent
+        // link to work out which nodes to offer.
+        expect(node).toHaveProperty('parentId');
+      }
+
+      const measurable = nodes.filter(
+        (n: { id: string }) => !nodes.some((c: { parentId: string }) => c.parentId === n.id),
+      );
+      expect(measurable.length).toBeGreaterThan(0);
+    });
+
     it('gates the project list on the permission, not just the module', async () => {
       // The site engineer has `projects.project.read`, so they see the list.
       const engineer = await app.inject({

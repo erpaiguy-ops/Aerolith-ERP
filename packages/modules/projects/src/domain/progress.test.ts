@@ -224,6 +224,42 @@ describe('value-weighted roll-up', () => {
     expect(rolled.get('measured')!.containsManualClaims).toBe(false);
   });
 
+  it('lets a caller state self-assessment separately from the carrier rule', () => {
+    // Reading nodes back from the database gives an already-resolved percentage,
+    // so callers pass it through a `manual` carrier — re-deriving from the real
+    // rule would double-apply the manual ceiling to a node measured last month.
+    // That carrier must not make every node look self-assessed: a warning that
+    // is always on is not a warning, and it trains people to ignore the one
+    // occasion it matters.
+    const rolled = rollUpProgress([
+      { id: 'root', budgetValue: 0 },
+      {
+        id: 'measured',
+        parentId: 'root',
+        budgetValue: 100,
+        progress: { ruleOfCredit: 'manual', manualPercent: 40 },
+        selfAssessed: false,
+      },
+    ]);
+
+    expect(rolled.get('measured')!.percentComplete).toBe(40);
+    expect(rolled.get('measured')!.containsManualClaims).toBe(false);
+    expect(rolled.get('root')!.containsManualClaims).toBe(false);
+  });
+
+  it('still infers self-assessment from the rule when not told', () => {
+    const rolled = rollUpProgress([
+      {
+        id: 'claimed',
+        budgetValue: 100,
+        progress: { ruleOfCredit: 'manual', manualPercent: 40 },
+      },
+    ]);
+
+    expect(rolled.get('claimed')!.containsManualClaims).toBe(true);
+  });
+
+
   it('refuses a WBS that does not form a tree', () => {
     expect(() =>
       rollUpProgress([{ id: 'orphan', parentId: 'missing', budgetValue: 100 }]),

@@ -556,6 +556,7 @@ export async function getWbsRollUp(
       budgetValue: wbsNode.budgetValue,
       budgetCost: wbsNode.budgetCost,
       percentComplete: wbsNode.percentComplete,
+      ruleOfCredit: wbsNode.ruleOfCredit,
     })
     .from(wbsNode)
     .where(and(eq(wbsNode.tenantId, tenantId), eq(wbsNode.projectId, input.projectId)))
@@ -570,6 +571,11 @@ export async function getWbsRollUp(
     // `manual` input carrying it verbatim. Re-deriving from the rule here would
     // double-apply the manual ceiling to a node measured last month.
     progress: { ruleOfCredit: 'manual', manualPercent: num(n.percentComplete) },
+    // The carrier above is 'manual' so the resolved percentage passes through
+    // untouched. The node's REAL rule decides whether this counts as a
+    // self-assessment — without which every node looks self-assessed and the
+    // warning is permanently on.
+    selfAssessed: n.ruleOfCredit === 'manual',
   }));
 
   return rollUpProgress(domain);

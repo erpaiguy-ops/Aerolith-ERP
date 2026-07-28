@@ -1,11 +1,72 @@
 import { notFound } from 'next/navigation';
 
+import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
+import { can, runAction, type ActionState } from '@/lib/actions';
 import { ApiError, apiFetch, apiFetchOptional } from '@/lib/api';
 import { date, money, percent, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
+/**
+ * Values a cumulative payment application from measured site progress.
+ *
+ * The last link in the chain and the one no generic ERP joins: the WBS roll-up
+ * values every contract BOQ line at its measured percentage, and the total
+ * becomes this month's application. Contract lines with no WBS link are NAMED in
+ * the result rather than counted, because an unvalued BOQ line is unbilled work
+ * and "3 lines skipped" is a number nobody investigates.
+ */
+async function valueFromProgress(
+  contractId: string,
+  projectId: string,
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  'use server';
+
+  const periodTo = String(form.get('periodTo') ?? '');
+  if (!periodTo) return { status: 'error', error: 'Choose the period this application covers.' };
+
+  const materials = Number(form.get('materialsOnSite') ?? 0);
+
+  let skipped: string[] = [];
+
+  const state = await runAction(
+    async () => {
+      const created = await apiFetch<{
+        number: string;
+        valuedFromProgress: { linesValued: number; linesUnlinked: string[]; workDoneToDate: number };
+      }>(`/contracts/${contractId}/applications/from-progress`, {
+        method: 'POST',
+        body: {
+          projectId,
+          periodTo,
+          materialsOnSite: Number.isFinite(materials) && materials > 0 ? materials : undefined,
+        },
+      });
+      skipped = created.valuedFromProgress.linesUnlinked;
+      return created;
+    },
+    {
+      revalidate: [`/contracts/${contractId}`, '/contracts'],
+      success: 'Application drafted from measured progress.',
+    },
+  );
+
+  // Success with a warning is still success, but the warning is the useful part:
+  // every named line is work that has been done and is not being billed for.
+  if (state.status === 'success' && skipped.length > 0) {
+    return {
+      status: 'success',
+      message: `${state.message} Not valued — no WBS link: ${skipped.join(', ')}. That work is unbilled until the BOQ is linked.`,
+    };
+  }
+
+  return state;
+}
+
 interface Position {
+  projectId: string | null;
   number: string | null;
   originalSum: number;
   currentSum: number;
@@ -58,6 +119,7 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const me = await getMe();
   const currency = me.tenant.currencyCode;
+  const mayApply = can(me.permissions, 'contracts.application.write');
 
   let position: Position;
   try {
@@ -164,6 +226,53 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
           </div>
         </Card>
       </div>
+
+      {/* Only offered when both halves of the chain are present: a contract
+          linked to a job, and a user who may prepare an application. Without
+          Projects the API refuses with an explanation, and a QS enters measured
+          quantities directly — which is how it is done today. */}
+      {position.projectId && mayApply ? (
+        <Card
+          title="Value from progress"
+          className="mb-6"
+          footnote="Cumulative, like every valuation here: this is the value to date, and the certificate is the difference against what was last certified."
+        >
+          <ActionForm action={valueFromProgress.bind(null, id, position.projectId)}>
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label htmlFor="periodTo" className="mb-1 block text-xs text-(--color-muted)">
+                  Period ending
+                </label>
+                <input
+                  id="periodTo"
+                  name="periodTo"
+                  type="date"
+                  required
+                  defaultValue={new Date().toISOString().slice(0, 10)}
+                  className="rounded-md border border-(--color-line) bg-(--color-surface) px-3 py-1.5 text-sm outline-none focus:border-(--color-accent)"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="materialsOnSite"
+                  className="mb-1 block text-xs text-(--color-muted)"
+                >
+                  Materials on site (optional)
+                </label>
+                <input
+                  id="materialsOnSite"
+                  name="materialsOnSite"
+                  type="number"
+                  step="any"
+                  min={0}
+                  className="w-40 rounded-md border border-(--color-line) bg-(--color-surface) px-3 py-1.5 text-sm outline-none focus:border-(--color-accent)"
+                />
+              </div>
+              <SubmitButton pendingLabel="Valuing…">Draft application</SubmitButton>
+            </div>
+          </ActionForm>
+        </Card>
+      ) : null}
 
       <Card title="Variation register">
         {!variations || variations.variations.length === 0 ? (

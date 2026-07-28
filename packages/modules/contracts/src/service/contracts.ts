@@ -1071,6 +1071,14 @@ export async function scheduleRetentionRelease(
 export interface ContractPosition {
   contractId: string;
   number: string | null;
+  /**
+   * The job this contract belongs to, or null.
+   *
+   * Returned because valuing an application from measured progress needs it, and
+   * a screen that has the contract position already should not have to fetch the
+   * contract row again to find one uuid.
+   */
+  projectId: string | null;
   originalSum: number;
   currentSum: number;
   variations: VariationPosition;
@@ -1169,6 +1177,7 @@ export async function getContractPosition(
   return {
     contractId: input.contractId,
     number: head.number,
+    projectId: head.projectId,
     originalSum: num(head.originalSum),
     currentSum: num(head.currentSum),
     variations,

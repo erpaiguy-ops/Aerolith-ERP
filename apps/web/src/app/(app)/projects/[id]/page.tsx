@@ -1,6 +1,9 @@
 import { notFound } from 'next/navigation';
 
+import Link from 'next/link';
+
 import { Card, Empty, Money, PageHeader, ProgressBar, Stat, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
 import { apiFetch, apiFetchOptional, ApiError } from '@/lib/api';
 import { money, percent, toneForIndex, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
@@ -79,12 +82,24 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
 
   return (
     <>
-      <PageHeader
-        title="Project"
-        subtitle={`${wbs.nodes.length} work breakdown nodes · ${percent(
-          overall.budget > 0 ? (overall.earned / overall.budget) * 100 : 0,
-        )} complete`}
-      />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <PageHeader
+          title="Project"
+          subtitle={`${wbs.nodes.length} work breakdown nodes · ${percent(
+            overall.budget > 0 ? (overall.earned / overall.budget) * 100 : 0,
+          )} complete`}
+        />
+        {/* Every figure on this page is downstream of a measurement, and until
+            now there was no way to make one. */}
+        {can(me.permissions, 'projects.progress.record') ? (
+          <Link
+            href={`/projects/${id}/progress`}
+            className="rounded-md border border-(--color-line) px-3 py-1.5 text-sm hover:bg-(--color-canvas)"
+          >
+            Record progress
+          </Link>
+        ) : null}
+      </div>
 
       {position ? (
         <div className="mb-6 grid gap-4 md:grid-cols-2">
