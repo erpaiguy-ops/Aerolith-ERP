@@ -1175,6 +1175,42 @@ it('lists payment applications across contracts with the disallowance on the row
       expect(Array.isArray(body.lines)).toBe(true);
     });
 
+    it('serves the application as a PDF a reader will open', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/contracts/applications',
+        headers: auth(),
+      });
+      const first = list.json().rows[0];
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/applications/${first.id}/pdf`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('application/pdf');
+      // Named after the document, not after the route segment: what lands in
+      // somebody's downloads folder has to be findable a month later.
+      expect(response.headers['content-disposition']).toContain(`${first.number}.pdf`);
+
+      const body = response.rawPayload;
+      expect(body.subarray(0, 8).toString('latin1')).toBe('%PDF-1.7');
+      expect(body.subarray(-6).toString('latin1').trim()).toBe('%%EOF');
+
+      const text = body.toString('latin1');
+      expect(text).toContain('(Interim payment application)');
+      // Formatted for the tenant rather than stringified: the grouping and the
+      // currency are what a cost consultant checks first.
+      expect(text).toContain('AED ');
+      expect(text).toMatch(/\(AED [\d,]+\.\d\d\)/);
+      // Nothing on an English document should have reached the page as a
+      // question mark. The em dash used as a placeholder did exactly that until
+      // the writer learned to transliterate punctuation.
+      expect(text).not.toMatch(/\(\?+\) Tj/);
+    });
+
     it('404s an application that does not exist', async () => {
       const response = await app.inject({
         method: 'GET',

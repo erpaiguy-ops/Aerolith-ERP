@@ -55,12 +55,17 @@ labelled parts, becomes scanned progress.
   and a workspace can adopt its country, edit its own rules, add its own people
   and invent its own roles without a developer. Right-to-left aware and
   formatted in the user's own locale
-- **945 tests**, including integration suites that prove tenant isolation holds and
+- **PDF documents** (`@aerolith/pdf`) — a payment application renders to a
+  sendable certificate with no dependencies and no headless browser
+  (`GET /api/v1/contracts/applications/:id/pdf`)
+- **961 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — Arabic translations of the interface, and PDF output.
-See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+**Not built yet** — Arabic translations of the interface, and the deployment
+artefacts described in [`docs/04-infrastructure.md`](docs/04-infrastructure.md):
+there is a development `docker-compose.yml` and no Dockerfile, production compose
+or backup job. See [`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ### Estimation
 
@@ -205,6 +210,7 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |
 | `GET /api/v1/localisation/rules` | Resolved rules, with the layer each answer came from, the definition behind each, and a whole-set summary |
 | `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
+| `GET /api/v1/contracts/applications/:id/pdf` | The application as a sendable PDF |
 | `GET /api/v1/admin/members` | Everyone in the workspace, with their roles |
 | `POST /api/v1/admin/members` | Add somebody; attaches an existing account by email |
 | `PATCH /api/v1/admin/members/:userId` | Suspend, reinstate, set roles, hand over ownership |
@@ -244,6 +250,7 @@ packages/
     src/localisation/  country-as-data: packs, rule resolution, adoption
     packs/             AE, QA, SA, OM, BH, KW — adding a country is a JSON file
   cutlist/             panel optimisation engine — zero dependencies, runs anywhere
+  pdf/                 document writer — zero dependencies, no headless browser
   modules/
     inventory/         owns the `inventory` schema
       src/domain/      costing and offcut matching: pure, no framework, no DB

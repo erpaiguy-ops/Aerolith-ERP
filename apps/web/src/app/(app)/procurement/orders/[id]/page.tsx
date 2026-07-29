@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, pageFetch, apiFetchOptional } from '@/lib/api';
+import { ApiError, apiFetch, apiFetchOptional, pageFetch } from '@/lib/api';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -41,7 +41,7 @@ async function issue(id: string, _state: ActionState, _form: FormData): Promise<
   'use server';
 
   return runAction(
-    () => pageFetch(`/procurement/orders/${id}/issue`, { method: 'POST' }),
+    () => apiFetch(`/procurement/orders/${id}/issue`, { method: 'POST' }),
     {
       revalidate: [`/procurement/orders/${id}`, '/procurement/orders', '/projects'],
       success: 'Issued. The commitment is registered against the budget.',

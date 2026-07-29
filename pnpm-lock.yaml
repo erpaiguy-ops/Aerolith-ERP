@@ -65,6 +65,9 @@ importers:
       '@aerolith/module-projects':
         specifier: workspace:*
         version: link:../../packages/modules/projects
+      '@aerolith/pdf':
+        specifier: workspace:*
+        version: link:../../packages/pdf
       '@fastify/cors':
         specifier: ^10.0.1
         version: 10.1.0
@@ -344,6 +347,15 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.23.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.2
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.1)
+
+  packages/pdf:
+    devDependencies:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

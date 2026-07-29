@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
-import { ApiError, pageFetch } from '@/lib/api';
+import { ApiError, apiFetch, pageFetch } from '@/lib/api';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
@@ -70,7 +70,7 @@ async function releaseInvoice(
 
   return runAction(
     () =>
-      pageFetch(`/procurement/invoices/${id}/release`, {
+      apiFetch(`/procurement/invoices/${id}/release`, {
         method: 'POST',
         body: { reason },
       }),

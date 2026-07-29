@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Money, PageHeader, ProgressBar, Stat } from '@/components/ui';
 import { can, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, pageFetch } from '@/lib/api';
+import { ApiError, apiFetch, pageFetch } from '@/lib/api';
 import { date, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -104,7 +104,7 @@ async function record(
 
   return runAction(
     () =>
-      pageFetch(`/projects/${projectId}/progress`, {
+      apiFetch(`/projects/${projectId}/progress`, {
         method: 'POST',
         body: { periodEnd, measurements },
       }),

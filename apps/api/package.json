@@ -12,18 +12,19 @@
     "db:seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
+    "@aerolith/cutlist": "workspace:*",
     "@aerolith/kernel": "workspace:*",
+    "@aerolith/module-contracts": "workspace:*",
+    "@aerolith/module-estimation": "workspace:*",
     "@aerolith/module-inventory": "workspace:*",
+    "@aerolith/module-procurement": "workspace:*",
+    "@aerolith/module-production": "workspace:*",
+    "@aerolith/module-projects": "workspace:*",
+    "@aerolith/pdf": "workspace:*",
     "@fastify/cors": "^10.0.1",
     "drizzle-orm": "^0.38.4",
     "fastify": "^5.2.1",
-    "zod": "^3.24.1",
-    "@aerolith/cutlist": "workspace:*",
-    "@aerolith/module-production": "workspace:*",
-    "@aerolith/module-estimation": "workspace:*",
-    "@aerolith/module-projects": "workspace:*",
-    "@aerolith/module-contracts": "workspace:*",
-    "@aerolith/module-procurement": "workspace:*"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

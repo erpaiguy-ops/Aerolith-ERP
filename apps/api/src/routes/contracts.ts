@@ -7,7 +7,7 @@
  * parts → scanned progress → payment application. Contracts does not import
  * Projects and Projects does not import Contracts; this route composes them.
  */
-import { parseListParams, withTenant } from '@aerolith/kernel';
+import { parseListParams, schema, withTenant } from '@aerolith/kernel';
 import {
   CORRESPONDENCE_SORTS,
   ContractsError,
@@ -40,6 +40,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import { modulesForTenant } from '../bootstrap';
+import { renderApplicationPdf } from '../documents/paymentApplication';
 import { authenticate, requirePermission, withPrincipal, type Principal } from '../context';
 
 const MODULE = 'contracts';
@@ -805,6 +806,152 @@ export async function contractRoutes(app: FastifyInstance) {
       }),
     );
   });
+
+  /**
+   * The application as a PDF you can send to the client.
+   *
+   * Generated on demand rather than stored, because the certified figures change
+   * after submission and a stored file would be the version before the client
+   * replied. The document is a view of the record; the record is the record.
+   *
+   * `Content-Disposition: attachment` with the application's own number as the
+   * filename: what lands in somebody's downloads folder should be findable a
+   * month later, and `download.pdf` is not.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/contracts/applications/:id/pdf',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'contracts.application.read');
+
+      const tenantId = principal.context.tenantId;
+
+      const document = await withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          const [application] = await tx
+            .select()
+            .from(contractsSchema.paymentApplication)
+            .where(
+              and(
+                eq(contractsSchema.paymentApplication.tenantId, tenantId),
+                eq(contractsSchema.paymentApplication.id, request.params.id),
+              ),
+            );
+
+          if (!application) return null;
+
+          const [head] = await tx
+            .select()
+            .from(contractsSchema.contract)
+            .where(
+              and(
+                eq(contractsSchema.contract.tenantId, tenantId),
+                eq(contractsSchema.contract.id, application.contractId),
+              ),
+            );
+
+          const lines = await tx
+            .select()
+            .from(contractsSchema.paymentApplicationLine)
+            .where(
+              and(
+                eq(contractsSchema.paymentApplicationLine.tenantId, tenantId),
+                eq(contractsSchema.paymentApplicationLine.applicationId, request.params.id),
+              ),
+            )
+            .orderBy(asc(contractsSchema.paymentApplicationLine.createdAt));
+
+          // `tenant` is keyed on its own id under RLS rather than on
+          // `tenant_id`, which is why this reads back the row rather than
+          // trusting the request context for the letterhead.
+          const [tenant] = await tx
+            .select()
+            .from(schema.tenant)
+            .where(eq(schema.tenant.id, tenantId));
+
+          // The TRN belongs to a LEGAL ENTITY, not to the workspace: a group
+          // with a Dubai company and a Doha branch has two, and putting the
+          // wrong one on a tax invoice is a filing problem rather than a
+          // cosmetic one. A contract does not currently name its entity, so
+          // this takes the default and will take the contract's the day that
+          // column exists.
+          const [entity] = await tx
+            .select({ taxRegistrationNumber: schema.legalEntity.taxRegistrationNumber })
+            .from(schema.legalEntity)
+            .where(
+              and(
+                eq(schema.legalEntity.tenantId, tenantId),
+                eq(schema.legalEntity.isDefault, true),
+              ),
+            )
+            .limit(1);
+
+          const [project] = head?.projectId
+            ? await tx
+                .select({ code: schema.project.code, name: schema.project.name })
+                .from(schema.project)
+                .where(
+                  and(eq(schema.project.tenantId, tenantId), eq(schema.project.id, head.projectId)),
+                )
+            : [];
+
+          const [client] = head?.counterpartyId
+            ? await tx
+                .select({ name: schema.party.name })
+                .from(schema.party)
+                .where(
+                  and(
+                    eq(schema.party.tenantId, tenantId),
+                    eq(schema.party.id, head.counterpartyId),
+                  ),
+                )
+            : [];
+
+          return renderApplicationPdf({
+            tenant: {
+              name: tenant?.name ?? 'Aerolith',
+              locale: principal.context.locale ?? tenant?.defaultLocale ?? 'en',
+              currencyCode: tenant?.baseCurrencyCode ?? null,
+              taxRegistrationNumber: entity?.taxRegistrationNumber ?? null,
+            },
+            contract: head
+              ? {
+                  number: head.number,
+                  name: head.name,
+                  currencyCode: head.currencyCode,
+                  paymentTermDays: head.paymentTermDays,
+                  retentionPercent: head.retentionPercent,
+                }
+              : null,
+            project: project ?? null,
+            client: client ?? null,
+            application,
+            lines,
+          });
+        }),
+      );
+
+      if (!document) return reply.code(404).send({ error: 'Not found.' });
+
+      const [row] = await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          tx
+            .select({ number: contractsSchema.paymentApplication.number })
+            .from(contractsSchema.paymentApplication)
+            .where(eq(contractsSchema.paymentApplication.id, request.params.id)),
+        ),
+      );
+
+      return reply
+        .header('content-type', 'application/pdf')
+        .header(
+          'content-disposition',
+          `attachment; filename="${(row?.number ?? 'payment-application').replace(/[^A-Za-z0-9._-]/g, '-')}.pdf"`,
+        )
+        .send(Buffer.from(document));
+    },
+  );
 
   app.post<{ Params: { id: string } }>('/contracts/applications/:id/submit', async (request, reply) => {
     const principal = await authenticate(request);

@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, pageFetch } from '@/lib/api';
+import { ApiError, apiFetch, pageFetch } from '@/lib/api';
 import { date, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -68,7 +68,7 @@ async function submit(id: string, _state: ActionState, form: FormData): Promise<
 
   return runAction(
     () =>
-      pageFetch(`/contracts/applications/${id}/submit`, {
+      apiFetch(`/contracts/applications/${id}/submit`, {
         method: 'POST',
         body: { submittedOn },
       }),
@@ -102,7 +102,7 @@ async function certify(id: string, _state: ActionState, form: FormData): Promise
 
   return runAction(
     () =>
-      pageFetch(`/contracts/applications/${id}/certify`, {
+      apiFetch(`/contracts/applications/${id}/certify`, {
         method: 'POST',
         body: {
           certifiedNet,
@@ -161,6 +161,23 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
             : `Period to ${date(application.periodTo)}`
         }
       />
+
+      <p className="mb-4 text-sm">
+        {/* A plain anchor, not a `Link`: this is a file download, and the client
+            router would try to render the response as a page. `download` asks
+            the browser to save rather than navigate, and the API's own
+            `Content-Disposition` names it after the application. */}
+        <a
+          href={`/api/applications/${id}/pdf`}
+          download
+          className="text-(--color-accent) hover:underline"
+        >
+          Download as PDF
+        </a>
+        <span className="ms-2 text-(--color-muted)">
+          Generated when you ask for it, from the figures on this page.
+        </span>
+      </p>
 
       {/* The certificate, once there is one. Reported by durable state rather
           than by the action's message, which is removed along with the form the

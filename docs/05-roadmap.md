@@ -997,6 +997,73 @@ The suite also cleans up the roles it creates. It passed the first time and
 failed the second, which is the same "idempotent by accident of always running
 against a fresh database" fault recorded twice already in this log.
 
+### A payment application you can send
+
+A valuation that only exists on a screen is not a valuation. Applications are
+sent to a client's cost consultant, marked up, and sent back — so the document
+was the last thing on the README's own "not built yet" list that nobody had
+deferred.
+
+`@aerolith/pdf` writes PDF 1.7 with **no dependencies**, the same rule as
+`@aerolith/cutlist` and for the same reason. HTML-to-PDF means shipping Chromium
+to the deployment target, which on the free-tier VM this is designed for costs
+more memory than the database, and a payment certificate is text, rules and a
+table. Only the base-14 fonts are used, so nothing is embedded and a certificate
+is four kilobytes.
+
+Three parts that are easy to get wrong and were got wrong first:
+
+- **The cross-reference table is measured in bytes, not characters.** Every
+  object's offset has to point at the byte its header starts on. Measure lengths
+  in UTF-8 while writing Latin-1 and every offset after the first accented
+  character is out by one, and the file opens as "damaged" rather than as wrong.
+  There is a test that pins this with `Société Générale — Café, £250`.
+- **Text width is measured, not estimated.** Adobe's core metrics are in the
+  writer, because right-aligning a column of money by guessing an average
+  character width puts a ten-digit figure through the edge of the page often
+  enough to matter, and a column of figures that does not share a right edge
+  cannot be read down at all.
+- **The footer is stamped after the last page exists.** "Page 2 of 5" cannot be
+  written before page five does, which is why so many reports say "page 2 of 2".
+
+**The first certificate came out full of question marks.** The base-14 fonts are
+WinAnsi-encoded and the placeholder for a missing value was an em dash, so
+`Employer / client` printed as `?` and so did every ` — ` separator on the page.
+An em dash is punctuation, not script: a hyphen loses nothing. The writer now
+transliterates a small set — dashes, curly quotes, ellipsis, non-breaking space,
+the bidi marks `Intl` puts around Arabic currency — and measures widths after
+folding, or a right-aligned figure drifts by the difference in character count.
+Arabic and CJK are deliberately NOT in that table, because there is no faithful
+Latin reading of them: they stay unrenderable, and the document says so on itself
+rather than letting the recipient discover it.
+
+That last point is what the integration test actually catches. Removing the
+transliteration makes it fail on `AED ` — because `Intl` puts a non-breaking
+space between the currency and the number, so the currency formatting itself
+depends on the fold.
+
+**Generated on demand, not stored.** The certified figures change after
+submission, and a stored file would be the version before the client replied.
+The document is a view of the record; the record is the record.
+
+The browser reaches it through a Next route handler rather than linking at the
+API, because the session token is in an httpOnly cookie that client JavaScript
+cannot read — which is the entire reason it is httpOnly.
+
+Verified by rendering the generated file in Chromium's own PDF engine and reading
+it: `file` calls it "PDF document, version 1.7, 1 page(s)", every figure agrees
+with the seed (415,000 gross, 10% retention of 41,500, net 373,500, 5% tax of
+18,675, applied 392,175, certified 340,000 and the −33,500 difference), the
+download lands as `IPC-2026-00001.pdf`, the quantity surveyor who holds
+`contracts.application.read` gets it, and the storekeeper gets 403.
+
+**And a bug from the previous entry, found and fixed here.** The mechanical
+conversion of page fetches to `pageFetch` also caught eight write calls sitting
+inside `'use server'` functions in page files. `pageFetch` turns a refusal into
+`notFound()`, which inside an action is a control-flow error that `runAction`
+catches and reports as "something went wrong" — losing the real message. Those
+are back on `apiFetch`, which is what returns a message.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
