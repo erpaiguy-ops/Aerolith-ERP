@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 
 import { Badge, Card, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
 
 interface History {
@@ -69,7 +69,7 @@ export default async function ApprovalHistoryPage({
 
   let history: History;
   try {
-    history = await apiFetch<History>(`/approvals/${id}/history`);
+    history = await pageFetch<History>(`/approvals/${id}/history`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

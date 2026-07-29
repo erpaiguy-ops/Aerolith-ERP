@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { date, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -80,7 +80,7 @@ async function giveNotice(id: string, _state: ActionState, form: FormData): Prom
   // read by anyone.
   return runAction(
     () =>
-      apiFetch(`/contracts/variations/${id}/notice`, {
+      pageFetch(`/contracts/variations/${id}/notice`, {
         method: 'POST',
         body: {
           noticeGivenOn,
@@ -113,7 +113,7 @@ async function approve(id: string, _state: ActionState, form: FormData): Promise
 
   return runAction(
     () =>
-      apiFetch(`/contracts/variations/${id}/approve`, {
+      pageFetch(`/contracts/variations/${id}/approve`, {
         method: 'POST',
         body: {
           approvedValue,
@@ -142,7 +142,7 @@ export default async function VariationPage({ params }: { params: Promise<{ id: 
 
   let detail: VariationDetail;
   try {
-    detail = await apiFetch<VariationDetail>(`/contracts/variations/${id}`);
+    detail = await pageFetch<VariationDetail>(`/contracts/variations/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

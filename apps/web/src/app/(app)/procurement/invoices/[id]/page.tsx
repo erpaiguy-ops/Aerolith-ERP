@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
@@ -70,7 +70,7 @@ async function releaseInvoice(
 
   return runAction(
     () =>
-      apiFetch(`/procurement/invoices/${id}/release`, {
+      pageFetch(`/procurement/invoices/${id}/release`, {
         method: 'POST',
         body: { reason },
       }),
@@ -94,7 +94,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 
   let detail: InvoiceDetail;
   try {
-    detail = await apiFetch<InvoiceDetail>(`/procurement/invoices/${id}`);
+    detail = await pageFetch<InvoiceDetail>(`/procurement/invoices/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

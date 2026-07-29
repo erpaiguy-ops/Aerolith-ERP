@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { date, dimensions, integer, percent, quantity } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -123,7 +123,7 @@ export default async function CuttingPlanPage({
 
   let detail: PlanDetail;
   try {
-    detail = await apiFetch<PlanDetail>(`/production/cutting-plans/${id}`);
+    detail = await pageFetch<PlanDetail>(`/production/cutting-plans/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

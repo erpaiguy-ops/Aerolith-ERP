@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { date, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -68,7 +68,7 @@ async function submit(id: string, _state: ActionState, form: FormData): Promise<
 
   return runAction(
     () =>
-      apiFetch(`/contracts/applications/${id}/submit`, {
+      pageFetch(`/contracts/applications/${id}/submit`, {
         method: 'POST',
         body: { submittedOn },
       }),
@@ -102,7 +102,7 @@ async function certify(id: string, _state: ActionState, form: FormData): Promise
 
   return runAction(
     () =>
-      apiFetch(`/contracts/applications/${id}/certify`, {
+      pageFetch(`/contracts/applications/${id}/certify`, {
         method: 'POST',
         body: {
           certifiedNet,
@@ -131,7 +131,7 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
 
   let detail: ApplicationDetail;
   try {
-    detail = await apiFetch<ApplicationDetail>(`/contracts/applications/${id}`);
+    detail = await pageFetch<ApplicationDetail>(`/contracts/applications/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

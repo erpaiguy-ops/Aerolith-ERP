@@ -4,7 +4,7 @@ import Link from 'next/link';
 
 import { Card, Empty, Money, PageHeader, ProgressBar, Stat, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
-import { apiFetch, apiFetchOptional, ApiError } from '@/lib/api';
+import { pageFetch, apiFetchOptional, ApiError } from '@/lib/api';
 import { money, percent, toneForIndex, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -61,7 +61,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
 
   let wbs: { nodes: WbsNode[] };
   try {
-    wbs = await apiFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
+    wbs = await pageFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

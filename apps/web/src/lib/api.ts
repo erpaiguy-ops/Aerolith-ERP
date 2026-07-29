@@ -8,6 +8,7 @@
  * browser never holds a credential.
  */
 import { cookies } from 'next/headers';
+import { notFound } from 'next/navigation';
 
 export const SESSION_COOKIE = 'aerolith_session';
 
@@ -38,6 +39,11 @@ export class ApiError extends Error {
    */
   get isNotFound(): boolean {
     return this.status === 404;
+  }
+
+  /** The caller is signed in and lacks the permission this endpoint requires. */
+  get isForbidden(): boolean {
+    return this.status === 403;
   }
 }
 
@@ -111,6 +117,33 @@ export async function apiFetchOptional<T>(
     return await apiFetch<T>(path, options);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) return null;
+    throw error;
+  }
+}
+
+/**
+ * `apiFetch` for a PAGE, turning a refusal into a rendered page instead of a 500.
+ *
+ * Every screen in this application is gated on a permission, and until this
+ * existed a user who typed the URL of a screen their role does not reach got an
+ * unhandled `ApiError` and a blank 500 — measured on five of eight pages tried
+ * as a storekeeper. The navigation already hides those links, so the way there
+ * is a typed address or a stale bookmark, and neither deserves a crash.
+ *
+ * A 403 renders not-found rather than "you are not allowed", which is the same
+ * choice the API already makes for a module a tenant has not bought: a screen
+ * you cannot reach does not confirm it exists. The in-shell `not-found` page
+ * says both readings out loud, so nobody is left guessing which one it was.
+ *
+ * **Pages only.** `notFound()` throws a control-flow error that Next catches;
+ * inside a server action it would be swallowed by `runAction` and reported as
+ * "something went wrong". Actions keep using `apiFetch` and get a message.
+ */
+export async function pageFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  try {
+    return await apiFetch<T>(path, options);
+  } catch (error) {
+    if (error instanceof ApiError && (error.isNotFound || error.isForbidden)) notFound();
     throw error;
   }
 }

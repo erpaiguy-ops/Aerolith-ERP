@@ -263,6 +263,63 @@ async function main() {
       { tenantId: TENANT, userId: QS_USER, status: 'active', isOwner: false },
     ]);
 
+    /*
+     * Roles, and one person who actually holds one.
+     *
+     * The RBAC schema has been here since the first migration and the demo had
+     * no roles at all: two members, both with an empty permission set, one of
+     * them an owner who bypasses the matrix anyway. That meant every permission
+     * gate in the application was only ever exercised against somebody it never
+     * applied to, and Rana — the quantity surveyor the approval workflow routes
+     * to — could sign in and see nothing but her inbox.
+     *
+     * `isApprovalTarget` matters on the QS role: an approval step can route to a
+     * role rather than a named person, which is what keeps a workflow working
+     * after somebody leaves.
+     */
+    const [qsRole, storeRole] = await tx
+      .insert(schema.role)
+      .values([
+        {
+          tenantId: TENANT,
+          code: 'QUANTITY_SURVEYOR',
+          name: 'Quantity Surveyor',
+          description: 'Values work, raises variations, reads the commercial position.',
+          isApprovalTarget: true,
+        },
+        {
+          tenantId: TENANT,
+          code: 'STOREKEEPER',
+          name: 'Storekeeper',
+          description: 'Runs the stores. Moves stock, counts it, cannot price it.',
+        },
+      ])
+      .returning({ id: schema.role.id, code: schema.role.code });
+
+    await tx.insert(schema.rolePermission).values([
+      ...[
+        'projects.project.read',
+        'projects.progress.record',
+        'projects.cost.read',
+        'projects.snag.read',
+        'contracts.contract.read',
+        'contracts.variation.read',
+        'contracts.variation.write',
+        'contracts.application.read',
+        'contracts.application.write',
+        'inventory.stock.read',
+      ].map((permissionKey) => ({ tenantId: TENANT, roleId: qsRole!.id, permissionKey })),
+      ...[
+        'inventory.item.read',
+        'inventory.stock.read',
+        'inventory.stock_movement.create',
+      ].map((permissionKey) => ({ tenantId: TENANT, roleId: storeRole!.id, permissionKey })),
+    ]);
+
+    await tx
+      .insert(schema.userRole)
+      .values({ tenantId: TENANT, userId: QS_USER, roleId: qsRole!.id, grantedBy: USER });
+
     await tx.insert(schema.tenantModule).values(
       ['projects', 'contracts', 'estimation', 'production', 'inventory', 'procurement'].map(
         (moduleKey) => ({

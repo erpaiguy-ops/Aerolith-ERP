@@ -10,7 +10,7 @@ import {
 } from '@/components/List';
 import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
 import { can, runAction, type ActionState } from '@/lib/actions';
-import { apiFetch } from '@/lib/api';
+import { pageFetch } from '@/lib/api';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -27,7 +27,7 @@ async function approve(id: string, _state: ActionState, _form: FormData): Promis
   'use server';
 
   return runAction(
-    () => apiFetch(`/procurement/requisitions/${id}/approve`, { method: 'POST' }),
+    () => pageFetch(`/procurement/requisitions/${id}/approve`, { method: 'POST' }),
     { revalidate: ['/procurement/requisitions'], success: 'Approved.' },
   );
 }

@@ -1,7 +1,7 @@
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
-import { apiFetch } from '@/lib/api';
+import { pageFetch } from '@/lib/api';
 import { integer, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -71,9 +71,9 @@ export default async function SettingsPage() {
   // asking for them before that returns empty lists rather than an error — so
   // they are fetched together and the page decides what to show.
   const [countries, requirements, taxCodes] = await Promise.all([
-    apiFetch<{ countries: Country[] }>('/localisation/countries'),
-    apiFetch<{ requirements: Requirement[] }>('/localisation/requirements'),
-    apiFetch<{ taxCodes: TaxCode[] }>('/localisation/tax-codes'),
+    pageFetch<{ countries: Country[] }>('/localisation/countries'),
+    pageFetch<{ requirements: Requirement[] }>('/localisation/requirements'),
+    pageFetch<{ taxCodes: TaxCode[] }>('/localisation/tax-codes'),
   ]);
 
   const current = countries.countries.find((c) => c.code === me.tenant.countryCode);

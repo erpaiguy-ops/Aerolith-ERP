@@ -34,6 +34,21 @@ export {
 export { KERNEL_MODULE_KEY, KERNEL_PERMISSIONS } from './rbac/permissions';
 
 export {
+  MemberError,
+  addMember,
+  createRole,
+  listMembers,
+  listRoles,
+  setMemberRoles,
+  setMemberStatus,
+  setRolePermissions,
+  type AddMemberInput,
+  type AddMemberResult,
+  type MemberRow,
+  type RoleRow,
+} from './rbac/members';
+
+export {
   APPEND_ONLY_TABLES,
   APP_ROLE,
   TENANT_SCOPED_TABLES,

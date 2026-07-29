@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, apiFetch, apiFetchOptional } from '@/lib/api';
+import { ApiError, pageFetch, apiFetchOptional } from '@/lib/api';
 import { date, money, percent, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -34,7 +34,7 @@ async function valueFromProgress(
 
   const state = await runAction(
     async () => {
-      const created = await apiFetch<{
+      const created = await pageFetch<{
         number: string;
         valuedFromProgress: { linesValued: number; linesUnlinked: string[]; workDoneToDate: number };
       }>(`/contracts/${contractId}/applications/from-progress`, {
@@ -124,7 +124,7 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
 
   let position: Position;
   try {
-    position = await apiFetch<Position>(`/contracts/${id}/position`);
+    position = await pageFetch<Position>(`/contracts/${id}/position`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

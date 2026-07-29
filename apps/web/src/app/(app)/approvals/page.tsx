@@ -1,6 +1,6 @@
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader } from '@/components/ui';
-import { apiFetch } from '@/lib/api';
+import { pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
 
 import { decideAction } from './actions';
@@ -39,7 +39,7 @@ interface InboxTask {
  * module registered next year appear here without a line of UI being written.
  */
 export default async function ApprovalInboxPage() {
-  const { tasks } = await apiFetch<{ tasks: InboxTask[] }>('/approvals/inbox');
+  const { tasks } = await pageFetch<{ tasks: InboxTask[] }>('/approvals/inbox');
   const overdue = tasks.filter((task) => task.isOverdue).length;
 
   return (

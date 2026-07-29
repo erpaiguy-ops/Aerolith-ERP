@@ -85,14 +85,11 @@ export async function moduleRoutes(app: FastifyInstance) {
          * scanner user given a Settings menu they can only read is a menu that
          * teaches them the app has places they should not be.
          */
-        ...(principal.isOwner || permissions.has('kernel.localisation.manage')
-          ? [
-              {
-                key: 'kernel.settings',
-                label: 'Settings',
-                icon: 'settings',
-                order: 900,
-                children: [
+        ...(() => {
+          const may = (key: string) => principal.isOwner || permissions.has(key);
+          const children = [
+            ...(may('kernel.localisation.manage')
+              ? [
                   {
                     key: 'kernel.settings.workspace',
                     label: 'Workspace',
@@ -105,10 +102,23 @@ export async function moduleRoutes(app: FastifyInstance) {
                     path: '/settings/rules',
                     order: 20,
                   },
-                ],
-              },
-            ]
-          : []),
+                ]
+              : []),
+            // Gated separately. Running the country pack and running the people
+            // are different jobs, and a workspace big enough to separate them
+            // should not have to grant one to give the other.
+            ...(may('kernel.user.read')
+              ? [
+                  { key: 'kernel.settings.members', label: 'People', path: '/settings/members', order: 30 },
+                  { key: 'kernel.settings.roles', label: 'Roles', path: '/settings/roles', order: 40 },
+                ]
+              : []),
+          ];
+
+          return children.length > 0
+            ? [{ key: 'kernel.settings', label: 'Settings', icon: 'settings', order: 900, children }]
+            : [];
+        })(),
       ],
       permissions: [...permissions].sort(),
     };

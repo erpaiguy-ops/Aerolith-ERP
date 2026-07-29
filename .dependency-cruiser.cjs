@@ -54,6 +54,10 @@ module.exports = {
           '(^|/)tsconfig\\.json$',
           // Tool configs are entry points for their own tooling, not orphans.
           '(^|/)(drizzle|vitest|eslint|next|postcss|tailwind)\\.config\\.(ts|js|mjs|cjs)$',
+          // Next's file conventions are entry points too: the framework finds
+          // them by name, so nothing imports them. A `not-found.tsx` that
+          // renders one link has no local dependency either way.
+          '(^|/)(page|layout|template|loading|error|not-found|route|middleware)\\.tsx?$',
         ],
       },
       to: {},

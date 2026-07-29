@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useEffect, useRef } from 'react';
 import { useFormStatus } from 'react-dom';
 
 import { IDLE, type ActionState } from '@/lib/action-state';
@@ -30,9 +30,65 @@ export function ActionForm({
   className?: string;
 }) {
   const [state, formAction] = useActionState(action, IDLE);
+  const form = useRef<HTMLFormElement>(null);
+  // What was typed, captured on submit. React 19 resets an uncontrolled form
+  // once its action settles, which is right after a success and destructive
+  // after a failure.
+  const submitted = useRef<[string, FormDataEntryValue][]>([]);
+
+  /**
+   * Restores what the user typed when the action refused it.
+   *
+   * Without this, an eight-field form that comes back "set a password of at
+   * least 12 characters" comes back EMPTY, and the user retypes the seven
+   * fields that were fine. Reset-on-success is the behaviour you want — post a
+   * movement, get a fresh form — so this restores only on error.
+   *
+   * Checkboxes and radios need clearing first: an absent key means unticked, and
+   * without the sweep a box the user cleared before submitting would come back
+   * ticked.
+   */
+  useEffect(() => {
+    if (state.status !== 'error' || !form.current) return;
+
+    const entries = submitted.current;
+    if (entries.length === 0) return;
+
+    for (const element of form.current.elements) {
+      if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+        element.checked = false;
+      }
+    }
+
+    for (const [name, value] of entries) {
+      if (typeof value !== 'string') continue;
+      const field = form.current.elements.namedItem(name);
+      const list =
+        field instanceof RadioNodeList ? [...field] : field instanceof Element ? [field] : [];
+
+      for (const element of list) {
+        if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+          if (element.value === value) element.checked = true;
+        } else if (
+          element instanceof HTMLInputElement ||
+          element instanceof HTMLTextAreaElement ||
+          element instanceof HTMLSelectElement
+        ) {
+          element.value = value;
+        }
+      }
+    }
+  }, [state]);
 
   return (
-    <form action={formAction} className={className}>
+    <form
+      ref={form}
+      action={(data: FormData) => {
+        submitted.current = [...data.entries()];
+        return formAction(data);
+      }}
+      className={className}
+    >
       {children}
       <ActionMessage state={state} />
     </form>

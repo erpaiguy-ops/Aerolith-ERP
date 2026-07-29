@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Table, Td, Th } from '@/components/ui';
-import { apiFetch } from '@/lib/api';
+import { pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
 
 import { recallAction } from '../actions';
@@ -42,7 +42,7 @@ const STATE_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
  * cannot answer that question is one people route around with a phone call.
  */
 export default async function SubmittedPage() {
-  const { requests } = await apiFetch<{ requests: SubmittedRequest[] }>('/approvals/submitted');
+  const { requests } = await pageFetch<{ requests: SubmittedRequest[] }>('/approvals/submitted');
   const open = requests.filter((request) => request.state === 'pending').length;
 
   return (

@@ -913,6 +913,90 @@ to `tenant`, moves the summary from 0/29 to 1/28, and shows `default 10` beside
 the new value; a non-numeric entry is refused by the form before it costs a round
 trip.
 
+### A workspace can add its own people
+
+Every route in the API was listed and there was no `/users`, no `/roles`, no
+`/members`, no invitation of any kind. The RBAC schema had been in the first
+migration, 76 permissions were synced into the catalogue on every boot, and the
+only way a user or a role existed was a SQL script writing rows. A workspace had
+exactly the people the seed had inserted, which is not an ERP.
+
+Three screens' worth of gap closed by `/admin/*` and two pages: People and
+Roles, gated on `kernel.user.read`, `kernel.user.manage` and
+`kernel.role.manage` — three permissions the kernel had declared and nothing had
+ever checked, because nothing asked for them.
+
+**Adding somebody is not "create a user".** `app_user` is global — email is
+unique across the deployment and authentication reads it before any tenant is
+known, so it carries no RLS — while `membership`, `role`, `role_permission` and
+`user_role` are tenant-scoped. The tenant boundary on a member list therefore
+comes from `membership`, never from `app_user`, and there is a test that asks
+the same owner for the member list of each of their two workspaces and gets
+different answers. An email that already has an account is ATTACHED, with its
+name and password untouched: a tenant admin adding a colleague must not be able
+to rename or re-credential an account that is not theirs.
+
+**No invitation email, and the screen says so.** This deployment has no mail
+transport, so a token nobody can be sent is a flow that cannot complete. The
+admin sets an initial password and hands it over. `membership.status` keeps its
+`invited` value for when SMTP exists; pretending an email went out is how
+somebody waits three days for a link that was never sent.
+
+**Owner is not a role with everything ticked.** `requirePermission` returns
+early for an owner — it is the permission matrix not running — so the People
+screen says `owner · bypasses all checks` rather than rendering it as one more
+badge. The last owner cannot be demoted, suspended or removed: a workspace with
+no owner is one nobody can administer, because the only way back is the matrix
+and granting on it requires somebody who already can.
+
+Suspending or removing revokes the person's sessions in the same transaction. A
+suspension that leaves a live token is a statement of intent, not a control.
+
+Three things the build found:
+
+- **63 of 76 permissions had no category.** Only the kernel declared any, so
+  five sixths of the permission matrix grouped under "Other". Rather than edit
+  63 manifest entries, the sync defaults a module permission's category to the
+  module's NAVIGATION label — the word the person already sees in the sidebar,
+  so the matrix is grouped the way the application is. `category` was also
+  missing from the sync's conflict update, which meant a manifest correcting one
+  would never have landed on an existing row.
+- **The demo had no roles at all.** Two members, one an owner who bypasses the
+  matrix, the other with an empty permission set — so every gate in the
+  application had only ever been exercised against somebody it did not apply to,
+  and Rana, the quantity surveyor the approval workflow routes to, could sign in
+  and see nothing but her inbox. The seed now creates a Quantity Surveyor role
+  (an approval target, so a workflow survives the person leaving) and a
+  Storekeeper, and gives Rana the first.
+- **A failed submission emptied the form.** React 19 resets an uncontrolled form
+  once its action settles, which is right after a success — post a movement, get
+  a fresh form — and destructive after a failure: an eight-field form that comes
+  back "set a password of at least 12 characters" came back blank. `ActionForm`
+  now captures what was submitted and restores it on error only, clearing
+  checkboxes first so a box the user unticked does not come back ticked.
+
+**And a 500 on every permission-gated page.** Measured as a storekeeper: five of
+eight pages tried — `/projects`, `/contracts`, `/estimating/tenders` and both
+new settings screens — returned an unhandled `ApiError` and a blank 500 when
+their URL was typed. The navigation hides those links, so the way there is a
+stale bookmark, and neither that nor a typo deserves a crash. `pageFetch` turns
+a 403 or 404 into `notFound()`, `fetchList` does the same, and an in-shell
+`not-found` renders with the navigation still beside it. A screen your role does
+not reach answers exactly like one that does not exist — the same choice the API
+already makes for a module a tenant has not bought — and the page names both
+readings so nobody is left guessing which it was.
+
+Verified in a browser end to end: a permission granted to Storekeeper saves; a
+new person added with a short password is refused **and keeps what was typed**;
+added properly with the Storekeeper role they appear on the list; adding the
+same email again is refused as already a member; and signing in as them shows
+Inventory and an approvals inbox and nothing else — no Projects, no Contracts,
+no Settings — with `/settings/members` answering not-found rather than crashing.
+
+The suite also cleans up the roles it creates. It passed the first time and
+failed the second, which is the same "idempotent by accident of always running
+against a fresh database" fault recorded twice already in this log.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

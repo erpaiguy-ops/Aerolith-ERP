@@ -10,7 +10,7 @@ import {
 } from '@/components/List';
 import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
-import { apiFetch } from '@/lib/api';
+import { pageFetch } from '@/lib/api';
 import { date, integer, quantity } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -104,7 +104,7 @@ export default async function MovementsPage({
     fetchList<MovementRow>('/inventory/movements', query),
     mayRecord
       ? Promise.all([
-          apiFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses'),
+          pageFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses'),
           fetchList<ItemRow>('/inventory/items', {
             sort: 'code',
             direction: 'asc',

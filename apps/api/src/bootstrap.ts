@@ -74,6 +74,17 @@ export async function syncModules(): Promise<{ permissions: number; rules: numbe
     }
 
     for (const module of registry.all()) {
+      /*
+       * The heading a module's permissions group under.
+       *
+       * Its navigation label, not its `name`: the name is the product name a
+       * module is SOLD as ("Aerolith Contract Administration"), which reads
+       * badly as a heading to somebody already inside Aerolith, while the nav
+       * label is the word they see in the sidebar. Matching the two means the
+       * permission matrix is grouped the same way the application is.
+       */
+      const moduleCategory = module.nav?.[0]?.label ?? module.name;
+
       for (const permission of module.permissions) {
         await tx
           .insert(schema.permission)
@@ -84,7 +95,14 @@ export async function syncModules(): Promise<{ permissions: number; rules: numbe
             action: permission.action,
             label: permission.label,
             description: permission.description,
-            category: permission.category,
+            // Defaulted to the module's own name rather than left null.
+            // `category` is the grouping the permission matrix renders, and a
+            // module that forgets one drops its permissions into "Other" — which
+            // is where 63 of 76 of them were sitting, because no module declared
+            // any. The module name is the grouping a person wants for a module's
+            // permissions anyway; the kernel's curated categories still win
+            // where they are set.
+            category: permission.category ?? moduleCategory,
             isDangerous: permission.isDangerous,
           })
           .onConflictDoUpdate({
@@ -92,6 +110,9 @@ export async function syncModules(): Promise<{ permissions: number; rules: numbe
             set: {
               label: permission.label,
               description: permission.description,
+              // Included, or a manifest correcting a category never lands: the
+              // row already exists on every boot after the first.
+              category: permission.category ?? moduleCategory,
               isDangerous: permission.isDangerous,
               updatedAt: new Date(),
             },

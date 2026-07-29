@@ -99,9 +99,24 @@ suite('API', () => {
       .delete(schema.tenantLocalisation)
       .where(inArray(schema.tenantLocalisation.tenantId, tenants));
     await db.delete(schema.tenantModule).where(inArray(schema.tenantModule.tenantId, tenants));
-    await db.delete(schema.session).where(inArray(schema.session.userId, [OWNER, STAFF]));
+
+    // Roles and their grants, and anybody the administration suite added. The
+    // suite creates roles with fixed codes, so leaving them behind makes a
+    // second run collide on `role_uq` — idempotent by accident of always being
+    // run against a fresh database is not idempotent.
+    const created = await db
+      .select({ id: schema.appUser.id })
+      .from(schema.appUser)
+      .where(inArray(schema.appUser.email, ['newcomer@full.test']));
+    const userIds = [OWNER, STAFF, ...created.map((u) => u.id)];
+
+    await db.delete(schema.userRole).where(inArray(schema.userRole.tenantId, tenants));
+    await db.delete(schema.rolePermission).where(inArray(schema.rolePermission.tenantId, tenants));
+    await db.delete(schema.role).where(inArray(schema.role.tenantId, tenants));
+
+    await db.delete(schema.session).where(inArray(schema.session.userId, userIds));
     await db.delete(schema.membership).where(inArray(schema.membership.tenantId, tenants));
-    await db.delete(schema.appUser).where(inArray(schema.appUser.id, [OWNER, STAFF]));
+    await db.delete(schema.appUser).where(inArray(schema.appUser.id, userIds));
     await db.delete(schema.tenant).where(inArray(schema.tenant.id, tenants));
     await app.close();
     await closeDatabase();
@@ -285,6 +300,229 @@ suite('API', () => {
         .delete(schema.tenantModule)
         .where(eq(schema.tenantModule.moduleKey, 'not_a_shipped_module'));
       invalidateTenantModules(TENANT_FULL);
+    });
+  });
+
+  describe('workspace administration', () => {
+    // Everything here was in the schema and unreachable until this suite: a
+    // workspace had exactly the users a SQL script had inserted, and the three
+    // kernel permissions that gate it had never been checked by anything.
+
+    it('lists members with their roles, scoped by membership and not by user', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/members',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const emails = response.json().members.map((m: { email: string }) => m.email);
+      expect(emails).toContain('owner@api.test');
+      expect(emails).toContain('staff@api.test');
+
+      // `app_user` is global and carries no RLS, so the tenant boundary on this
+      // list has to come from `membership`. The same owner is a member of both
+      // tenants and the staff user of only one: asked as the other tenant, the
+      // list must be the owner alone.
+      const solo = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/members',
+        headers: auth(OWNER_TOKEN, TENANT_SOLO),
+      });
+      const soloEmails = solo.json().members.map((m: { email: string }) => m.email);
+      expect(soloEmails).toEqual(['owner@api.test']);
+    });
+
+    it('refuses to manage users without the permission', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/members',
+        headers: auth(STAFF_TOKEN),
+        payload: { email: 'nope@full.test', name: 'Nope', password: 'a-long-enough-password' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('creates a role, grants it, and the grant reaches /me', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/roles',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          code: 'test_storekeeper',
+          name: 'Test Storekeeper',
+          permissionKeys: ['inventory.stock.read', 'inventory.item.read'],
+        },
+      });
+
+      expect(created.statusCode).toBe(200);
+      const { roleId } = created.json();
+
+      // The code is normalised: a role code is an identifier, and `test_storekeeper`
+      // and `TEST_STOREKEEPER` are not two roles.
+      const roles = (
+        await app.inject({ method: 'GET', url: '/api/v1/admin/roles', headers: auth(OWNER_TOKEN) })
+      ).json().roles;
+      const role = roles.find((r: { id: string }) => r.id === roleId);
+      expect(role.code).toBe('TEST_STOREKEEPER');
+      expect(role.permissionKeys).toEqual(['inventory.item.read', 'inventory.stock.read']);
+
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/members/${STAFF}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { roleIds: [roleId] },
+      });
+
+      // The whole point: a permission granted here is a permission the rest of
+      // the application enforces on the next request.
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me', headers: auth(STAFF_TOKEN) });
+      expect(me.json().permissions).toContain('inventory.stock.read');
+
+      // Handed back. `STAFF` is the suite's shared "non-owner with nothing", and
+      // another test asserts they see an empty navigation — leaving this grant
+      // in place makes that test pass or fail on execution order.
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/members/${STAFF}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { roleIds: [] },
+      });
+    });
+
+    it('replaces a role\'s permissions rather than adding to them', async () => {
+      const { roleId } = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/roles',
+          headers: auth(OWNER_TOKEN),
+          payload: { code: 'REPLACE_ME', name: 'Replace me', permissionKeys: ['inventory.stock.read'] },
+        })
+      ).json();
+
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/roles/${roleId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { permissionKeys: ['inventory.item.read'] },
+      });
+
+      const roles = (
+        await app.inject({ method: 'GET', url: '/api/v1/admin/roles', headers: auth(OWNER_TOKEN) })
+      ).json().roles;
+      const role = roles.find((r: { id: string }) => r.id === roleId);
+
+      // A tick box screen means "these are the permissions". Add-only behind it
+      // would silently ignore every box the admin cleared.
+      expect(role.permissionKeys).toEqual(['inventory.item.read']);
+    });
+
+    it('rejects a permission key no module declares', async () => {
+      const { roleId } = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/roles',
+          headers: auth(OWNER_TOKEN),
+          payload: { code: 'BAD_KEYS', name: 'Bad keys' },
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/roles/${roleId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { permissionKeys: ['inventory.invented.superpower'] },
+      });
+
+      // A key nothing enforces grants nothing and looks like it grants
+      // something, which is how a permissions screen lies.
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('inventory.invented.superpower');
+    });
+
+    it('adds a member, refuses the same one twice, and revokes on suspension', async () => {
+      const added = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/members',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          email: 'newcomer@full.test',
+          name: 'Newcomer',
+          password: 'a-long-enough-password',
+        },
+      });
+
+      expect(added.statusCode).toBe(200);
+      expect(added.json().accountCreated).toBe(true);
+      const { userId } = added.json();
+
+      const again = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/members',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          email: 'newcomer@full.test',
+          name: 'Newcomer',
+          password: 'a-long-enough-password',
+        },
+      });
+      expect(again.statusCode).toBe(409);
+
+      const db = getDatabase();
+      const expiresAt = new Date(Date.now() + 3_600_000);
+      await db.insert(schema.session).values({
+        userId,
+        tenantId: TENANT_FULL,
+        tokenHash: hash('newcomer-token'),
+        expiresAt,
+      });
+
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/members/${userId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { status: 'suspended' },
+      });
+
+      // Suspension that leaves a live session is a statement of intent, not a
+      // control.
+      const after = await app.inject({
+        method: 'GET',
+        url: '/api/v1/me',
+        headers: auth('newcomer-token'),
+      });
+      expect(after.statusCode).toBe(401);
+    });
+
+    it('refuses to strip the last owner', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/members/${OWNER}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isOwner: false },
+      });
+
+      // A workspace with no owner is one nobody can administer: the only way
+      // back is the permission matrix, and granting on it needs somebody who
+      // already can.
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('last owner');
+    });
+
+    it('gives every permission a category, so none lands in "Other"', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/permissions',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      const permissions = response.json().permissions;
+      expect(permissions.length).toBeGreaterThan(50);
+      // 63 of 76 had none, because no module declared one and the sync did not
+      // default it. A permission matrix where five sixths of the rows group
+      // under "Other" is not a matrix.
+      expect(permissions.every((p: { category: string | null }) => p.category)).toBe(true);
     });
   });
 

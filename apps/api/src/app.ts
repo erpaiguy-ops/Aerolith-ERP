@@ -2,6 +2,7 @@ import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { ForbiddenError, UnauthorizedError } from './context';
+import { adminRoutes } from './routes/admin';
 import { approvalRoutes } from './routes/approvals';
 import { authRoutes } from './routes/auth';
 import { contractRoutes } from './routes/contracts';
@@ -80,6 +81,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(moduleRoutes, { prefix: '/api/v1' });
   await app.register(localisationRoutes, { prefix: '/api/v1' });
+  await app.register(adminRoutes, { prefix: '/api/v1' });
   await app.register(approvalRoutes, { prefix: '/api/v1' });
   await app.register(inventoryRoutes, { prefix: '/api/v1' });
   await app.register(cutlistRoutes, { prefix: '/api/v1' });

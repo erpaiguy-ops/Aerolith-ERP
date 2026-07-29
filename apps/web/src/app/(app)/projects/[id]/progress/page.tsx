@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Money, PageHeader, ProgressBar, Stat } from '@/components/ui';
 import { can, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { date, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -104,7 +104,7 @@ async function record(
 
   return runAction(
     () =>
-      apiFetch(`/projects/${projectId}/progress`, {
+      pageFetch(`/projects/${projectId}/progress`, {
         method: 'POST',
         body: { periodEnd, measurements },
       }),
@@ -135,7 +135,7 @@ export default async function ProgressPage({ params }: { params: Promise<{ id: s
 
   let wbs: { nodes: WbsNode[] };
   try {
-    wbs = await apiFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
+    wbs = await pageFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

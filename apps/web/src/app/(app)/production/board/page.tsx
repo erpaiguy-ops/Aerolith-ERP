@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 
 import { Badge, Card, Empty, PageHeader, Table, Td, Th } from '@/components/ui';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { integer, percent } from '@/lib/format';
 
 /**
@@ -41,7 +41,7 @@ const STATUS_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
 export default async function BoardPage() {
   let board: { workCentres: BoardCentre[] };
   try {
-    board = await apiFetch<{ workCentres: BoardCentre[] }>('/production/board');
+    board = await pageFetch<{ workCentres: BoardCentre[] }>('/production/board');
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

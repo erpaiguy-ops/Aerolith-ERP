@@ -32,7 +32,10 @@ export async function fetchList<TRow, TExtra = unknown>(
   try {
     return await apiFetch<ListEnvelope<TRow> & TExtra>(`${path}${queryString(query)}`);
   } catch (error) {
-    if (error instanceof ApiError && error.isNotFound) notFound();
+    // 403 alongside 404: a register the caller's role does not reach answers the
+    // same way as one their tenant has not bought. Without this a typed URL was
+    // an unhandled error and a blank 500.
+    if (error instanceof ApiError && (error.isNotFound || error.isForbidden)) notFound();
     throw error;
   }
 }

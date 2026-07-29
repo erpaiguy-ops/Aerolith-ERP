@@ -2,7 +2,7 @@ import { ActionForm, SubmitButton } from '@/components/Action';
 import { FilterChips, listQuery } from '@/components/List';
 import { Badge, Card, Empty, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, pageFetch } from '@/lib/api';
 import { integer } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -92,7 +92,7 @@ export default async function RulesPage({
 
   let data: RulesResponse;
   try {
-    data = await apiFetch<RulesResponse>(
+    data = await pageFetch<RulesResponse>(
       `/localisation/rules${query.domain ? `?domain=${encodeURIComponent(query.domain)}` : ''}`,
     );
   } catch (error) {

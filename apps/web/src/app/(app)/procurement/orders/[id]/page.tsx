@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
 import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
-import { ApiError, apiFetch, apiFetchOptional } from '@/lib/api';
+import { ApiError, pageFetch, apiFetchOptional } from '@/lib/api';
 import { date } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -41,7 +41,7 @@ async function issue(id: string, _state: ActionState, _form: FormData): Promise<
   'use server';
 
   return runAction(
-    () => apiFetch(`/procurement/orders/${id}/issue`, { method: 'POST' }),
+    () => pageFetch(`/procurement/orders/${id}/issue`, { method: 'POST' }),
     {
       revalidate: [`/procurement/orders/${id}`, '/procurement/orders', '/projects'],
       success: 'Issued. The commitment is registered against the budget.',
@@ -104,7 +104,7 @@ async function receive(
 
   const state = await runAction(
     async () => {
-      const result = await apiFetch<{
+      const result = await pageFetch<{
         number: string;
         overDelivered: boolean;
         accrualValue: number;
@@ -154,7 +154,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
 
   let position: OrderPosition;
   try {
-    position = await apiFetch<OrderPosition>(`/procurement/orders/${id}`);
+    position = await pageFetch<OrderPosition>(`/procurement/orders/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;

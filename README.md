@@ -51,10 +51,11 @@ labelled parts, becomes scanned progress.
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area. **Every** navigation destination is built —
-  32 of 32 — the cutting plan a work order was planned to is drawn on screen,
-  and a workspace can adopt its country and edit its own rules without a
-  developer. Right-to-left aware and formatted in the user's own locale
-- **937 tests**, including integration suites that prove tenant isolation holds and
+  34 of 34 — the cutting plan a work order was planned to is drawn on screen,
+  and a workspace can adopt its country, edit its own rules, add its own people
+  and invent its own roles without a developer. Right-to-left aware and
+  formatted in the user's own locale
+- **945 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -204,6 +205,13 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |
 | `GET /api/v1/localisation/rules` | Resolved rules, with the layer each answer came from, the definition behind each, and a whole-set summary |
 | `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
+| `GET /api/v1/admin/members` | Everyone in the workspace, with their roles |
+| `POST /api/v1/admin/members` | Add somebody; attaches an existing account by email |
+| `PATCH /api/v1/admin/members/:userId` | Suspend, reinstate, set roles, hand over ownership |
+| `GET /api/v1/admin/roles` | Roles with their permissions and how many hold them |
+| `POST /api/v1/admin/roles` | Create a role |
+| `PATCH /api/v1/admin/roles/:id` | Replace a role's permissions |
+| `GET /api/v1/admin/permissions` | The permission catalogue every module declares |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
