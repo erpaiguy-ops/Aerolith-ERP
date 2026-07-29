@@ -52,7 +52,7 @@ labelled parts, becomes scanned progress.
   Contracts, Procurement, Inventory, Estimating and Production. **every** navigation
   destination is built — 27 of 27. Right-to-left aware and formatted in the
   user's own locale
-- **919 tests**, including integration suites that prove tenant isolation holds and
+- **923 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

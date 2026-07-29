@@ -178,7 +178,10 @@ suite('API', () => {
 
       const body = response.json();
       expect(body.modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
-      expect(body.navigation[0].key).toBe('inventory');
+      // The kernel approvals section sits at order 0, above every module, so the
+      // first MODULE entry is the second item.
+      expect(body.navigation[0].key).toBe('kernel.approvals');
+      expect(body.navigation[1].key).toBe('inventory');
       expect(body.unavailableModules).toEqual([]);
     });
 
@@ -245,9 +248,15 @@ suite('API', () => {
 
       const body = response.json();
       expect(body.permissions).toEqual([]);
-      // Every nav item is permission-gated, so the menu is empty rather than
-      // full of links that 403.
-      expect(body.navigation).toEqual([]);
+      // Every MODULE nav item is permission-gated, so the menu carries no links
+      // that would 403. What remains is the kernel approvals section, which is
+      // deliberately not permission-gated: an approver's authority is the task
+      // assignment itself, so a user with no roles can still be asked to decide
+      // something and must be able to reach their inbox. `/approvals` 403s for
+      // nobody, so the principle this test protects is intact.
+      expect(body.navigation.map((item: { key: string }) => item.key)).toEqual([
+        'kernel.approvals',
+      ]);
     });
 
     it('reports an entitlement this deployment cannot serve instead of hiding it', async () => {
@@ -526,6 +535,78 @@ suite('API', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('the approval inbox', () => {
+    it('reports a pending count without fetching the inbox', async () => {
+      // Its own endpoint because the shell needs the number on every page and
+      // must not pay for the whole inbox to render a badge.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/count',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(typeof body.pending).toBe('number');
+      expect(typeof body.overdue).toBe('number');
+      expect(body.overdue).toBeLessThanOrEqual(body.pending);
+    });
+
+    it('names the requester rather than returning a uuid', async () => {
+      // An inbox that says a write-off is waiting on you "from
+      // 9f3c…-…-…" tells an approver nothing they can act on.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/inbox',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      for (const task of response.json().tasks) {
+        expect(task.request).toHaveProperty('requestedByName');
+      }
+    });
+
+    it('names who a submitted request is waiting on', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/submitted',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      for (const request of response.json().requests) {
+        for (const who of request.waitingOn) {
+          // The only question this screen is asked is who to go and chase.
+          expect(who).toHaveProperty('approverName');
+          expect(who).toHaveProperty('isOverdue');
+        }
+      }
+    });
+
+    it('offers an approvals section in the navigation to every tenant', async () => {
+      // Approvals is a KERNEL capability with no manifest to declare it, and
+      // every tenant has an inbox whatever they bought — so it cannot come from
+      // `navigationFor` and must not be filtered by a module entitlement.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/me',
+        headers: auth(OWNER_TOKEN),
+      });
+      const nav = response.json().navigation;
+
+      const approvals = nav.find((item: { key: string }) => item.key === 'kernel.approvals');
+      expect(approvals).toBeDefined();
+      expect(approvals.order).toBe(0);
+      expect(approvals.children.map((c: { path: string }) => c.path)).toEqual([
+        '/approvals',
+        '/approvals/submitted',
+      ]);
+      // First, because an inbox that sorts below Stock Counts is one nobody opens.
+      expect(nav[0].key).toBe('kernel.approvals');
     });
   });
 });

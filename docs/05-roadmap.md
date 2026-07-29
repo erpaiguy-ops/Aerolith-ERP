@@ -654,6 +654,65 @@ Retention had one design error of my own: the summary reported `dueValue` and
 `overdueValue` computing the same predicate — a distinction that does not exist
 without a grace period. Three states, not four.
 
+### The approval engine becomes reachable
+
+1,776 lines of approval engine — conditional routing, quorum, delegation,
+workflow version pinning, authority limits — and until now **not one file in
+`apps/web` mentioned approvals**. `POST /approvals/tasks/:taskId/decide` had no
+caller. The most elaborate thing in the kernel gated the operations that cost
+real money (releasing a held invoice, writing off stock, submitting a price) and
+there was no way to decide any of them.
+
+Three screens: the inbox, what I requested, and the decision trail.
+
+**The inbox is not a register.** Every other list in the app answers "find the
+one I am looking for" and is paged and sorted accordingly. This one answers
+"what is waiting on me" — a queue to be emptied, where each item needs a decision
+taken on the spot rather than a link to somewhere else. Approve and reject are
+separate forms rather than one form with a toggle, because a submit button whose
+meaning depends on a radio the user set thirty seconds ago is how the wrong
+decision gets recorded on a screen full of them.
+
+**It names nobody's uuid.** The inbox, the submitted list and the trail all
+resolved `requestedBy`, `approverId` and `actorId` to bare uuids. An inbox that
+says a write-off is waiting on you "from 9f3c…" tells an approver nothing they
+can act on, and "waiting on 9f3c…" is not an answer to the only question the
+submitted screen is asked, which is who to go and chase. All three now join
+`app_user`.
+
+**Approvals is a kernel capability, so it has no manifest.** `navigationFor`
+builds the menu from module manifests and cannot produce it; every tenant has an
+inbox whatever they bought. It is synthesised in `/me` at order 0, above every
+module — an inbox that sorts below Stock Counts is one nobody opens.
+
+That change contradicted an existing test asserting a user with no roles gets an
+empty menu, on the principle that the menu carries no links that would 403. The
+assertion was updated rather than the feature weakened, and the principle still
+holds: `/approvals` 403s for nobody, because **an approver's authority is the
+task assignment itself**. A user with no roles at all can still be named in a
+workflow and must be able to reach their inbox.
+
+**The demo needed a second user**, and finding out why is the useful part: the
+engine filters the requester out of the approver list, so a one-user demo has a
+permanently empty inbox and the whole subsystem looks inert. Rana Haddad, a
+non-owner quantity surveyor, now raises the requests the demo user is asked to
+decide — non-owner deliberately, since an owner bypasses the permission matrix
+and a demo where everyone is an owner cannot show an approval routed to somebody
+who lacks the authority to just do the thing themselves.
+
+Two workflows, because the property worth showing is that routing is by
+CONDITION rather than by document type: variations engage the matrix only above
+AED 50,000, and stock write-offs always. The seed deliberately includes a
+variation below the threshold, which produces **no approval instance at all** —
+proof the condition gates rather than a screen where everything needs a
+signature.
+
+Verified in a browser: rejecting with no reason is refused by the form,
+approving a write-off with no comment is refused by the ENGINE (`Step "Commercial
+manager" requires a comment.`) and surfaces as a readable sentence, approving
+drains the item and decrements the count, and the trail shows who was asked, what
+they said and when.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

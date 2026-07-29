@@ -48,7 +48,33 @@ export async function moduleRoutes(app: FastifyInstance) {
       // Surfaced rather than swallowed: a tenant entitled to something this
       // deployment cannot serve should be told, not left wondering.
       unavailableModules: modules.skipped,
-      navigation: navigationFor(modules, permissions),
+      navigation: [
+        /*
+         * Approvals is a KERNEL capability, not a module, so it has no manifest
+         * to declare it and `navigationFor` cannot produce it. Every tenant has
+         * an inbox regardless of what they bought, which is also why it carries
+         * no permission: an approver's authority IS the task assignment.
+         *
+         * Order 0 puts it above every module. An inbox that sorts below Stock
+         * Counts is an inbox nobody opens.
+         */
+        {
+          key: 'kernel.approvals',
+          label: 'Approvals',
+          icon: 'inbox',
+          order: 0,
+          children: [
+            { key: 'kernel.approvals.inbox', label: 'My Inbox', path: '/approvals', order: 10 },
+            {
+              key: 'kernel.approvals.submitted',
+              label: 'I Requested',
+              path: '/approvals/submitted',
+              order: 20,
+            },
+          ],
+        },
+        ...navigationFor(modules, permissions),
+      ],
       permissions: [...permissions].sort(),
     };
   });

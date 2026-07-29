@@ -6,7 +6,7 @@
  * what any of them are.
  */
 import { decide, recall, schema, withTenant } from '@aerolith/kernel';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -26,16 +26,24 @@ export async function approvalRoutes(app: FastifyInstance) {
 
     return withPrincipal(principal, () =>
       withTenant(async (tx) => {
+        // The requester is joined by name. `requestedBy` is a uuid, and an inbox
+        // that says a purchase order is "waiting on you from
+        // 9f3c…-…-…" tells an approver nothing they can act on.
+        const requester = schema.appUser;
+
         const tasks = await tx
           .select({
             task: schema.approvalTask,
             instance: schema.approvalInstance,
+            requestedByName: requester.name,
+            requestedByEmail: requester.email,
           })
           .from(schema.approvalTask)
           .innerJoin(
             schema.approvalInstance,
             eq(schema.approvalInstance.id, schema.approvalTask.instanceId),
           )
+          .leftJoin(requester, eq(requester.id, schema.approvalInstance.requestedBy))
           .where(
             and(
               eq(schema.approvalTask.tenantId, principal.context.tenantId),
@@ -44,15 +52,24 @@ export async function approvalRoutes(app: FastifyInstance) {
             ),
           )
           // Overdue first, then oldest — the order an approver actually wants.
-          .orderBy(asc(schema.approvalTask.dueAt), asc(schema.approvalTask.openedAt));
+          // Nulls last, or a task with no deadline sorts above one that is late.
+          .orderBy(
+            sql`${schema.approvalTask.dueAt} asc nulls last`,
+            asc(schema.approvalTask.openedAt),
+          );
+
+        const now = new Date();
 
         return {
-          tasks: tasks.map(({ task, instance }) => ({
+          tasks: tasks.map(({ task, instance, requestedByName, requestedByEmail }) => ({
             taskId: task.id,
             stepName: task.stepName,
             openedAt: task.openedAt,
             dueAt: task.dueAt,
-            isOverdue: task.dueAt !== null && task.dueAt < new Date(),
+            isOverdue: task.dueAt !== null && task.dueAt < now,
+            // Set when somebody delegated their authority to the caller. Shown,
+            // because deciding on another person's behalf is a different act
+            // from deciding on your own.
             delegatedFrom: task.delegatedFrom,
             request: {
               instanceId: instance.id,
@@ -63,10 +80,44 @@ export async function approvalRoutes(app: FastifyInstance) {
               amount: instance.amount,
               currencyCode: instance.currencyCode,
               requestedBy: instance.requestedBy,
+              requestedByName: requestedByName ?? requestedByEmail ?? null,
               requestedAt: instance.requestedAt,
             },
           })),
         };
+      }),
+    );
+  });
+
+  /**
+   * How many decisions are waiting on the caller.
+   *
+   * Its own endpoint because the shell needs it on every page and must not pay
+   * for the whole inbox to render a number in the sidebar.
+   */
+  app.get('/approvals/count', async (request) => {
+    const principal = await authenticate(request);
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => {
+        const [row] = await tx
+          .select({
+            pending: sql<number>`count(*)::int`,
+            overdue: sql<number>`count(*) filter (
+              where ${schema.approvalTask.dueAt} is not null
+                and ${schema.approvalTask.dueAt} < now()
+            )::int`,
+          })
+          .from(schema.approvalTask)
+          .where(
+            and(
+              eq(schema.approvalTask.tenantId, principal.context.tenantId),
+              eq(schema.approvalTask.approverId, principal.userId),
+              eq(schema.approvalTask.state, 'pending'),
+            ),
+          );
+
+        return { pending: row?.pending ?? 0, overdue: row?.overdue ?? 0 };
       }),
     );
   });
@@ -91,13 +142,19 @@ export async function approvalRoutes(app: FastifyInstance) {
 
         if (instances.length === 0) return { requests: [] };
 
+        // Named, not identified. "Waiting on 9f3c…" is not an answer to the
+        // only question this screen is asked, which is who to go and ask.
         const pending = await tx
           .select({
             instanceId: schema.approvalTask.instanceId,
             approverId: schema.approvalTask.approverId,
+            approverName: schema.appUser.name,
+            approverEmail: schema.appUser.email,
             stepName: schema.approvalTask.stepName,
+            dueAt: schema.approvalTask.dueAt,
           })
           .from(schema.approvalTask)
+          .leftJoin(schema.appUser, eq(schema.appUser.id, schema.approvalTask.approverId))
           .where(
             and(
               eq(schema.approvalTask.state, 'pending'),
@@ -108,12 +165,19 @@ export async function approvalRoutes(app: FastifyInstance) {
             ),
           );
 
+        const now = new Date();
+
         return {
           requests: instances.map((instance) => ({
             ...instance,
             waitingOn: pending
               .filter((p) => p.instanceId === instance.id)
-              .map((p) => ({ approverId: p.approverId, stepName: p.stepName })),
+              .map((p) => ({
+                approverId: p.approverId,
+                approverName: p.approverName ?? p.approverEmail ?? null,
+                stepName: p.stepName,
+                isOverdue: p.dueAt !== null && p.dueAt < now,
+              })),
           })),
         };
       }),
@@ -136,18 +200,40 @@ export async function approvalRoutes(app: FastifyInstance) {
 
         // Sequential: both queries share this transaction's single connection.
         const actions = await tx
-          .select()
+          .select({
+            action: schema.approvalAction,
+            actorName: schema.appUser.name,
+            actorEmail: schema.appUser.email,
+          })
           .from(schema.approvalAction)
+          .leftJoin(schema.appUser, eq(schema.appUser.id, schema.approvalAction.actorId))
           .where(eq(schema.approvalAction.instanceId, instance.id))
           .orderBy(asc(schema.approvalAction.actedAt));
 
         const tasks = await tx
-          .select()
+          .select({
+            task: schema.approvalTask,
+            approverName: schema.appUser.name,
+            approverEmail: schema.appUser.email,
+          })
           .from(schema.approvalTask)
+          .leftJoin(schema.appUser, eq(schema.appUser.id, schema.approvalTask.approverId))
           .where(eq(schema.approvalTask.instanceId, instance.id))
           .orderBy(asc(schema.approvalTask.sequence));
 
-        return { instance, actions, tasks };
+        return {
+          instance,
+          // The decision trail is the point of this endpoint: who decided what,
+          // when, and what they said about it. A trail of uuids is not a trail.
+          actions: actions.map(({ action, actorName, actorEmail }) => ({
+            ...action,
+            actorName: actorName ?? actorEmail ?? null,
+          })),
+          tasks: tasks.map(({ task, approverName, approverEmail }) => ({
+            ...task,
+            approverName: approverName ?? approverEmail ?? null,
+          })),
+        };
       }),
     );
   });

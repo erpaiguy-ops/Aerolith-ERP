@@ -14,6 +14,7 @@ import {
   closeDatabase,
   createDatabase,
   hashPassword,
+  requestApproval,
   schema,
   runWithTenantContext,
   withTenant,
@@ -61,7 +62,7 @@ import {
   recordProgress,
   projectsSchema,
 } from '@aerolith/module-projects';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import { syncModules } from '../src/bootstrap';
 
@@ -73,6 +74,15 @@ if (!url) {
 
 const TENANT = 'd0000000-0000-4000-8000-00000000d000';
 const USER = 'd0000000-0000-4000-8000-00000000u000'.replace('u', 'a');
+/**
+ * A second user, and not a decoration.
+ *
+ * The engine filters the requester out of the approver list — nobody approves
+ * their own request — so a one-user demo has a permanently empty inbox and the
+ * whole approval subsystem looks like it does nothing. This user raises the
+ * requests the demo user is asked to decide.
+ */
+const QS_USER = 'd0000000-0000-4000-8000-00000000a001';
 const PROJECT = 'd0000000-0000-4000-8000-00000000p000'.replace('p', 'b');
 const EMAIL = 'demo@aerolith.test';
 const PASSWORD = 'demo-passphrase-2026';
@@ -191,7 +201,7 @@ async function main() {
     ]) {
       await tx.delete(table).where(eq((table as never as { tenantId: never }).tenantId, TENANT));
     }
-    await tx.delete(schema.appUser).where(eq(schema.appUser.id, USER));
+    await tx.delete(schema.appUser).where(inArray(schema.appUser.id, [USER, QS_USER]));
     await tx.delete(schema.tenant).where(eq(schema.tenant.id, TENANT));
   });
 
@@ -207,17 +217,32 @@ async function main() {
       timezone: 'Asia/Dubai',
     });
 
-    await tx.insert(schema.appUser).values({
-      id: USER,
-      email: EMAIL,
-      name: 'Demo Commercial Manager',
-      locale: 'en',
-      passwordHash: await hashPassword(PASSWORD),
-    });
+    const sharedHash = await hashPassword(PASSWORD);
 
-    await tx
-      .insert(schema.membership)
-      .values({ tenantId: TENANT, userId: USER, status: 'active', isOwner: true });
+    await tx.insert(schema.appUser).values([
+      {
+        id: USER,
+        email: EMAIL,
+        name: 'Demo Commercial Manager',
+        locale: 'en',
+        passwordHash: sharedHash,
+      },
+      {
+        id: QS_USER,
+        email: 'qs@aerolith.test',
+        name: 'Rana Haddad',
+        locale: 'en',
+        passwordHash: sharedHash,
+      },
+    ]);
+
+    await tx.insert(schema.membership).values([
+      { tenantId: TENANT, userId: USER, status: 'active', isOwner: true },
+      // Not an owner: an owner bypasses the permission matrix, and a demo where
+      // everyone is an owner cannot show an approval routed to somebody who
+      // lacks the authority to just do the thing themselves.
+      { tenantId: TENANT, userId: QS_USER, status: 'active', isOwner: false },
+    ]);
 
     await tx.insert(schema.tenantModule).values(
       ['projects', 'contracts', 'estimation', 'production', 'inventory', 'procurement'].map(
@@ -282,6 +307,25 @@ async function main() {
         // A uuid because the audit log stores it as one. Fixed rather than
         // random so every row this script writes correlates to one identifiable
         // "request" — "show me everything the demo seed did" is a query.
+        requestId: '00000000-0000-4000-8000-00000000d0ed',
+      },
+      () => withTenant(fn),
+    );
+
+  /** The same, as the quantity surveyor who raises the requests. */
+  const asQuantitySurveyor = <T>(
+    fn: (tx: Parameters<Parameters<typeof withTenant>[0]>[0]) => Promise<T>,
+  ) =>
+    runWithTenantContext(
+      {
+        tenantId: TENANT,
+        userId: QS_USER,
+        actorType: 'user',
+        locale: 'en',
+        timezone: 'Asia/Dubai',
+        countryCode: 'AE',
+        currencyCode: 'AED',
+        permissions: new Set<string>(),
         requestId: '00000000-0000-4000-8000-00000000d0ed',
       },
       () => withTenant(fn),
@@ -1518,6 +1562,124 @@ async function main() {
       .where(eq(procurementSchema.rfq.id, contested.rfqId));
   });
 
+  console.log('→ approvals: a workflow, and two decisions waiting on the demo user');
+  await asUser(async (tx) => {
+    // Two workflows, because the interesting property of this engine is that it
+    // routes by CONDITION rather than by document type. The variation matrix
+    // only engages above a threshold; below it, the QS just does the work.
+    const [variationFlow] = await tx
+      .insert(schema.approvalWorkflow)
+      .values({
+        tenantId: TENANT,
+        entityType: 'contracts.variation',
+        code: 'VO-OVER-50K',
+        name: 'Variations over AED 50,000',
+        description: 'Anything smaller is the surveyor’s call.',
+        priority: 10,
+        isActive: true,
+        fallbackBehaviour: 'auto_approve',
+      })
+      .returning({ id: schema.approvalWorkflow.id });
+
+    await tx.insert(schema.approvalWorkflowVersion).values({
+      tenantId: TENANT,
+      workflowId: variationFlow!.id,
+      version: 1,
+      isCurrent: true,
+      definition: {
+        entityType: 'contracts.variation',
+        // The condition is the point. Routing every variation to a director
+        // makes the matrix noise, and a matrix people ignore approves things
+        // nobody read.
+        conditions: [{ field: 'amount', operator: 'gte', value: 50_000 }],
+        steps: [
+          {
+            sequence: 1,
+            name: 'Commercial manager',
+            approverType: 'user',
+            approverRef: USER,
+            requireComment: false,
+          },
+        ],
+      },
+    });
+
+    const [writeOffFlow] = await tx
+      .insert(schema.approvalWorkflow)
+      .values({
+        tenantId: TENANT,
+        entityType: 'inventory.stock_write_off',
+        code: 'STOCK-WRITE-OFF',
+        name: 'Stock write-off',
+        description: 'Writing stock off is how loss gets hidden. Always reviewed.',
+        priority: 10,
+        isActive: true,
+        fallbackBehaviour: 'auto_approve',
+      })
+      .returning({ id: schema.approvalWorkflow.id });
+
+    await tx.insert(schema.approvalWorkflowVersion).values({
+      tenantId: TENANT,
+      workflowId: writeOffFlow!.id,
+      version: 1,
+      isCurrent: true,
+      definition: {
+        entityType: 'inventory.stock_write_off',
+        // No threshold: any write-off is reviewed, at any value.
+        conditions: [],
+        steps: [
+          {
+            sequence: 1,
+            name: 'Commercial manager',
+            approverType: 'user',
+            approverRef: USER,
+            // A write-off approved without a word said is exactly the audit
+            // finding this workflow exists to prevent.
+            requireComment: true,
+          },
+        ],
+      },
+    });
+  });
+
+  // Requested BY THE SURVEYOR. The engine removes the requester from the
+  // approver list, so anything the demo user asks for lands in nobody's inbox.
+  await asQuantitySurveyor(async (tx) => {
+    await requestApproval(tx, {
+      entityType: 'contracts.variation',
+      entityId: PROJECT,
+      moduleKey: 'contracts',
+      entityLabel: 'VO-004 — additional joinery to level 12 lift lobbies',
+      context: { amount: 84_500 },
+      amount: 84_500,
+      currencyCode: 'AED',
+    });
+
+    await requestApproval(tx, {
+      entityType: 'inventory.stock_write_off',
+      entityId: PROJECT,
+      moduleKey: 'inventory',
+      entityLabel: 'Write off 2 sheets of oak-veneered MDF damaged in handling',
+      context: { amount: 568 },
+      amount: 568,
+      currencyCode: 'AED',
+    });
+
+    // Below the threshold, so the matrix does not engage and it is approved on
+    // the spot. Seeded to show that the condition genuinely gates: a demo where
+    // everything needs a signature does not demonstrate routing, it demonstrates
+    // a bottleneck.
+    await requestApproval(tx, {
+      entityType: 'contracts.variation',
+      entityId: PROJECT,
+      moduleKey: 'contracts',
+      entityLabel: 'VO-005 — swap ironmongery finish, no cost change',
+      context: { amount: 1_200 },
+      amount: 1_200,
+      currencyCode: 'AED',
+    });
+  });
+
   console.log('\n✓ demo workspace ready');
   console.log(`  sign in:  ${EMAIL} / ${PASSWORD}`);
   console.log(`  project:  /projects/${PROJECT}`);
@@ -1525,6 +1687,7 @@ async function main() {
   console.log('  lists:    /projects · /contracts · /procurement/orders · /procurement/exceptions');
   console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
   console.log('  estimating: /estimating/tenders · /estimating/estimates · /estimating/rates');
+  console.log('  approvals: /approvals · /approvals/submitted   (2 waiting, from Rana Haddad)');
   console.log('  registers: /contracts/correspondence · /contracts/retention · /procurement/rfqs · /projects/costs · /projects/progress · /projects/snags');
   console.log('  factory:  /production/orders · /production/board · /production/cutlist · /production/finishing · /production/routings');
 
