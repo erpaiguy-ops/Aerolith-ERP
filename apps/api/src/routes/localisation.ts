@@ -8,7 +8,6 @@
 import {
   adoptCountry,
   loadRuleSnapshot,
-  resolveDomain,
   resolveRule,
   schema,
   setTenantRule,
@@ -195,13 +194,66 @@ export async function localisationRoutes(app: FastifyInstance) {
             countryCode,
           });
 
-          const rules = request.query.domain
-            ? resolveDomain(snapshot, request.query.domain, asAt)
-            : [...snapshot.definitions.keys()]
-                .sort()
-                .map((key) => resolveRule(snapshot, key, asAt));
+          // The resolver answers "what is the value and who said so". An admin
+          // screen also has to say WHAT the knob is, what shape a new value must
+          // take, and whether it may be touched at all — a page of
+          // `payroll.overtime.weekday_multiplier = 1.25` with no label is a page
+          // nobody can safely edit.
+          const definitions = await tx
+            .select({
+              key: schema.ruleDefinition.key,
+              domain: schema.ruleDefinition.domain,
+              label: schema.ruleDefinition.label,
+              description: schema.ruleDefinition.description,
+              valueType: schema.ruleDefinition.valueType,
+              defaultValue: schema.ruleDefinition.defaultValue,
+              unit: schema.ruleDefinition.unit,
+              tenantOverridable: schema.ruleDefinition.tenantOverridable,
+              ownerModule: schema.ruleDefinition.ownerModule,
+            })
+            .from(schema.ruleDefinition);
 
-          return { countryCode, asAt: asAt.toISOString(), rules };
+          const byKey = new Map(definitions.map((d) => [d.key, d]));
+
+          // Everything is resolved, always. Resolution is a synchronous walk of
+          // an already-loaded snapshot, so the whole set costs no more than a
+          // slice of it, and both the summary and the domain list have to be
+          // computed over all of it whatever the caller filtered to.
+          const all = [...snapshot.definitions.keys()]
+            .sort()
+            .map((key) => ({ ...resolveRule(snapshot, key, asAt), ...byKey.get(key) }));
+
+          /*
+           * Filtered by the definition's `domain` COLUMN, not by key prefix.
+           *
+           * `resolveDomain` matches on the key, which is a different question
+           * wearing the same name: 18 rules are declared in the `contract`
+           * domain and only 4 of them have keys starting `contract.` — the rest
+           * are `contracts.`, `estimation.` and `projects.`, because a module
+           * declares which domain a knob BELONGS to independently of what it
+           * called it. Prefix-matching here showed 4 of 18 under a chip labelled
+           * "contract", which is worse than no filter: it looks complete.
+           */
+          const rules = request.query.domain
+            ? all.filter((rule) => rule.domain === request.query.domain)
+            : all;
+
+          // Over the whole set, never the filtered slice. "How much of this
+          // workspace's configuration is actually ours" is a question about the
+          // workspace, and a figure that silently rescopes when a filter is set
+          // is a figure that gets quoted wrongly. Same reasoning as the offcut
+          // register's whole-register summary.
+          const summary = {
+            total: all.length,
+            tenant: all.filter((r) => r.layer === 'tenant').length,
+            country: all.filter((r) => r.layer === 'country').length,
+            default: all.filter((r) => r.layer === 'default').length,
+            statutory: all.filter((r) => r.tenantOverridable === false).length,
+          };
+
+          const domains = [...new Set(definitions.map((d) => d.domain))].sort();
+
+          return { countryCode, asAt: asAt.toISOString(), domains, summary, rules };
         }),
       );
     },

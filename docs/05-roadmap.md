@@ -852,6 +852,67 @@ cause as the known gap already noted in `optimise.ts` — the split commits to a
 shape of leftover before the rest of the parts are known. Closing it needs a real
 search, not a greedy pass.
 
+### Localisation becomes something a person can do
+
+The README's second sentence is that country specifics are data rather than code.
+That was true of the schema and invisible in the product: `POST
+/localisation/adopt` had no caller, so a new workspace could not be configured
+through the application at all, and the three-layer rule resolution — the
+architectural claim a whole document is written about — could not be seen, let
+alone changed.
+
+Two screens. `/settings` adopts a country and shows what adopting it produced:
+the tax codes and the requirement set, grouped by who they apply to.
+`/settings/rules` lists every configurable number in the system **with the layer
+that answered it**, and lets an admin override the ones that are not statutory.
+
+**The layer is the whole point, and it is why this is not a settings form.** An
+administrator's first question about any number in an ERP is not "what is it" but
+"who decided it"; `10%` on its own is what makes people ring the supplier, and
+`10% — because the UAE pack says so` does not. `default` renders as a warning
+rather than neutrally: it means no country has an opinion and the software picked
+something. Statutory rules are listed and locked with the reason, because an
+admin who cannot find the retention rule concludes it is missing rather than
+fixed by law.
+
+Building it found three things.
+
+**The domain filter showed 4 of 18.** `resolveDomain` matches on the KEY prefix;
+the chip on the screen means the declared `domain` column. Those coincide for
+`payroll` and `hr` and diverge badly for `contract`: 18 rules are declared in
+that domain and only four have keys starting `contract.` — the rest are
+`contracts.`, `estimation.` and `projects.`, because a module declares which
+domain a knob belongs to independently of what it named the knob. A filter
+showing four of eighteen is worse than no filter, because it looks complete. The
+endpoint now filters on the column.
+
+**The summary rescoped itself under a filter.** "Set by you 1, from the country
+pack 3" read as a statement about the workspace and was a statement about the
+`contract` domain. It is now computed on the server over the whole set whatever
+the caller filtered to — the same reasoning as the offcut register's
+whole-register value, and for the same reason: a figure that silently rescopes is
+a figure that gets quoted wrongly.
+
+**A JSON value stretched the table to 2,240px.** `contract.retention.release_schedule`
+and `tax.invoice.mandatory_fields` serialise to a single long token with no break
+opportunity, and an unconstrained cell grows the column to fit it — which pushed
+the override form off the side of the screen at every viewport width tested. The
+document did not overflow, because the table scrolls inside its own container, so
+nothing looked wrong; the primary action of the page was simply not visible.
+Capped and breakable, the table is 1,178px and fits at 1024 too.
+
+The endpoint also now returns each rule's definition — label, description, value
+type, unit, default, and whether it may be overridden at all. A page of
+`payroll.overtime.weekday_multiplier = 1.25` with no label is a page nobody can
+safely edit.
+
+Verified in a browser: the Settings section appears for the owner and is absent
+for the non-owner quantity surveyor who lacks `kernel.localisation.manage`;
+overriding the retention percentage from 10 to 7.5 flips its layer from `country`
+to `tenant`, moves the summary from 0/29 to 1/28, and shows `default 10` beside
+the new value; a non-numeric entry is refused by the form before it costs a round
+trip.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

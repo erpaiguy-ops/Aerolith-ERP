@@ -95,6 +95,30 @@ This is the flow behind "the selected country will have its requirements filled 
 the user": the tenant lands on a complete, correct-by-default set rather than an
 empty screen.
 
+### Where a person does this
+
+`/settings` — the Workspace page — is where adoption is performed, and
+`/settings/rules` is where the resolved set is read and overridden. Both are
+gated on `kernel.localisation.manage`.
+
+Two things that page has to say out loud, because they are the parts a user gets
+wrong:
+
+- **Refreshing from a pack overwrites edited requirements and tax codes.** It is
+  offered separately from adoption, with the consequence stated before the
+  button rather than after it. Rule overrides survive a refresh, because they
+  are resolved rather than copied — which is exactly the distinction above, and
+  the page says which is which.
+- **Every rule shows the layer that answered it.** An administrator's first
+  question about any number in an ERP is not "what is it" but "who decided it",
+  and `10%` alone is what makes people ring the supplier. `default` renders as a
+  warning rather than neutrally: it means no country has an opinion and the
+  software picked something — fine for a preference, worth a look for anything
+  that reaches an invoice.
+
+Statutory rules are listed and locked rather than hidden. An admin who cannot
+find the retention rule concludes it is missing, not that it is fixed by law.
+
 ## Multi-country tenants
 
 `tenant_localisation` is one row per country a tenant operates in, and

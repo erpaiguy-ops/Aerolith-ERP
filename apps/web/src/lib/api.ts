@@ -42,7 +42,7 @@ export class ApiError extends Error {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** Skip the session cookie — only for login itself. */
   anonymous?: boolean;

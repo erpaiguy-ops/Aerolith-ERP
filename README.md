@@ -50,10 +50,11 @@ labelled parts, becomes scanned progress.
   invoice for goods nobody received
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
-  inbox. **Every** navigation destination is built — 30 of 30 — and the cutting
-  plan a work order was planned to is drawn on screen. Right-to-left aware and
-  formatted in the user's own locale
-- **935 tests**, including integration suites that prove tenant isolation holds and
+  inbox and the settings area. **Every** navigation destination is built —
+  32 of 32 — the cutting plan a work order was planned to is drawn on screen,
+  and a workspace can adopt its country and edit its own rules without a
+  developer. Right-to-left aware and formatted in the user's own locale
+- **937 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -201,7 +202,7 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/localisation/countries` | Countries available to adopt |
 | `POST /api/v1/localisation/adopt` | Adopt a country; pre-fills the tenant's requirements |
 | `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |
-| `GET /api/v1/localisation/rules` | Resolved rules, with the layer each answer came from |
+| `GET /api/v1/localisation/rules` | Resolved rules, with the layer each answer came from, the definition behind each, and a whole-set summary |
 | `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |

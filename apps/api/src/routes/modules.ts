@@ -74,6 +74,41 @@ export async function moduleRoutes(app: FastifyInstance) {
           ],
         },
         ...navigationFor(modules, permissions),
+        /*
+         * Settings, likewise a kernel capability with no manifest. Last, at a
+         * deliberately large order: it is where you go occasionally, not the
+         * work.
+         *
+         * Gated on `kernel.localisation.manage`, unlike Approvals. The reads
+         * behind it are open to any authenticated user — nothing here 403s — but
+         * the section exists to CHANGE the workspace's rules, and a shop-floor
+         * scanner user given a Settings menu they can only read is a menu that
+         * teaches them the app has places they should not be.
+         */
+        ...(principal.isOwner || permissions.has('kernel.localisation.manage')
+          ? [
+              {
+                key: 'kernel.settings',
+                label: 'Settings',
+                icon: 'settings',
+                order: 900,
+                children: [
+                  {
+                    key: 'kernel.settings.workspace',
+                    label: 'Workspace',
+                    path: '/settings',
+                    order: 10,
+                  },
+                  {
+                    key: 'kernel.settings.rules',
+                    label: 'Rules',
+                    path: '/settings/rules',
+                    order: 20,
+                  },
+                ],
+              },
+            ]
+          : []),
       ],
       permissions: [...permissions].sort(),
     };

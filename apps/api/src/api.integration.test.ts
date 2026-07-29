@@ -383,6 +383,67 @@ suite('API', () => {
       expect(wps.layer).toBe('country');
     });
 
+    it('filters by the declared domain, not by the key prefix', async () => {
+      // Two different questions wearing the same word. 18 rules are declared in
+      // the `contract` domain and only four have keys starting `contract.` —
+      // the rest are `contracts.`, `estimation.` and `projects.`, because a
+      // module declares which domain a knob BELONGS to independently of what it
+      // called the knob. Prefix-matching showed four of eighteen under a filter
+      // labelled "contract", which is worse than no filter: it looks complete.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/localisation/rules?domain=contract',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rules = response.json().rules;
+
+      expect(rules.every((r: { domain: string }) => r.domain === 'contract')).toBe(true);
+      const keys = rules.map((r: { key: string }) => r.key);
+      expect(keys).toContain('contract.retention.default_percent');
+      // The ones a prefix filter drops.
+      expect(keys).toContain('contracts.variation.notice_period_days');
+      expect(keys).toContain('projects.budget.contingency_percent');
+    });
+
+    it('summarises the whole rule set whatever the filter, and names each knob', async () => {
+      const all = await app.inject({
+        method: 'GET',
+        url: '/api/v1/localisation/rules',
+        headers: auth(OWNER_TOKEN),
+      });
+      const filtered = await app.inject({
+        method: 'GET',
+        url: '/api/v1/localisation/rules?domain=tax',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      // "How much of this workspace's configuration is actually ours" is a
+      // question about the workspace. A figure that silently rescopes when a
+      // filter is set is a figure that gets quoted wrongly.
+      expect(filtered.json().summary).toEqual(all.json().summary);
+      expect(filtered.json().rules.length).toBeLessThan(all.json().rules.length);
+
+      const summary = all.json().summary;
+      expect(summary.total).toBe(all.json().rules.length);
+      expect(summary.tenant + summary.country + summary.default).toBe(summary.total);
+
+      // Every rule carries what an admin needs to edit it safely: what it is,
+      // what shape a value takes, and whether it may be touched at all.
+      const retention = all
+        .json()
+        .rules.find((r: { key: string }) => r.key === 'contract.retention.default_percent');
+      expect(retention.label).toBeTruthy();
+      expect(retention.valueType).toBe('percent');
+      expect(retention.tenantOverridable).toBe(true);
+
+      // The filter's own options come from the definitions, not from the
+      // filtered rows — a filter that erases its own options cannot be undone.
+      expect(filtered.json().domains).toEqual(all.json().domains);
+      expect(filtered.json().domains).toContain('payroll');
+    });
+
     it('lets a tenant override an overridable rule', async () => {
       const put = await app.inject({
         method: 'PUT',
