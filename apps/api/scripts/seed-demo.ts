@@ -28,7 +28,12 @@ import {
   submitEstimate,
 } from '@aerolith/module-estimation';
 import { inventorySchema, postMovement } from '@aerolith/module-inventory';
-import { createWorkOrder, productionSchema, releaseWorkOrder } from '@aerolith/module-production';
+import {
+  createWorkOrder,
+  productionSchema,
+  releaseWorkOrder,
+  saveCuttingPlan,
+} from '@aerolith/module-production';
 import {
   approveRequisition,
   createPurchaseOrder,
@@ -62,6 +67,7 @@ import {
   recordProgress,
   projectsSchema,
 } from '@aerolith/module-projects';
+import { optimise, type Part, type StockItem } from '@aerolith/cutlist';
 import { and, eq, inArray } from 'drizzle-orm';
 
 import { syncModules } from '../src/bootstrap';
@@ -179,6 +185,19 @@ async function main() {
       projectsSchema.milestone,
       projectsSchema.wbsNode,
       projectsSchema.projectDetail,
+
+      // Approvals. Actions and tasks hang off the instance, the instance off a
+      // pinned workflow version, and the version off the workflow. Missing from
+      // this list until now, which meant a second run of the seed died on
+      // `approval_workflow_uq` — the same "idempotent by accident of always
+      // running against a fresh database" failure the note above describes.
+      schema.approvalAction,
+      schema.approvalTask,
+      schema.approvalInstance,
+      schema.approvalWorkflowVersion,
+      schema.approvalWorkflow,
+      schema.approvalDelegation,
+      schema.authorityLimit,
 
       // Country adoption writes the tenant its own copies of these. None of
       // them has a foreign key to `tenant`, so they outlive it.
@@ -1212,16 +1231,22 @@ async function main() {
 
     // A second order, still in the office. Not everything on the list is on the
     // floor, and a register where every row is identical teaches nothing.
-    await createWorkOrder(tx, {
+    // Five carcasses, two sides and five shelves each. The quantities are not
+    // arbitrary: at this size the 1180x620 remnant on the rack saves a whole
+    // sheet — 11 sheets and one offcut at 3,193.80 against 12 sheets at
+    // 3,408.00 — which is the offcut register's entire argument, shown rather
+    // than asserted. At six carcasses the same remnant saves nothing and the
+    // optimiser correctly leaves it alone, which is the other half of the point.
+    const reception = await createWorkOrder(tx, {
       description: 'Reception joinery — carcasses',
-      quantity: 6,
+      quantity: 5,
       projectId: PROJECT,
       routingId: carcassRouting!.id,
       priority: 50,
       plannedStartDate: '2026-06-15',
       parts: [
-        { label: 'Carcass side', materialItemId: oak!.id, lengthMm: 2400, widthMm: 600, thicknessMm: 18, quantity: 12 },
-        { label: 'Shelf', materialItemId: oak!.id, lengthMm: 1180, widthMm: 580, thicknessMm: 18, quantity: 30 },
+        { label: 'Carcass side', materialItemId: oak!.id, lengthMm: 2400, widthMm: 600, thicknessMm: 18, quantity: 10 },
+        { label: 'Shelf', materialItemId: oak!.id, lengthMm: 1180, widthMm: 580, thicknessMm: 18, quantity: 25 },
       ],
     });
 
@@ -1251,32 +1276,136 @@ async function main() {
       .set({ status: 'completed', completedQuantity: 24, actualMinutes: '78.00' })
       .where(eq(productionSchema.workOrderOperation.id, firstOp!.id));
 
-    // A cutting plan that used the rack. The saving is the whole argument for
-    // the offcut register, and it is only visible if a plan records what it took.
-    const [planOffcuts] = await tx
-      .select({ id: inventorySchema.offcut.id })
-      .from(inventorySchema.offcut)
-      .where(eq(inventorySchema.offcut.tenantId, TENANT))
-      .limit(1);
+    // Cutting plans, run through the REAL optimiser rather than written by hand.
+    //
+    // The plan JSON here used to be `{ boards: 11, note: '…' }` beside summary
+    // columns claiming 11 sheets and 82.7% net yield — figures nothing had
+    // computed, sitting on top of a plan with no boards in it. The register
+    // looked convincing and the plan behind it could not be drawn, which is
+    // exactly the failure this seed exists to prevent: a demo showing a number
+    // the product cannot produce.
+    const [oakItem] = await tx
+      .select()
+      .from(schema.item)
+      .where(and(eq(schema.item.tenantId, TENANT), eq(schema.item.id, oak!.id)));
 
-    await tx.insert(productionSchema.cuttingPlan).values({
-      tenantId: TENANT,
-      workOrderId: doors.workOrderId,
-      version: 1,
-      plan: { boards: 11, note: 'Generated against live stock — rack first, then new sheets.' },
-      options: { kerfMm: 3.2, grainAware: true },
-      sheetsUsed: 11,
-      offcutsUsed: 1,
-      // Two figures, deliberately. Gross treats a large reusable remnant as
-      // waste; net excludes remnants big enough to go back on the rack and is
-      // the economically honest number.
-      grossYieldPercent: '61.40',
-      netYieldPercent: '82.70',
-      materialCost: '3124.0000',
-      consumedOffcutIds: planOffcuts ? [planOffcuts.id] : [],
-      isCommitted: true,
-      committedAt: new Date('2026-05-06T07:15:00Z'),
-    });
+    const cutOptions = { kerfMm: 3.2, edgeTrimMm: 10, preferOffcuts: true };
+
+    const planWorkOrder = async (workOrderId: string) => {
+      const cutParts = await tx
+        .select()
+        .from(productionSchema.workOrderPart)
+        .where(eq(productionSchema.workOrderPart.workOrderId, workOrderId));
+
+      // Read fresh each time. The first plan reserves what it takes, so the
+      // second must not be offered a remnant that is already spoken for.
+      const rack = await tx
+        .select()
+        .from(inventorySchema.offcut)
+        .where(
+          and(
+            eq(inventorySchema.offcut.tenantId, TENANT),
+            eq(inventorySchema.offcut.itemId, oak!.id),
+            eq(inventorySchema.offcut.status, 'available'),
+          ),
+        );
+
+      const cutStock: StockItem[] = [
+        ...rack.map(
+          (piece): StockItem => ({
+            id: piece.id,
+            source: 'offcut',
+            materialId: piece.itemId,
+            lengthMm: Number(piece.lengthMm),
+            widthMm: Number(piece.widthMm),
+            thicknessMm: piece.thicknessMm === null ? null : Number(piece.thicknessMm),
+            grainDirection: (piece.grainDirection as 'length' | 'width' | null) ?? null,
+            cost: piece.unitCost === null ? undefined : Number(piece.unitCost),
+            available: 1,
+          }),
+        ),
+        {
+          id: `sheet:${oakItem!.id}`,
+          source: 'sheet',
+          materialId: oakItem!.id,
+          lengthMm: Number(oakItem!.lengthMm),
+          widthMm: Number(oakItem!.widthMm),
+          thicknessMm: oakItem!.thicknessMm === null ? null : Number(oakItem!.thicknessMm),
+          grainDirection: oakItem!.hasGrainDirection ? 'length' : null,
+          cost: oakItem!.standardCost === null ? undefined : Number(oakItem!.standardCost),
+        },
+      ];
+
+      const plan = optimise(
+        cutParts.map(
+          (part): Part => ({
+            id: part.id,
+            label: part.label,
+            materialId: part.materialItemId,
+            lengthMm: Number(part.lengthMm),
+            widthMm: Number(part.widthMm),
+            thicknessMm: part.thicknessMm === null ? null : Number(part.thicknessMm),
+            quantity: part.quantity,
+            grainAlong: (part.grainAlong as 'length' | 'width' | 'any' | null) ?? undefined,
+          }),
+        ),
+        cutStock,
+        cutOptions,
+      );
+
+      const consumed = plan.boards.filter((b) => b.source === 'offcut').map((b) => b.stockId);
+
+      // Reserved, not merely recorded: a plan that names a remnant has claimed
+      // it, and a second job must not be planned against the same piece.
+      if (consumed.length > 0) {
+        await tx
+          .update(inventorySchema.offcut)
+          .set({ status: 'reserved', reservedForProjectId: PROJECT, updatedAt: new Date() })
+          .where(
+            and(
+              eq(inventorySchema.offcut.tenantId, TENANT),
+              inArray(inventorySchema.offcut.id, consumed),
+            ),
+          );
+      }
+
+      const saved = await saveCuttingPlan(tx, {
+        workOrderId,
+        plan: plan as unknown as Record<string, unknown>,
+        options: cutOptions,
+        sheetsUsed: plan.summary.sheetsUsed,
+        offcutsUsed: plan.summary.offcutsUsed,
+        // Two figures, deliberately. Gross treats a large reusable remnant as
+        // waste; net excludes remnants big enough to go back on the rack and is
+        // the economically honest number.
+        grossYieldPercent: plan.summary.totalYieldPercent,
+        netYieldPercent: plan.summary.netYieldPercent,
+        materialCost: plan.summary.materialCost ?? null,
+        consumedOffcutIds: consumed,
+      });
+
+      return { ...saved, offcutsUsed: plan.summary.offcutsUsed };
+    };
+
+    // The doors are on the floor, so their plan is committed — material has
+    // been issued against it. Nothing on this job can come off the rack: a
+    // 2100 x 900 leaf is bigger than every remnant there is.
+    const doorPlan = await planWorkOrder(doors.workOrderId);
+    await tx
+      .update(productionSchema.cuttingPlan)
+      .set({ isCommitted: true, committedAt: new Date('2026-05-06T07:15:00Z') })
+      .where(eq(productionSchema.cuttingPlan.id, doorPlan.cuttingPlanId));
+
+    // The reception carcasses are still in the office, so their plan stays
+    // provisional — the remnants it names are reserved, not cut. This is the
+    // job that shows the register earning its keep: the shelves overrun the
+    // sheets opened for the sides, and rather than open one more the optimiser
+    // takes a piece off the rack.
+    const receptionPlan = await planWorkOrder(reception.workOrderId);
+    console.log(
+      `  cutting plans: doors took ${doorPlan.offcutsUsed} off the rack, ` +
+        `reception took ${receptionPlan.offcutsUsed}`,
+    );
 
     // A load in the booth with the cure clock running, and one already through.
     const doorParts = await tx

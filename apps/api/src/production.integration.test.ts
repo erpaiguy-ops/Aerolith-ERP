@@ -848,6 +848,82 @@ suite('Production', () => {
         .where(eq(productionSchema.finishingBatch.id, batch!.id));
     });
 
+    it('returns one plan with its boards drawn and its materials named', async () => {
+      const created = (await createOrder()).json();
+      const generated = (
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/production/work-orders/${created.workOrderId}/cutlist`,
+          headers: auth(),
+          payload: {},
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/production/cutting-plans/${generated.cuttingPlanId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.workOrderNumber).toBe(created.number);
+      expect(body.version).toBe(generated.version);
+      // The engine's own output, stored and returned untouched — re-deriving it
+      // would produce a different nest, and then the drawing would not match
+      // what was cut.
+      expect(body.plan.boards.length).toBeGreaterThan(0);
+      expect(body.plan.summary.partsPlaced).toBeGreaterThan(0);
+
+      // Every board names a material id; the endpoint resolves them so the
+      // screen never has to render a uuid at a saw operator.
+      const materialIds = new Set(
+        body.plan.boards.map((b: { materialId: string }) => b.materialId),
+      );
+      expect(body.materials.length).toBe(materialIds.size);
+      for (const m of body.materials) expect(materialIds.has(m.id)).toBe(true);
+
+      // One drawing per board, in the same order, so `drawings[i]` belongs to
+      // `boards[i]` — the screen pairs them by index.
+      expect(body.drawings).toHaveLength(body.plan.boards.length);
+      expect(body.drawings[0]).toContain('<svg');
+      expect(body.cuttingList).toHaveLength(body.plan.summary.partsPlaced);
+    });
+
+    it('omits the drawings on request, keeping everything else', async () => {
+      const created = (await createOrder()).json();
+      const generated = (
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/production/work-orders/${created.workOrderId}/cutlist`,
+          headers: auth(),
+          payload: {},
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/production/cutting-plans/${generated.cuttingPlanId}?drawings=false`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.drawings).toBeUndefined();
+      expect(body.plan.boards.length).toBeGreaterThan(0);
+      expect(body.cuttingList.length).toBeGreaterThan(0);
+    });
+
+    it('404s for a plan id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/cutting-plans/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
     it('pages cutting plans and reports what came off the rack', async () => {
       const response = await app.inject({
         method: 'GET',

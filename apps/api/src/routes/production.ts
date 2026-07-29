@@ -8,7 +8,14 @@
  * microservices: this would otherwise be a distributed saga.
  */
 import { parseListParams, schema, withTenant } from '@aerolith/kernel';
-import { optimise, renderPlanSvgs, toCuttingList, type Part, type StockItem } from '@aerolith/cutlist';
+import {
+  optimise,
+  renderPlanSvgs,
+  toCuttingList,
+  type CutlistPlan,
+  type Part,
+  type StockItem,
+} from '@aerolith/cutlist';
 import { inventorySchema, toNumber } from '@aerolith/module-inventory';
 import {
   CUTTING_PLAN_SORTS,
@@ -17,7 +24,9 @@ import {
   WORK_ORDER_SORTS,
   WorkOrderError,
   createWorkOrder,
+  cuttingPlanOffcutIds,
   estimateCompletion,
+  getCuttingPlan,
   getWorkOrderProgress,
   listCuttingPlans,
   listFinishingBatches,
@@ -300,6 +309,79 @@ export async function productionRoutes(app: FastifyInstance) {
             committed,
           }),
         ),
+      );
+    },
+  );
+
+  /**
+   * One cutting plan, rendered.
+   *
+   * The drawing is produced here rather than stored, because the plan JSON is
+   * the record and the SVG is a view of it: a renderer improvement should reach
+   * every plan ever made, not only the ones cut after it shipped. Rendering is
+   * a pure function of stored data, so this stays deterministic.
+   *
+   * The composition is the same as when the plan was generated — Production
+   * holds the plan, Inventory holds the offcuts it reserved, the engine draws
+   * it, and this layer joins the three. A tenant without Inventory gets the
+   * plan and the drawing, and no offcut section, because there was no rack to
+   * cut from in the first place.
+   */
+  app.get<{ Params: { id: string }; Querystring: { drawings?: string } }>(
+    '/production/cutting-plans/:id',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.work_order.read');
+
+      const modules = await modulesForTenant(principal.context.tenantId);
+      const hasInventory = modules.enabled.has('inventory');
+
+      return withPrincipal(principal, () =>
+        withTenant(async (tx) => {
+          const detail = await getCuttingPlan(tx, request.params.id);
+          if (!detail) return reply.code(404).send({ error: 'Cutting plan not found.' });
+
+          const plan = detail.plan as unknown as CutlistPlan;
+
+          if (hasInventory) {
+            const ids = await cuttingPlanOffcutIds(tx, request.params.id);
+            if (ids.length > 0) {
+              const rows = await tx
+                .select({
+                  id: inventorySchema.offcut.id,
+                  itemCode: schema.item.code,
+                  lengthMm: inventorySchema.offcut.lengthMm,
+                  widthMm: inventorySchema.offcut.widthMm,
+                  status: inventorySchema.offcut.status,
+                })
+                .from(inventorySchema.offcut)
+                .leftJoin(schema.item, eq(schema.item.id, inventorySchema.offcut.itemId))
+                .where(
+                  and(
+                    eq(inventorySchema.offcut.tenantId, principal.context.tenantId),
+                    inArray(inventorySchema.offcut.id, ids),
+                  ),
+                );
+              detail.offcutsConsumed = rows;
+            }
+          }
+
+          return {
+            ...detail,
+            cuttingList: toCuttingList(plan),
+            // On by default — a plan nobody can see is the thing this endpoint
+            // exists to fix. `?drawings=false` is for a caller that wants the
+            // summary and the cutting list without the largest part of the
+            // payload by a wide margin.
+            drawings:
+              request.query.drawings === 'false'
+                ? undefined
+                : renderPlanSvgs(plan, {
+                    title: detail.workOrderNumber ?? detail.workOrderDescription,
+                  }),
+          };
+        }),
       );
     },
   );

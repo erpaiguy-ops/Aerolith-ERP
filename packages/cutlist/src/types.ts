@@ -65,7 +65,16 @@ export interface StockItem {
 export interface CutlistOptions {
   /** Saw blade width, removed on every cut. */
   kerfMm?: number;
-  /** Trim taken off a board's edges before anything is cut from it. */
+  /**
+   * Trim taken off a FULL SHEET's edges before anything is cut from it.
+   *
+   * Not applied to offcuts. A remnant's edges are saw cuts and the factory edge
+   * it came from was trimmed when the sheet was first opened; taking another
+   * pass off all four sides removes material for no reason. It is also the
+   * difference between a remnant being usable and not — a 1180x620 piece
+   * trimmed again is 1160x600, which will not take the 1180x580 shelf it was
+   * kept for.
+   */
   edgeTrimMm?: number;
   /**
    * Use offcuts before opening new sheets. On by default — it is the entire

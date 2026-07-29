@@ -49,10 +49,11 @@ labelled parts, becomes scanned progress.
   receipt and three-way matching, with the exception queue that catches an
   invoice for goods nobody received
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
-  Contracts, Procurement, Inventory, Estimating and Production. **every** navigation
-  destination is built — 27 of 27. Right-to-left aware and formatted in the
-  user's own locale
-- **923 tests**, including integration suites that prove tenant isolation holds and
+  Contracts, Procurement, Inventory, Estimating and Production, plus the approval
+  inbox. **Every** navigation destination is built — 30 of 30 — and the cutting
+  plan a work order was planned to is drawn on screen. Right-to-left aware and
+  formatted in the user's own locale
+- **935 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -123,7 +124,18 @@ them is not over-credited and the job that consumes them is not under-charged.
 `POST /api/v1/inventory/cutlist/optimise` takes a cutting list and plans it
 against **live stock** — the offcut rack first, then new sheets. It returns board
 layouts with part positions, SVG cutting diagrams for the saw, an edge-banding
-schedule in metres per tape, and what the register saved.
+schedule in metres per tape, and what the register saved. A plan generated
+against a work order is stored and can be read back drawn:
+`GET /api/v1/production/cutting-plans/:id`, and `/production/cutlist/:id` in the
+UI.
+
+**Reaching for the rack is a strategy, not a rule.** The packer runs its
+portfolio both ways — rack-first and sheets-only — and keeps whichever plan uses
+fewer sheets. A greedy pass that always prefers remnants will open one for the
+first part that fits and then find the parts left still need the same number of
+sheets, which spends a piece of stock to buy nothing. Edge trim is applied to a
+full sheet and not to a remnant, for the same reason it exists: the factory edge
+was squared when the sheet was first opened, and a remnant's edges are saw cuts.
 
 Guillotine, not free-form nesting: every cut runs the full width of the piece,
 because that is what a panel saw physically does. A layout that ignores this is
@@ -197,6 +209,7 @@ pnpm --filter @aerolith/api dev
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |
 | `POST /api/v1/production/work-orders/:id/cutlist` | Plan against live stock, reserve the offcuts |
+| `GET /api/v1/production/cutting-plans/:id` | One stored plan, with its boards drawn as SVG |
 | `POST /api/v1/production/work-orders/:id/release` | Release to the floor |
 | `POST /api/v1/production/work-orders/:id/scans` | Record a shop-floor scan |
 | `GET /api/v1/production/board` | The live queue at each work centre |

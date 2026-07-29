@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -92,7 +94,15 @@ export default async function CuttingPlansPage({
             {result.rows.map((row) => (
               <tr key={row.id} className="hover:bg-(--color-canvas)">
                 <Td>
-                  <span className="numeric block">{row.workOrderNumber ?? '—'}</span>
+                  {/* The row leads to the drawing. A cutting plan whose only
+                      representation is a yield percentage is a plan nobody can
+                      cut to. */}
+                  <Link
+                    href={`/production/cutlist/${row.id}`}
+                    className="numeric block text-(--color-accent) hover:underline"
+                  >
+                    {row.workOrderNumber ?? 'View plan'}
+                  </Link>
                   <span className="text-xs text-(--color-muted)">{row.workOrderDescription}</span>
                 </Td>
                 <Td>

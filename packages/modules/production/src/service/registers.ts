@@ -292,6 +292,149 @@ export async function listCuttingPlans(
   return listResult(rows, counted?.total ?? 0, params);
 }
 
+/**
+ * One cutting plan, with everything the drawing needs named.
+ *
+ * The plan JSON is returned exactly as the engine produced it — boards,
+ * placements, remnants, summary — because it is the record of what was
+ * optimised and re-deriving it would produce a different nest. What this adds is
+ * the identity around it: the item codes behind each board's `materialId`, and
+ * the state of the offcuts the plan reserved.
+ *
+ * Rendering is not done here. The drawing comes from `@aerolith/cutlist`, and
+ * the API layer composes the two the same way it does when the plan is
+ * generated — a module that imported the engine would be a module that could not
+ * be sold without it.
+ */
+export interface CuttingPlanDetail {
+  id: string;
+  workOrderId: string;
+  workOrderNumber: string | null;
+  workOrderDescription: string;
+  workOrderStatus: string;
+  projectCode: string | null;
+  projectName: string | null;
+  version: number;
+  sheetsUsed: number;
+  offcutsUsed: number;
+  grossYieldPercent: string | null;
+  netYieldPercent: string | null;
+  materialCost: string | null;
+  isCommitted: boolean;
+  committedAt: string | null;
+  createdAt: string;
+  generatedByName: string | null;
+  /** The options it was produced under, so the nest can be reproduced exactly. */
+  options: Record<string, unknown>;
+  /** The engine's own output, untouched. */
+  plan: Record<string, unknown>;
+  /** `materialId` → the item it names, for every board on the plan. */
+  materials: { id: string; code: string; name: string; thicknessMm: string | null }[];
+  /**
+   * The offcuts this plan took off the rack, with their CURRENT status — which
+   * is how you find out that a plan generated last week has had its remnants
+   * consumed by a different job in the meantime.
+   */
+  offcutsConsumed: {
+    id: string;
+    itemCode: string | null;
+    lengthMm: string;
+    widthMm: string;
+    status: string;
+  }[];
+}
+
+export async function getCuttingPlan(
+  tx: Transaction,
+  planId: string,
+): Promise<CuttingPlanDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select({
+      id: cuttingPlan.id,
+      workOrderId: cuttingPlan.workOrderId,
+      workOrderNumber: workOrder.number,
+      workOrderDescription: workOrder.description,
+      workOrderStatus: workOrder.status,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+      version: cuttingPlan.version,
+      sheetsUsed: cuttingPlan.sheetsUsed,
+      offcutsUsed: cuttingPlan.offcutsUsed,
+      grossYieldPercent: cuttingPlan.grossYieldPercent,
+      netYieldPercent: cuttingPlan.netYieldPercent,
+      materialCost: cuttingPlan.materialCost,
+      isCommitted: cuttingPlan.isCommitted,
+      committedAt: sql<string | null>`${cuttingPlan.committedAt}`,
+      createdAt: sql<string>`${cuttingPlan.createdAt}`,
+      generatedByName: schema.appUser.name,
+      options: cuttingPlan.options,
+      plan: cuttingPlan.plan,
+      consumedOffcutIds: cuttingPlan.consumedOffcutIds,
+    })
+    .from(cuttingPlan)
+    .innerJoin(
+      workOrder,
+      and(eq(workOrder.id, cuttingPlan.workOrderId), eq(workOrder.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, workOrder.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(schema.appUser, eq(schema.appUser.id, cuttingPlan.generatedBy))
+    .where(and(eq(cuttingPlan.tenantId, tenantId), eq(cuttingPlan.id, planId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  // Every board names a `materialId`. Read them out of the plan rather than off
+  // the work order's parts: a plan is a historical record and the parts list may
+  // have changed since, which would leave a board labelled with a material it
+  // was never cut from.
+  const boards = Array.isArray((row.plan as { boards?: unknown }).boards)
+    ? ((row.plan as { boards: { materialId?: string }[] }).boards ?? [])
+    : [];
+  const materialIds = [...new Set(boards.map((b) => b.materialId).filter(Boolean))] as string[];
+
+  const materials = materialIds.length
+    ? await tx
+        .select({
+          id: schema.item.id,
+          code: schema.item.code,
+          name: schema.item.name,
+          thicknessMm: schema.item.thicknessMm,
+        })
+        .from(schema.item)
+        .where(and(eq(schema.item.tenantId, tenantId), inArray(schema.item.id, materialIds)))
+    : [];
+
+  // The offcut register belongs to Inventory, whose tables this module must not
+  // read. The ids are recorded on the plan and the API resolves them when the
+  // tenant has Inventory — without it the plan simply cut from new sheets and
+  // there is nothing to resolve.
+  const { consumedOffcutIds: _ids, ...plan } = row;
+
+  return {
+    ...plan,
+    options: (row.options ?? {}) as Record<string, unknown>,
+    plan: row.plan as Record<string, unknown>,
+    materials,
+    offcutsConsumed: [],
+  };
+}
+
+/** The offcut ids a plan reserved, for the caller that can resolve them. */
+export async function cuttingPlanOffcutIds(tx: Transaction, planId: string): Promise<string[]> {
+  const { tenantId } = requireTenantContext();
+  const [row] = await tx
+    .select({ ids: cuttingPlan.consumedOffcutIds })
+    .from(cuttingPlan)
+    .where(and(eq(cuttingPlan.tenantId, tenantId), eq(cuttingPlan.id, planId)))
+    .limit(1);
+  return row?.ids ?? [];
+}
+
 // ---------------------------------------------------------------------------
 // Finishing
 // ---------------------------------------------------------------------------

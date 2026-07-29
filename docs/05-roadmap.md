@@ -772,6 +772,86 @@ a fact about the developer's machine, not about tenant isolation. It passes in C
 because CI's database is empty and fails for anyone who has run the demo seed
 into the same database. Scoped to the two tenants the suite creates.
 
+### The cutting plan you can actually see — and two things that found
+
+The README calls the cutlist optimiser the differentiator. The register could
+tell you a job used eleven boards at 82% net yield; it could not show you the
+boards, and nobody cuts to a percentage. `GET /production/cutting-plans/:id`
+returns one stored plan and `/production/cutlist/:id` draws it: every board with
+its parts positioned, the material named, the cut sizes and origin coordinates
+beside the drawing, the remnants going back on the rack, and the pieces that came
+off it with their status **now** — a plan made last week whose remnant another
+job has since cut will not cut as drawn, and this is the only screen that says so.
+
+**The drawing is rendered, not stored.** The plan JSON is the record; the SVG is
+a view of it, so a renderer improvement reaches every plan ever made rather than
+only the ones cut after it shipped. It reaches the page as an `<img>` with a data
+URI rather than injected markup: the renderer escapes every text node it writes,
+so inlining would be safe today, but the text in those nodes is user-entered part
+labels and "safe because a function three packages away still escapes correctly"
+is a property that quietly stops holding. Base64 through `Buffer`, not `btoa`,
+because a part labelled in Arabic is not Latin-1.
+
+Then the seed was pointed at the real thing, and two defects fell out.
+
+**The demo's cutting plan was a stub.** `plan: { boards: 11, note: '…' }` sat
+beside summary columns claiming 11 sheets and 82.7% net yield — figures nothing
+had computed, on top of a plan with no boards in it. The register looked
+convincing and the plan behind it could not be drawn. The seed now runs the real
+optimiser over the work order's real parts and the real rack, and the numbers are
+whatever the engine says. (The same pass found that the seed could only ever be
+run once: `approval_workflow` was missing from its cleanup list, so a second run
+died on a unique constraint — the same "idempotent by accident of always running
+against a fresh database" failure recorded a few entries above, in a different
+table.)
+
+**Edge trim was being applied to remnants.** A 1180x620 piece offered as
+1160x600 will not take the 1180x580 shelf it was kept for, so the optimiser
+opened a fresh sheet and left the remnant on the rack — the exact case the offcut
+register exists to catch, declined by an arithmetic detail. Trim squares the
+factory edge of a full sheet; a remnant's edges are saw cuts and the factory edge
+it came from was trimmed when the sheet was first opened. Now `trimFor` returns
+zero for an offcut.
+
+**Reaching for the rack is a strategy, not a rule.** With the trim fixed, the
+reception job took a remnant and *cost more*: 14 sheets either way, one extra
+board, and a piece of stock spent to buy nothing. The packer is greedy and never
+backtracks, so preferring offcuts opens one for the first part that fits and only
+then discovers the parts left still need the same sheets — a plan worse by the
+packer's own ranking (`isBetter` puts sheets first, then boards), produced anyway
+because the alternative was never generated. The strategy portfolio now runs both
+ways, rack-first and sheets-only, and keeps the winner. It costs one more greedy
+pass per packing, still sub-millisecond, and cannot lose: where a remnant
+genuinely saves a sheet, that pass wins on sheets.
+
+`sheetsOnly` has to EXCLUDE remnants rather than stop preferring them. Without a
+preference, candidates are sorted smallest-fits-first and a remnant is nearly
+always the smallest thing that fits — so "don't prefer" and "don't use" are not
+the same instruction, and only the second produces the alternative plan. Two
+existing tests had to change with it: both asserted the rack was used on jobs
+where it saved nothing, which is the behaviour that was wrong.
+
+**The demo now argues the register honestly.** The reception job is five
+carcasses, ten sides and twenty-five shelves — quantities chosen because at that
+size the 1180x620 remnant saves a whole sheet: 11 sheets and one offcut at
+AED 3,193.80 against 12 sheets at AED 3,408.00. At six carcasses the same remnant
+saves nothing and the optimiser correctly leaves it alone, which is the other
+half of the point. The doors job takes nothing off the rack, because a 2100x900
+leaf is bigger than every remnant there is.
+
+Verified in a browser against the seeded demo: both plans render, 12 and 24
+boards, every drawing decoding at its natural size, no horizontal overflow, and
+the arithmetic checked by hand — 10 sides at 1.44 m² and 25 shelves at 0.6844 m²
+is 31.51 m² of parts across 11 sheets and one 0.7316 m² remnant, 33.4764 m²
+opened, 94.13% yield, AED 3,193.80. Every figure on the screen agrees.
+
+One measurement recorded rather than fixed: the packer does not always reach a
+plain grid. 800x400 into 2440x1220 admits a 3x3 (2406.4 x 1206.4 at a 3.2mm
+kerf); the free-rectangle split produces 8, an 11% shortfall on that shape. Same
+cause as the known gap already noted in `optimise.ts` — the split commits to a
+shape of leftover before the rest of the parts are known. Closing it needs a real
+search, not a greedy pass.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

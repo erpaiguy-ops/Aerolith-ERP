@@ -33,6 +33,11 @@
  *    part in the leftover strip, which is worth roughly one sheet in twenty on
  *    mixes like the wardrobe job. Closing it needs a real search rather than a
  *    greedy pass; noted rather than hidden.
+ *  - Known gap: it does not always reach a plain grid either. 800x400 into
+ *    2440x1220 admits a 3x3 grid (2406.4 x 1206.4 with a 3.2mm kerf) and the
+ *    free-rectangle split produces 8, not 9 — an 11% shortfall on that shape.
+ *    Same cause: the split commits to a shape of leftover before the rest of
+ *    the parts are known. Measured, so an improvement is provable.
  */
 import type {
   BoardPlan,
@@ -95,9 +100,13 @@ type FitScore = 'best-area' | 'best-short-side' | 'best-long-side';
 interface Strategy {
   sort: SortKey;
   score: FitScore;
+  /** Whether this pass reaches for the rack before opening a new sheet. */
+  preferOffcuts: boolean;
+  /** Whether this pass may open a remnant at all. */
+  sheetsOnly: boolean;
 }
 
-const STRATEGIES: Strategy[] = [
+const PACKINGS: { sort: SortKey; score: FitScore }[] = [
   { sort: 'area', score: 'best-area' },
   { sort: 'area', score: 'best-short-side' },
   { sort: 'longest-side', score: 'best-area' },
@@ -107,6 +116,42 @@ const STRATEGIES: Strategy[] = [
   { sort: 'perimeter', score: 'best-area' },
   { sort: 'area', score: 'best-long-side' },
 ];
+
+/**
+ * Reaching for the rack is a STRATEGY, not a rule.
+ *
+ * The packer is greedy and never backtracks, so preferring offcuts alone opens a
+ * remnant for the first part that fits it and only then discovers that the parts
+ * left still need the same number of sheets. That plan is worse by the packer's
+ * own measure — same sheets, one more board, a piece gone off the rack for
+ * nothing — and it was produced anyway, because the alternative was never
+ * generated. Measured on the demo's reception job: 14 sheets either way, and
+ * the rack-first pass spent a 1180x620 remnant to add a fifteenth board.
+ *
+ * So when the caller prefers offcuts, run the portfolio both ways — rack-first,
+ * and sheets-only — and let `isBetter` choose. It costs one more greedy pass per
+ * packing (still sub-millisecond) and cannot lose: where a remnant genuinely
+ * saves a sheet the rack-first pass wins on sheets, which is ranked first.
+ *
+ * `sheetsOnly` has to EXCLUDE remnants rather than merely stop preferring them.
+ * Without a preference the candidates are sorted smallest-fits-first, and a
+ * remnant is nearly always the smallest thing that fits — so "don't prefer" and
+ * "don't use" are not the same instruction, and only the second one produces
+ * the alternative plan.
+ */
+function strategiesFor(opts: Required<CutlistOptions>): Strategy[] {
+  const modes = opts.preferOffcuts
+    ? [
+        { preferOffcuts: true, sheetsOnly: false },
+        { preferOffcuts: false, sheetsOnly: true },
+      ]
+    : // An explicit `preferOffcuts: false` keeps the original single pass:
+      // no preference, remnants still eligible on size. A caller that wants the
+      // rack left alone entirely leaves the offcuts out of `stock`.
+      [{ preferOffcuts: false, sheetsOnly: false }];
+
+  return modes.flatMap((mode) => PACKINGS.map((p) => ({ ...p, ...mode })));
+}
 
 export function optimise(
   parts: readonly Part[],
@@ -156,7 +201,7 @@ function packMaterial(
 ): { boards: BoardPlan[]; unplaced: UnplacedPart[] } {
   let best: { boards: BoardPlan[]; unplaced: UnplacedPart[] } | null = null;
 
-  for (const strategy of STRATEGIES) {
+  for (const strategy of strategiesFor(opts)) {
     const candidate = packWith(units, stock, opts, strategy);
     if (!best || isBetter(candidate, best)) best = candidate;
   }
@@ -208,7 +253,7 @@ function packWith(
   for (const unit of sorted) {
     if (placeOnExisting(unit, open, opts, strategy.score)) continue;
 
-    const board = openBoard(unit, stock, remainingStock, open.length, opts);
+    const board = openBoard(unit, stock, remainingStock, open.length, opts, strategy);
     if (!board) {
       failed.push({
         unit,
@@ -373,12 +418,14 @@ function openBoard(
   remaining: Map<string, number>,
   instance: number,
   opts: Required<CutlistOptions>,
+  strategy: Strategy,
 ): OpenBoard | null {
   const candidates = stock
+    .filter((s) => !(strategy.sheetsOnly && s.source === 'offcut'))
     .filter((s) => (remaining.get(s.id) ?? 0) > 0)
     .filter((s) => partFitsStock(unit.part, s, opts))
     .sort((a, b) => {
-      if (opts.preferOffcuts && a.source !== b.source) {
+      if (strategy.preferOffcuts && a.source !== b.source) {
         // Offcuts first — using them is the whole point of the register.
         return a.source === 'offcut' ? -1 : 1;
       }
@@ -391,7 +438,7 @@ function openBoard(
 
   remaining.set(chosen.id, (remaining.get(chosen.id) ?? 0) - 1);
 
-  const trim = opts.edgeTrimMm;
+  const trim = trimFor(chosen, opts);
   return {
     stock: chosen,
     instance,
@@ -442,14 +489,33 @@ function partFitsStock(part: Part, stock: StockItem, opts: Required<CutlistOptio
   if (part.grainCode && stock.grainCode && part.grainCode !== stock.grainCode) return false;
   if (part.colourCode && stock.colourCode && part.colourCode !== stock.colourCode) return false;
 
-  const usableLength = stock.lengthMm - opts.edgeTrimMm * 2;
-  const usableWidth = stock.widthMm - opts.edgeTrimMm * 2;
+  const trim = trimFor(stock, opts);
+  const usableLength = stock.lengthMm - trim * 2;
+  const usableWidth = stock.widthMm - trim * 2;
 
   return orientations(part, stock, opts).some((rotated) => {
     const l = rotated ? part.widthMm : part.lengthMm;
     const w = rotated ? part.lengthMm : part.widthMm;
     return l <= usableLength && w <= usableWidth;
   });
+}
+
+/**
+ * Edge trim for one piece of stock.
+ *
+ * A full sheet gets trimmed: the factory edge is not square and the first cut
+ * squares it. A remnant does not. Its edges are saw cuts, and the factory edge
+ * it came from was trimmed when the sheet was first opened — taking another
+ * pass off all four sides removes material to no purpose.
+ *
+ * It also decides whether the register earns its keep. With a uniform trim, a
+ * 1180x620 remnant is offered as 1160x600 and cannot take the 1180x580 shelf it
+ * was kept for, so the optimiser opens a new sheet and the piece stays on the
+ * rack — the exact case the offcut register exists to catch, declined by an
+ * arithmetic detail.
+ */
+function trimFor(stock: StockItem, opts: Required<CutlistOptions>): number {
+  return stock.source === 'offcut' ? 0 : opts.edgeTrimMm;
 }
 
 /** Why no board could be opened — actionable, not just "failed". */
@@ -464,9 +530,10 @@ function describeWhyNoBoard(
   const anyBigEnough = sameMaterial.some((s) => {
     const l = Math.max(unit.part.lengthMm, unit.part.widthMm);
     const w = Math.min(unit.part.lengthMm, unit.part.widthMm);
+    const trim = trimFor(s, opts);
     return (
-      l <= Math.max(s.lengthMm, s.widthMm) - opts.edgeTrimMm * 2 &&
-      w <= Math.min(s.lengthMm, s.widthMm) - opts.edgeTrimMm * 2
+      l <= Math.max(s.lengthMm, s.widthMm) - trim * 2 &&
+      w <= Math.min(s.lengthMm, s.widthMm) - trim * 2
     );
   });
 

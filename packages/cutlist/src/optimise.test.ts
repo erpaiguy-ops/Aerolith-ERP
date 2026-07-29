@@ -201,20 +201,24 @@ describe('optimise — offcuts', () => {
     expect(plan.boards[0]!.stockId).toBe('oc-snug');
   });
 
+  // Nine parts, not three. Eight 800x400 go on a sheet, so the ninth needs a
+  // second one — unless it comes off the rack, which is when the packer will
+  // take it. With three parts the offcut saves nothing and is correctly left
+  // alone; that is a different behaviour with its own tests below.
   it('consumes each offcut only once', () => {
     // An offcut is a unique physical piece, not a stock line.
-    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 3 })], [
+    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 9 })], [
       sheet(),
       offcut('oc-1', 850, 450),
     ]);
 
     const usedOffcuts = plan.boards.filter((b) => b.source === 'offcut');
     expect(usedOffcuts).toHaveLength(1);
-    expect(plan.summary.partsPlaced).toBe(3);
+    expect(plan.summary.partsPlaced).toBe(9);
   });
 
   it('falls back to sheets when the offcuts run out', () => {
-    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 4 })], [
+    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 9 })], [
       sheet(),
       offcut('oc-1', 850, 450),
     ]);
@@ -480,6 +484,109 @@ describe('optimise — known optima', () => {
     // 4 across (2412.8) x 2 down (1206.4).
     const plan = optimise([part({ lengthMm: 600, widthMm: 600, quantity: 8 })], [sheet()]);
     expect(plan.summary.boardsUsed).toBe(1);
+  });
+});
+
+describe('optimise — edge trim applies to sheets, not to remnants', () => {
+  // A remnant's edges are saw cuts and the factory edge it came from was
+  // trimmed when the sheet was first opened. Trimming it again removes material
+  // for no reason, and decides whether the offcut register earns its keep.
+
+  const remnant = (over: Partial<StockItem> = {}): StockItem => ({
+    id: 'rack-1',
+    source: 'offcut',
+    materialId: MDF,
+    lengthMm: 1180,
+    widthMm: 620,
+    thicknessMm: 18,
+    available: 1,
+    ...over,
+  });
+
+  it('cuts a part that only fits a remnant untrimmed', () => {
+    // 1180x580 into a 1180x620 remnant. With a uniform 10mm trim the remnant is
+    // offered as 1160x600 and the part — 20mm too long — opens a fresh sheet
+    // instead, leaving the piece it was kept for on the rack.
+    const plan = optimise(
+      [part({ id: 'shelf', lengthMm: 1180, widthMm: 580, quantity: 1 })],
+      [remnant(), sheet()],
+      { edgeTrimMm: 10 },
+    );
+
+    expect(plan.summary.offcutsUsed).toBe(1);
+    expect(plan.summary.sheetsUsed).toBe(0);
+    expect(plan.boards[0]!.stockId).toBe('rack-1');
+    assertValid(plan.boards);
+  });
+
+  it('starts a remnant at the origin and a sheet at the trim', () => {
+    const fromRack = optimise([part({ quantity: 1 })], [remnant()], { edgeTrimMm: 10 });
+    expect(fromRack.boards[0]!.placements[0]!.xMm).toBe(0);
+    expect(fromRack.boards[0]!.placements[0]!.yMm).toBe(0);
+
+    const fromSheet = optimise([part({ quantity: 1 })], [sheet()], { edgeTrimMm: 10 });
+    expect(fromSheet.boards[0]!.placements[0]!.xMm).toBe(10);
+    expect(fromSheet.boards[0]!.placements[0]!.yMm).toBe(10);
+  });
+
+  it('leaves a remnant on the rack when taking it saves no sheet', () => {
+    // Four shelves fit one sheet (2 across, 2 down). Taking the remnant for the
+    // first still leaves three, which still need that sheet — so the rack has
+    // been spent to buy nothing. Same sheets, one more board: worse by the
+    // packer's own measure, and it used to be produced anyway because the
+    // greedy pass never generated the alternative.
+    const plan = optimise(
+      [part({ id: 'shelf', lengthMm: 1180, widthMm: 580, quantity: 4 })],
+      [remnant(), sheet()],
+      { edgeTrimMm: 10 },
+    );
+
+    expect(plan.summary.sheetsUsed).toBe(1);
+    expect(plan.summary.offcutsUsed).toBe(0);
+    expect(plan.summary.boardsUsed).toBe(1);
+    assertValid(plan.boards);
+  });
+
+  it('takes the remnant when it does save a sheet', () => {
+    // Five shelves: four on a sheet and one on the remnant is ONE sheet;
+    // four and one across two sheets is two. The rack earns its keep here, and
+    // the fewest-sheets rule picks it.
+    const plan = optimise(
+      [part({ id: 'shelf', lengthMm: 1180, widthMm: 580, quantity: 5 })],
+      [remnant(), sheet()],
+      { edgeTrimMm: 10 },
+    );
+
+    expect(plan.summary.sheetsUsed).toBe(1);
+    expect(plan.summary.offcutsUsed).toBe(1);
+    assertValid(plan.boards);
+  });
+
+  it('leaves the rack alone when it is not offered', () => {
+    // How a caller actually excludes remnants: leave them out of `stock`. The
+    // API's `ignoreOffcuts` does exactly this. `preferOffcuts: false` is a
+    // weaker instruction — stop preferring, not stop using — and a remnant is
+    // usually the smallest thing that fits, so it would still be chosen.
+    const plan = optimise(
+      [part({ id: 'shelf', lengthMm: 1180, widthMm: 580, quantity: 5 })],
+      [sheet()],
+      { edgeTrimMm: 10 },
+    );
+
+    expect(plan.summary.offcutsUsed).toBe(0);
+    expect(plan.summary.sheetsUsed).toBe(2);
+  });
+
+  it('still refuses a part genuinely larger than the remnant', () => {
+    // Not trimming is not the same as not measuring.
+    const plan = optimise(
+      [part({ lengthMm: 1300, widthMm: 580, quantity: 1 })],
+      [remnant()],
+      { edgeTrimMm: 10 },
+    );
+
+    expect(plan.boards).toEqual([]);
+    expect(plan.unplaced[0]!.reason).toBe('Part is larger than any available board.');
   });
 });
 
