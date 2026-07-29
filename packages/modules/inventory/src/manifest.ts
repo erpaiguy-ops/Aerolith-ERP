@@ -66,6 +66,10 @@ export const inventoryModule = defineModule({
         { key: 'inventory.stock', label: 'Stock on Hand', path: '/inventory/stock', permission: 'inventory.stock.read', order: 20 },
         { key: 'inventory.offcuts', label: 'Offcut Register', path: '/inventory/offcuts', permission: 'inventory.stock.read', order: 30 },
         { key: 'inventory.counts', label: 'Stock Counts', path: '/inventory/counts', permission: 'inventory.stock.read', order: 40 },
+        // The ledger. Gated on READ, not on create: seeing what moved is not the
+        // same authority as moving it, and the screen hides its own form from
+        // anybody without `stock_movement.create`.
+        { key: 'inventory.movements', label: 'Stock Movements', path: '/inventory/movements', permission: 'inventory.stock.read', order: 50 },
       ],
     },
   ],

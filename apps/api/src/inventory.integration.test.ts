@@ -593,13 +593,13 @@ suite('Inventory', () => {
     it('numbers movements consecutively within their own series', async () => {
       const movements = await app.inject({
         method: 'GET',
-        url: '/api/v1/inventory/movements?limit=100',
+        url: '/api/v1/inventory/movements?pageSize=100',
         headers: auth(),
       });
 
       const grns = movements
         .json()
-        .movements.filter((m: { type: string }) => m.type === 'receipt')
+        .rows.filter((m: { type: string }) => m.type === 'receipt')
         .map((m: { number: string }) => m.number)
         .sort();
 
@@ -823,10 +823,79 @@ suite('Inventory', () => {
       await db.delete(schema.item).where(eq(schema.item.id, spare!.id));
     });
 
+    it('pages the movement ledger newest first, with who posted each one', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/movements',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // A ledger is read from the end: "what just happened" is asked far more
+      // often than "what happened in March".
+      expect(body.sort).toBe('movementDate');
+      expect(body.direction).toBe('desc');
+      const dates = body.rows.map((r: { movementDate: string }) => r.movementDate);
+      expect([...dates].sort().reverse()).toEqual(dates);
+
+      const row = body.rows.find((r: { number: string }) => r.number === 'GRN-2026-00001');
+      expect(row).toBeDefined();
+      // The name, not the uuid. A stock ledger whose actor column reads as a
+      // uuid is a ledger nobody can audit.
+      expect(row.postedByName).toBe('Storekeeper');
+      expect(row.lineCount).toBeGreaterThan(0);
+      // Unsigned: line quantities are always positive and the direction lives
+      // in the type, so this is "how much moved".
+      expect(Number(row.totalQuantity)).toBeGreaterThan(0);
+    });
+
+    it('totals a movement from its own lines, not from the whole ledger', async () => {
+      // The line aggregate is a subquery joined per movement. Grouped wrongly it
+      // would attribute every line in the tenant to every row, which reads as
+      // plausible-but-enormous figures rather than as an obvious break.
+      const page = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/movements?pageSize=100',
+        headers: auth(),
+      });
+
+      const db = getDatabase();
+      for (const row of page.json().rows.slice(0, 5)) {
+        const lines = await db
+          .select({ quantity: inventorySchema.stockMovementLine.quantity })
+          .from(inventorySchema.stockMovementLine)
+          .where(eq(inventorySchema.stockMovementLine.movementId, row.id));
+
+        expect(row.lineCount).toBe(lines.length);
+        expect(Number(row.totalQuantity)).toBeCloseTo(
+          lines.reduce((sum, line) => sum + Number(line.quantity), 0),
+          4,
+        );
+      }
+    });
+
+    it('filters the ledger by movement type', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/movements?type=transfer',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.rows.length).toBeGreaterThan(0);
+      expect(body.rows.every((r: { type: string }) => r.type === 'transfer')).toBe(true);
+      // The total is the filtered total, not the ledger's — a pager that counts
+      // rows the filter excluded sends the user to an empty page 3.
+      expect(body.total).toBe(body.rows.length);
+    });
+
     it('answers 404 on every register for a tenant without the module', async () => {
       // Not 403: a module the tenant has not bought does not exist to them, and
       // a different status code would confirm the catalogue.
-      for (const path of ['items', 'stock', 'offcuts', 'counts']) {
+      for (const path of ['items', 'stock', 'offcuts', 'counts', 'movements']) {
         const response = await app.inject({
           method: 'GET',
           url: `/api/v1/inventory/${path}`,

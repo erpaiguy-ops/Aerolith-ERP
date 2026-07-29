@@ -10,11 +10,13 @@ import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
   COUNT_SORTS,
   ITEM_SORTS,
+  MOVEMENT_SORTS,
   InvalidMovementError,
   OFFCUT_SORTS,
   STOCK_SORTS,
   inventorySchema,
   listItems,
+  listMovements,
   listOffcuts,
   listStockCounts,
   listStockOnHand,
@@ -25,7 +27,7 @@ import {
   toNumber,
   type Panel,
 } from '@aerolith/module-inventory';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
@@ -329,23 +331,29 @@ export async function inventoryRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get<{ Querystring: { limit?: string } }>(
+  app.get<{ Querystring: ListQuery & { type?: string; projectId?: string } }>(
     '/inventory/movements',
     async (request, reply) => {
       const principal = await authenticate(request);
       if (!(await requireModule(principal, reply))) return reply;
       requirePermission(principal, 'inventory.stock.read');
 
+      const params = parseListParams(request.query, {
+        sortable: MOVEMENT_SORTS,
+        // Newest first. A stock ledger is read from the end — "what just
+        // happened" far more often than "what happened in March".
+        defaultSort: 'movementDate',
+        defaultDirection: 'desc',
+      });
+
       return withPrincipal(principal, () =>
-        withTenant(async (tx) => {
-          const movements = await tx
-            .select()
-            .from(inventorySchema.stockMovement)
-            .where(eq(inventorySchema.stockMovement.tenantId, principal.context.tenantId))
-            .orderBy(desc(inventorySchema.stockMovement.postedAt))
-            .limit(Math.min(Number(request.query.limit ?? 50), 200));
-          return { movements };
-        }),
+        withTenant((tx) =>
+          listMovements(tx, params, {
+            type: request.query.type,
+            projectId: request.query.projectId,
+            itemId: request.query.itemId,
+          }),
+        ),
       );
     },
   );

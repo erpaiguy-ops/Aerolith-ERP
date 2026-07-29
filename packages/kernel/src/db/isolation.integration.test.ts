@@ -279,7 +279,15 @@ suite('tenant isolation and country adoption', () => {
 
       expect(deleted).toHaveLength(1);
 
-      const survivors = await owner.select().from(schema.party);
+      // Scoped to the two tenants this suite created. Selecting the whole table
+      // asserts that the database contains nothing else, which is a fact about
+      // the developer's machine rather than about tenant isolation — it passes
+      // on a clean CI database and fails the moment anyone runs the suite
+      // against a database that also holds the demo seed.
+      const survivors = await owner
+        .select()
+        .from(schema.party)
+        .where(inArray(schema.party.tenantId, [tenantA, tenantB]));
       expect(survivors.map((p) => p.name)).toEqual(['Qatari Diar']);
     });
 

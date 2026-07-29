@@ -47,15 +47,18 @@ export {
 
 export {
   COUNT_SORTS,
+  MOVEMENT_SORTS,
   ITEM_SORTS,
   OFFCUT_SORTS,
   STOCK_SORTS,
   listItems,
+  listMovements,
   listOffcuts,
   listStockCounts,
   listStockOnHand,
   summariseOffcuts,
   type ItemListRow,
+  type MovementListRow,
   type OffcutListRow,
   type OffcutSummary,
   type StockCountListRow,

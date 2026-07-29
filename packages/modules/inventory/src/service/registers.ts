@@ -29,6 +29,8 @@ import { and, asc, desc, eq, gt, ilike, inArray, isNull, or, sql } from 'drizzle
 import {
   batch as batchTable,
   offcut,
+  stockMovement,
+  stockMovementLine,
   reorderRule,
   stockCount,
   stockCountLine,
@@ -599,6 +601,143 @@ export async function listStockCounts(
       warehouse,
       and(eq(warehouse.id, stockCount.warehouseId), eq(warehouse.tenantId, tenantId)),
     )
+    .where(where);
+
+  return listResult(rows, counted?.total ?? 0, params);
+}
+
+// ---------------------------------------------------------------------------
+// Movement ledger
+// ---------------------------------------------------------------------------
+
+export interface MovementListRow {
+  id: string;
+  number: string | null;
+  type: string;
+  status: string;
+  movementDate: string;
+  reference: string | null;
+  projectCode: string | null;
+  partyName: string | null;
+  sourceModule: string | null;
+  postedAt: string | null;
+  postedByName: string | null;
+  notes: string | null;
+  lineCount: number;
+  /**
+   * Summed across the lines, unsigned. Line quantities are always positive and
+   * the direction lives in the movement type, so this is "how much moved", not
+   * "how much stock changed by" — an issue of 40 and a receipt of 40 both read
+   * 40 here.
+   */
+  totalQuantity: string;
+  totalCost: string;
+  /** True when a later movement reverses this one. */
+  isReversed: boolean;
+  reversesMovementId: string | null;
+}
+
+export const MOVEMENT_SORTS = ['movementDate', 'number', 'type', 'postedAt'] as const;
+
+export async function listMovements(
+  tx: Transaction,
+  params: ListParams,
+  filters: { type?: string; projectId?: string; itemId?: string } = {},
+): Promise<ListResult<MovementListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const lines = tx
+    .select({
+      movementId: stockMovementLine.movementId,
+      lineCount: sql<number>`count(*)::int`.as('line_count'),
+      totalQuantity: sql<string>`coalesce(sum(${stockMovementLine.quantity}), 0)`.as(
+        'total_quantity',
+      ),
+      totalCost: sql<string>`coalesce(sum(${stockMovementLine.totalCost}), 0)`.as('total_cost'),
+    })
+    .from(stockMovementLine)
+    .where(eq(stockMovementLine.tenantId, tenantId))
+    .groupBy(stockMovementLine.movementId)
+    .as('movement_lines');
+
+  // A reversal points at what it reverses, so the reversed row is the one with a
+  // pointer AT it. Both stay on the ledger: stock is corrected by a compensating
+  // movement, never by deletion, which is what makes the ledger reconcilable.
+  const isReversed = sql<boolean>`exists (
+    select 1 from ${stockMovement} r
+    where r.tenant_id = ${tenantId} and r.reverses_movement_id = ${stockMovement.id}
+  )`;
+
+  const conditions = [eq(stockMovement.tenantId, tenantId)];
+  if (filters.type) conditions.push(eq(stockMovement.type, filters.type as never));
+  if (filters.projectId) conditions.push(eq(stockMovement.projectId, filters.projectId));
+  if (filters.itemId) {
+    conditions.push(
+      sql`exists (
+        select 1 from ${stockMovementLine} l
+        where l.movement_id = ${stockMovement.id} and l.item_id = ${filters.itemId}
+      )`,
+    );
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(ilike(stockMovement.number, pattern), ilike(stockMovement.reference, pattern))!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn =
+    {
+      movementDate: stockMovement.movementDate,
+      number: stockMovement.number,
+      type: stockMovement.type,
+      postedAt: stockMovement.postedAt,
+    }[params.sort as string] ?? stockMovement.movementDate;
+
+  const rows = await tx
+    .select({
+      id: stockMovement.id,
+      number: stockMovement.number,
+      type: stockMovement.type,
+      status: stockMovement.status,
+      movementDate: stockMovement.movementDate,
+      reference: stockMovement.reference,
+      projectCode: schema.project.code,
+      partyName: schema.party.name,
+      sourceModule: stockMovement.sourceModule,
+      postedAt: sql<string | null>`${stockMovement.postedAt}`,
+      postedByName: schema.appUser.name,
+      notes: stockMovement.notes,
+      lineCount: sql<number>`coalesce(${lines.lineCount}, 0)`,
+      totalQuantity: sql<string>`coalesce(${lines.totalQuantity}, 0)`,
+      totalCost: sql<string>`coalesce(${lines.totalCost}, 0)`,
+      isReversed,
+      reversesMovementId: stockMovement.reversesMovementId,
+    })
+    .from(stockMovement)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, stockMovement.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, stockMovement.partyId), eq(schema.party.tenantId, tenantId)),
+    )
+    // Who posted it. `postedBy` is a uuid and a stock ledger whose actor column
+    // reads as a uuid is a ledger nobody can audit.
+    .leftJoin(schema.appUser, eq(schema.appUser.id, stockMovement.postedBy))
+    .leftJoin(lines, eq(lines.movementId, stockMovement.id))
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(stockMovement.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(stockMovement)
     .where(where);
 
   return listResult(rows, counted?.total ?? 0, params);

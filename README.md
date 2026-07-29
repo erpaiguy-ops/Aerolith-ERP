@@ -185,6 +185,7 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/inventory/stock` | Stock on hand, paged — or one item's position with `?itemId=` |
 | `GET /api/v1/inventory/offcuts` | Offcut register, paged, with a whole-register value summary |
 | `GET /api/v1/inventory/counts` | Stock counts with progress and variance |
+| `GET /api/v1/inventory/movements` | The stock ledger, paged and filterable by type |
 | `GET /api/v1/localisation/countries` | Countries available to adopt |
 | `POST /api/v1/localisation/adopt` | Adopt a country; pre-fills the tenant's requirements |
 | `GET /api/v1/localisation/requirements` | The tenant's own editable requirement set |
@@ -192,9 +193,7 @@ pnpm --filter @aerolith/api dev
 | `PUT /api/v1/localisation/rules/:key` | Override a rule (statutory rules are refused) |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
-| `GET /api/v1/inventory/stock` | Stock on hand and value |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
-| `GET /api/v1/inventory/offcuts` | The offcut rack, with its total area and value |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |
 | `POST /api/v1/production/work-orders/:id/cutlist` | Plan against live stock, reserve the offcuts |

@@ -713,6 +713,65 @@ manager" requires a comment.`) and surfaces as a readable sentence, approving
 drains the item and decrements the count, and the trail shows who was asked, what
 they said and when.
 
+### Stock can now be moved from the product
+
+Inventory had four registers showing figures nobody could change through the
+application. `POST /inventory/movements` — the one call that changes stock at all
+— had no caller outside the seed and the tests, so the demo could show what was
+in the warehouse and offer no way to put anything there. A fifth navigation slot,
+`/inventory/movements`, closes that.
+
+**The ledger comes first, the form second.** `listMovements` aggregates each
+movement's lines in a subquery joined per row: line count, quantity moved and
+value. `totalQuantity` is unsigned, and is documented as such — line quantities
+are always positive and the direction lives in the movement type, so it answers
+"how much moved", not "how much stock changed by". A reversal is detected by the
+row a later movement points AT, and both stay on the ledger: **stock is corrected
+by a compensating movement, never by deletion**, which is what makes the ledger
+reconcilable. Reversed rows are marked, never hidden — the audit question is what
+we did, not what we now think.
+
+The screen shows who posted each movement, not which module. `postedBy` is a
+uuid, and a stock ledger whose actor column reads as a uuid is a ledger nobody
+can audit, so it joins `app_user`; `sourceModule` sits underneath it, because a
+movement raised by Production and one keyed by hand are different facts about how
+the stock came to move.
+
+**The form posts one line, deliberately.** A hand-keyed movement is a receipt off
+a van, an issue to a job, a transfer, or a correction after a count — all one item
+at a time. Multi-line movements come from the documents that generate them, a
+goods receipt against a purchase order or a production output against a work
+order, and a repeating line editor here would mean client-side JavaScript for a
+case those modules already handle better.
+
+**`production_output` is not offered.** It books finished goods out of a work
+order and Production posts it with the work order id attached; keying one by hand
+would create stock that traces back to nothing. It still appears in the filter
+chips, because the ledger must show movements this screen cannot create.
+
+Two things the build taught:
+
+- **A `'use server'` module may only export async functions.** The type table and
+  its guard were exported from `actions.ts`; typecheck and lint both passed and
+  `next build` refused it, because every export in such a file becomes a callable
+  server endpoint. They moved to a plain module beside it.
+- **The register is gated on `inventory.stock.read`, the form on
+  `inventory.stock_movement.create`.** Seeing what moved is not the same
+  authority as moving it.
+
+Verified in a browser against the seeded demo: a receipt with no unit cost is
+refused by the form, a transfer to the same warehouse is refused by the form, and
+issuing 999,999 of an item is refused by the API in the sentence the user
+sees — *"Cannot issue 999999: only 900 on hand. Post a receipt or an adjustment
+first."* A real receipt of 12 at 215.50 posted as `IGRN-2026-00003`, valued at
+2,586.00, and moved the position from 900 to 912.
+
+**A test that only passed on a clean database.** The RLS isolation suite asserted
+that after a scoped delete the whole `party` table contained exactly one row —
+a fact about the developer's machine, not about tenant isolation. It passes in CI
+because CI's database is empty and fails for anyone who has run the demo seed
+into the same database. Scoped to the two tenants the suite creates.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
