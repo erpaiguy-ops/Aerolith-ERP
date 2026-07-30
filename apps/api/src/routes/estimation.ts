@@ -17,6 +17,7 @@ import {
   currentRateLibrary,
   estimationSchema,
   getEstimateBillOfMaterials,
+  getRateDetail,
   getTenderDetail,
   listEstimates,
   listRates,
@@ -637,4 +638,17 @@ export async function estimationRoutes(app: FastifyInstance) {
       );
     },
   );
+
+  app.get<{ Params: { id: string } }>('/estimating/rates/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'estimation.rate_library.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getRateDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Rate not found.' });
+    return detail;
+  });
 }

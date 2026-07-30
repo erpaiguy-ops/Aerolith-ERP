@@ -1200,6 +1200,34 @@ returned bare, then build the page), and all five gaps traced back to the
 same root cause: a `GET /:id` either did not resolve names at all, or did not
 exist.
 
+### A rate, exploded into what actually prices it
+
+A sixth screen, found the same way as the others: the Rate Library list had no
+linked pages at all — not even column headers pointed anywhere but their own
+sort order, and `GET /estimating/rates/:id` did not exist. Unlike the previous
+five, this one is read-only; there is no write endpoint for rates in this API
+yet, and a build-up is priced through the rate library, not edited item by
+item from this screen.
+
+The one rule that mattered here: **do not read `rate_item.direct_cost`.**
+`listRates` already carries a comment explaining why — nothing in the system
+keeps that cached column in sync, so it is zero on every rate the pricing path
+has created. `getRateDetail` recomputes cost the same way the list does, by
+calling `calculateBuildUp` — the actual domain function a tender is priced
+with — over the real component rows, so the two screens can never quietly
+disagree. The page pushes that principle one step further: it shows
+`computedUnitRate` next to the stored, committed `unitRate`, and says so in a
+banner when they have drifted apart, which happens whenever a component
+changes after the rate was last committed — exactly the kind of gap a
+"trust the cache" design would hide.
+
+Everything else follows the domain function's own output: wastage shown per
+component (material and finishing have it, labour and transport typically do
+not), margin reported as both margin and the equivalent markup — the
+build-up engine's whole reason for existing is that these are not the same
+number — and the actual-cost variance in red when a rate is quietly losing
+money against real jobs, exactly as the list page already flags it.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

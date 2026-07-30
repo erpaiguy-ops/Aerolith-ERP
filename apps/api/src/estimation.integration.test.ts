@@ -853,6 +853,54 @@ suite('Estimation', () => {
       expect(response.json().library.code).toBe('STD');
       expect(response.json().rows.map((r: { code: string }) => r.code)).toContain('DOOR-STD');
     });
+
+    it('explodes a rate into the components that price it', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/rates?q=DOOR-STD',
+        headers: auth(),
+      });
+      const doorRateId = list.json().rows[0].id as string;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/estimating/rates/${doorRateId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.rateItem.code).toBe('DOOR-STD');
+      expect(body.libraryCode).toBe('STD');
+      expect(body.components).toHaveLength(3);
+
+      const material = body.components.find((c: { type: string }) => c.type === 'material');
+      expect(material.itemCode).toBe('MDF-18');
+      // 0.98 x 92 = 90.16 net; 10% wastage brings it to 99.176 gross.
+      expect(material.netCost).toBeCloseTo(90.16, 2);
+      expect(material.grossCost).toBeCloseTo(99.176, 3);
+
+      const labour = body.components.find((c: { type: string }) => c.type === 'labour');
+      // No wastage on labour: net and gross are the same number.
+      expect(labour.netCost).toBeCloseTo(33.75, 2);
+      expect(labour.grossCost).toBeCloseTo(33.75, 2);
+
+      // 99.176 + 33.75 + (0.98 x 55 x 1.15 = 61.985).
+      expect(body.directCost).toBeCloseTo(194.911, 3);
+      // No overhead or margin set on this fixture rate: cost is the rate.
+      expect(body.computedUnitRate).toBeCloseTo(194.911, 3);
+    });
+
+    it('404s a rate id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/rates/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
   });
 
   describe('the registers', () => {

@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -113,7 +115,12 @@ export default async function RatesPage({
               return (
                 <tr key={row.id} className="hover:bg-(--color-canvas)">
                   <Td>
-                    <span className="numeric">{row.code}</span>
+                    <Link
+                      href={`/estimating/rates/${row.id}`}
+                      className="numeric text-(--color-accent) hover:underline"
+                    >
+                      {row.code}
+                    </Link>
                   </Td>
                   <Td>
                     <span className="block">{row.description}</span>

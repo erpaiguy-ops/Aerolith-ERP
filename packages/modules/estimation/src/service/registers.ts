@@ -26,6 +26,7 @@ import {
 import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
+import { calculateBuildUp, type ComponentType } from '../domain/buildUp';
 import { estimate, rateComponent, rateItem, rateLibrary, tender } from '../db/schema';
 
 // ---------------------------------------------------------------------------
@@ -534,4 +535,147 @@ export async function listRates(
     .where(where);
 
   return listResult(rows, counted?.total ?? 0, params);
+}
+
+export interface RateComponentRow {
+  id: string;
+  sequence: number;
+  type: ComponentType;
+  description: string | null;
+  itemId: string | null;
+  itemCode: string | null;
+  itemName: string | null;
+  quantityPerUnit: string;
+  unitRate: string;
+  wastagePercent: string | null;
+  /** From `calculateBuildUp` — cost before/after wastage, for THIS component. */
+  netCost: number;
+  grossCost: number;
+  wastageCost: number;
+}
+
+export interface RateDetail {
+  rateItem: typeof rateItem.$inferSelect;
+  libraryCode: string;
+  libraryName: string;
+  libraryVersion: number;
+  currencyCode: string | null;
+  components: RateComponentRow[];
+  directCost: number;
+  overheadCost: number;
+  totalCost: number;
+  /** What the build-up prices out to right now. Compare against `rateItem.unitRate`
+   *  — the stored, committed rate — to see whether the two have drifted apart. */
+  computedUnitRate: number;
+  effectiveMarginPercent: number;
+  effectiveMarkupPercent: number;
+  byType: Record<string, number>;
+  /**
+   * Cost against cost, not cost against the selling rate — comparing
+   * `lastActualCost` to `unitRate` would measure margin and call it variance.
+   * Negative means the work costs more than the build-up assumes.
+   */
+  actualVariancePercent: number | null;
+}
+
+/**
+ * One rate, exploded into the components that price it.
+ *
+ * Costs are RECOMPUTED here with `calculateBuildUp`, the same domain function
+ * `listRates` uses for its "assumed cost" column — never read from
+ * `rate_item.direct_cost`, which nothing in the system keeps in sync and is
+ * zero on every rate the pricing path has created. Recomputing from the
+ * components is the only way this screen and the list agree.
+ */
+export async function getRateDetail(
+  tx: Transaction,
+  rateItemId: string,
+): Promise<RateDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select({
+      rateItem,
+      libraryCode: rateLibrary.code,
+      libraryName: rateLibrary.name,
+      libraryVersion: rateLibrary.version,
+      currencyCode: rateLibrary.currencyCode,
+    })
+    .from(rateItem)
+    .innerJoin(
+      rateLibrary,
+      and(eq(rateLibrary.id, rateItem.libraryId), eq(rateLibrary.tenantId, tenantId)),
+    )
+    .where(and(eq(rateItem.tenantId, tenantId), eq(rateItem.id, rateItemId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const componentRows = await tx
+    .select({
+      id: rateComponent.id,
+      sequence: rateComponent.sequence,
+      type: rateComponent.type,
+      description: rateComponent.description,
+      itemId: rateComponent.itemId,
+      itemCode: schema.item.code,
+      itemName: schema.item.name,
+      quantityPerUnit: rateComponent.quantityPerUnit,
+      unitRate: rateComponent.unitRate,
+      wastagePercent: rateComponent.wastagePercent,
+    })
+    .from(rateComponent)
+    .leftJoin(
+      schema.item,
+      and(eq(schema.item.id, rateComponent.itemId), eq(schema.item.tenantId, tenantId)),
+    )
+    .where(eq(rateComponent.rateItemId, rateItemId))
+    .orderBy(asc(rateComponent.sequence));
+
+  const built = calculateBuildUp(
+    componentRows.map((c) => ({
+      type: c.type,
+      description: c.description ?? undefined,
+      quantityPerUnit: Number(c.quantityPerUnit),
+      unitRate: Number(c.unitRate),
+      wastagePercent: c.wastagePercent == null ? undefined : Number(c.wastagePercent),
+    })),
+    {
+      overheadPercent:
+        row.rateItem.overheadPercent == null ? undefined : Number(row.rateItem.overheadPercent),
+      marginPercent:
+        row.rateItem.marginPercent == null ? undefined : Number(row.rateItem.marginPercent),
+    },
+  );
+
+  const components: RateComponentRow[] = componentRows.map((c, index) => ({
+    ...c,
+    netCost: built.components[index]!.netCost,
+    grossCost: built.components[index]!.grossCost,
+    wastageCost: built.components[index]!.wastageCost,
+  }));
+
+  const actualVariancePercent =
+    row.rateItem.lastActualCost == null || built.directCost === 0
+      ? null
+      : Math.round(
+          ((built.directCost - Number(row.rateItem.lastActualCost)) / built.directCost) * 1000,
+        ) / 10;
+
+  return {
+    rateItem: row.rateItem,
+    libraryCode: row.libraryCode,
+    libraryName: row.libraryName,
+    libraryVersion: row.libraryVersion,
+    currencyCode: row.currencyCode,
+    components,
+    directCost: built.directCost,
+    overheadCost: built.overheadCost,
+    totalCost: built.totalCost,
+    computedUnitRate: built.unitRate,
+    effectiveMarginPercent: built.effectiveMarginPercent,
+    effectiveMarkupPercent: built.effectiveMarkupPercent,
+    byType: built.byType,
+    actualVariancePercent,
+  };
 }
