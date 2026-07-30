@@ -132,6 +132,20 @@ export async function moduleRoutes(app: FastifyInstance) {
             ...(may('kernel.audit.read')
               ? [{ key: 'kernel.settings.audit', label: 'Audit trail', path: '/settings/audit', order: 50 }]
               : []),
+            // Deciding what fields parties, items and projects even have is
+            // its own authority too — distinct from having one of those
+            // records to edit, which is why this is gated separately rather
+            // than folded into master data access.
+            ...(may('kernel.custom_fields.manage')
+              ? [
+                  {
+                    key: 'kernel.settings.custom_fields',
+                    label: 'Custom Fields',
+                    path: '/settings/custom-fields',
+                    order: 60,
+                  },
+                ]
+              : []),
           ];
 
           return children.length > 0

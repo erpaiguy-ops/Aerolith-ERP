@@ -52,7 +52,7 @@ labelled parts, becomes scanned progress.
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area, **including a detail screen for every register**
   — a work order followed from routing to the floor, with its cutting plan one
-  click away. **Every** navigation destination is built — 36 of 36 — and a
+  click away. **Every** navigation destination is built — 37 of 37 — and a
   workspace can adopt its country, edit its own rules, add its own people and
   invent its own roles without a developer. Right-to-left aware and formatted
   in the user's own locale
@@ -70,7 +70,14 @@ labelled parts, becomes scanned progress.
   person, not gated by a role), readable and markable-read from the workspace
   (`GET /api/v1/notifications`, `/notifications`). Email/Telegram/WhatsApp/SMS
   delivery, templates and quiet hours remain schema-only — see the roadmap
-- **989 tests**, including integration suites that prove tenant isolation holds and
+- **Custom fields** — the tenant-defined-fields catalogue (`kernel.custom_field_definition`)
+  wired to its first entity: a project's own detail screen (which gained a
+  proper header in the same pass — it had none) now reads and edits whatever
+  fields a `kernel.custom_fields.manage` admin has defined for `project`,
+  validated server-side against each field's type. Settings → Custom Fields
+  manages the catalogue for parties, items and projects; only projects has a
+  value editor wired in so far
+- **996 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -243,6 +250,11 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/notifications/unread-count` | For a bell badge, without paying for the whole inbox |
 | `POST /api/v1/notifications/:id/read` | Mark one notification read |
 | `POST /api/v1/notifications/read-all` | Mark every unread notification read |
+| `GET /api/v1/admin/custom-fields` | The field catalogue for one entity type — open to anyone signed in |
+| `POST /api/v1/admin/custom-fields` | Define a new field, gated on `kernel.custom_fields.manage` |
+| `PATCH /api/v1/admin/custom-fields/:id` | Edit or retire a field definition |
+| `GET /api/v1/projects/:id` | One project, with its client, PM and QS resolved to names |
+| `PATCH /api/v1/projects/:id/custom-fields` | Set a project's custom field values, validated against the catalogue |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |

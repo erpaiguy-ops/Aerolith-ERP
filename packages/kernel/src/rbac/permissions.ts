@@ -112,6 +112,17 @@ export const KERNEL_PERMISSIONS: PermissionDeclaration[] = [
     isDangerous: false,
   },
   {
+    key: 'kernel.custom_fields.manage',
+    resource: 'custom_fields',
+    action: 'manage',
+    label: 'Define custom fields',
+    description:
+      'Adds or retires the tenant-specific fields on parties, items and projects. Setting a ' +
+      "value on a record uses that record's own permission, not this one.",
+    category: 'Settings',
+    isDangerous: false,
+  },
+  {
     key: 'kernel.module.manage',
     resource: 'module',
     action: 'manage',

@@ -219,6 +219,21 @@ export {
   unreadNotificationCount,
 } from './notifications/service';
 
+// Custom fields
+export {
+  type CreateCustomFieldDefinitionInput,
+  type CustomFieldDefinitionRow,
+  type CustomFieldOption,
+  type CustomFieldType,
+  type CustomFieldValidationError,
+  type UpdateCustomFieldDefinitionInput,
+  CustomFieldError,
+  createCustomFieldDefinition,
+  listCustomFieldDefinitions,
+  updateCustomFieldDefinition,
+  validateCustomFieldValues,
+} from './customfields/service';
+
 // Authentication
 export {
   type ParsedHash,

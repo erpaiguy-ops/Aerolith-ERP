@@ -7,16 +7,19 @@
  */
 import {
   emit,
+  listCustomFieldDefinitions,
   listResult,
   recordAudit,
   requireTenantContext,
   schema,
   searchPattern,
+  validateCustomFieldValues,
   type ListParams,
   type ListResult,
   type Transaction,
 } from '@aerolith/kernel';
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import {
   budget,
@@ -1125,6 +1128,115 @@ export async function listProjects(
     counted?.total ?? 0,
     params,
   );
+}
+
+export interface ProjectDetail {
+  project: typeof schema.project.$inferSelect;
+  clientName: string | null;
+  projectManagerName: string | null;
+  quantitySurveyorName: string | null;
+  healthStatus: string | null;
+  baselineStartDate: string | null;
+  baselineEndDate: string | null;
+  forecastEndDate: string | null;
+  practicalCompletionDate: string | null;
+  defectsLiabilityEndsOn: string | null;
+}
+
+/**
+ * One project, with who it is for and who runs it resolved to names.
+ *
+ * Was missing entirely before this — the project detail page had a work
+ * breakdown and a cost position but nowhere that read the project's own row,
+ * so it could not say whose job this even was. Three joins against
+ * `kernel.app_user`/`kernel.party`, the same technique the tender and
+ * requisition detail screens already use for their own header facts.
+ */
+export async function getProjectDetail(tx: Transaction, projectId: string): Promise<ProjectDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const manager = alias(schema.appUser, 'project_manager');
+  const qs = alias(schema.appUser, 'quantity_surveyor');
+
+  const [row] = await tx
+    .select({
+      project: schema.project,
+      clientName: schema.party.name,
+      projectManagerName: manager.name,
+      quantitySurveyorName: qs.name,
+      healthStatus: projectDetail.healthStatus,
+      baselineStartDate: projectDetail.baselineStartDate,
+      baselineEndDate: projectDetail.baselineEndDate,
+      forecastEndDate: projectDetail.forecastEndDate,
+      practicalCompletionDate: projectDetail.practicalCompletionDate,
+      defectsLiabilityEndsOn: projectDetail.defectsLiabilityEndsOn,
+    })
+    .from(schema.project)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, schema.project.clientPartyId), eq(schema.party.tenantId, tenantId)),
+    )
+    .leftJoin(
+      projectDetail,
+      and(eq(projectDetail.projectId, schema.project.id), eq(projectDetail.tenantId, tenantId)),
+    )
+    .leftJoin(manager, eq(manager.id, projectDetail.projectManagerId))
+    .leftJoin(qs, eq(qs.id, projectDetail.quantitySurveyorId))
+    .where(
+      and(
+        eq(schema.project.tenantId, tenantId),
+        eq(schema.project.id, projectId),
+        isNull(schema.project.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return row ?? null;
+}
+
+/**
+ * Sets the tenant-defined fields on a project.
+ *
+ * Replaces the whole `custom_fields` object rather than merging — the caller
+ * (a form that just rendered every active definition) always has the
+ * complete set in front of it, and a merge would mean a field the user
+ * cleared reappearing from whatever was there before. Validated against
+ * `kernel.custom_field_definition` for `entityType: 'project'`, which is
+ * metadata this module reads and never owns.
+ */
+export async function setProjectCustomFields(
+  tx: Transaction,
+  input: { projectId: string; values: Record<string, unknown> },
+): Promise<{ values: Record<string, unknown> }> {
+  const { tenantId } = requireTenantContext();
+
+  const [existing] = await tx
+    .select({ id: schema.project.id })
+    .from(schema.project)
+    .where(and(eq(schema.project.tenantId, tenantId), eq(schema.project.id, input.projectId)));
+  if (!existing) throw new ProjectsError('Project not found.');
+
+  const definitions = await listCustomFieldDefinitions(tx, { entityType: 'project' });
+  const { values, errors } = validateCustomFieldValues(definitions, input.values);
+
+  if (errors.length > 0) {
+    throw new ProjectsError(errors.map((e) => e.message).join(' '));
+  }
+
+  await tx
+    .update(schema.project)
+    .set({ customFields: values, updatedAt: new Date() })
+    .where(eq(schema.project.id, input.projectId));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'kernel.project',
+    entityId: input.projectId,
+    action: 'update',
+    reason: 'Custom fields updated.',
+  });
+
+  return { values };
 }
 
 /** Whole days from `from` to `to`. Null unless both are present. */

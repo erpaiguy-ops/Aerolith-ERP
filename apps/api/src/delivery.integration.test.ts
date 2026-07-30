@@ -144,6 +144,9 @@ suite('Projects and Contract Administration', () => {
     await db.delete(p.wbsNode).where(eq(p.wbsNode.tenantId, TENANT));
     await db.delete(p.projectDetail).where(eq(p.projectDetail.tenantId, TENANT));
 
+    await db
+      .delete(schema.customFieldDefinition)
+      .where(eq(schema.customFieldDefinition.tenantId, TENANT));
     await db.delete(schema.auditLog).where(eq(schema.auditLog.tenantId, TENANT));
     await db.delete(schema.eventOutbox).where(eq(schema.eventOutbox.tenantId, TENANT));
     await db.delete(schema.numberAllocation).where(eq(schema.numberAllocation.tenantId, TENANT));
@@ -971,6 +974,143 @@ suite('Projects and Contract Administration', () => {
       expect(body.rows[0].name).toBe('Marina Tower fit-out');
       expect(body.rows[0].healthStatus).toBeNull();
       expect(body.rows[0].scheduleVarianceDays).toBeNull();
+    });
+
+    it('reads the project back — no client or project_detail row, and neither breaks it', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.project.code).toBe('P-2026-001');
+      expect(body.clientName).toBeNull();
+      expect(body.healthStatus).toBeNull();
+    });
+
+    it('404s a project id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('resolves the client, project manager and QS by name once they exist', async () => {
+      const db = getDatabase();
+      const [client] = await db
+        .insert(schema.party)
+        .values({ tenantId: TENANT, code: 'EMAAR', name: 'Emaar Properties PJSC', isCustomer: true })
+        .returning({ id: schema.party.id });
+
+      await db.insert(projectsSchema.projectDetail).values({
+        tenantId: TENANT,
+        projectId: PROJECT,
+        projectManagerId: ENGINEER,
+        healthStatus: 'green',
+      });
+      await db.update(schema.project).set({ clientPartyId: client!.id }).where(eq(schema.project.id, PROJECT));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.clientName).toBe('Emaar Properties PJSC');
+      expect(body.projectManagerName).toBe('Site Engineer');
+      expect(body.healthStatus).toBe('green');
+
+      // Cleanup, so later tests in this suite still see the bare fixture.
+      await db.delete(projectsSchema.projectDetail).where(eq(projectsSchema.projectDetail.projectId, PROJECT));
+      await db.update(schema.project).set({ clientPartyId: null }).where(eq(schema.project.id, PROJECT));
+      await db.delete(schema.party).where(eq(schema.party.id, client!.id));
+    });
+
+    describe('custom fields on a project', () => {
+      let fieldId: string;
+
+      it('defines a custom field for projects', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/custom-fields',
+          headers: auth(),
+          payload: {
+            entityType: 'project',
+            key: 'lift_count',
+            label: 'Number of lifts',
+            type: 'number',
+            isRequired: false,
+          },
+        });
+
+        expect(response.statusCode).toBe(200);
+        fieldId = response.json().id;
+      });
+
+      it('lists it back for anyone signed in, not just an admin', async () => {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/api/v1/admin/custom-fields?entityType=project',
+          headers: auth(),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().some((f: { key: string }) => f.key === 'lift_count')).toBe(true);
+      });
+
+      it('sets the value, validated against the definition', async () => {
+        const bad = await app.inject({
+          method: 'PATCH',
+          url: `/api/v1/projects/${PROJECT}/custom-fields`,
+          headers: auth(),
+          payload: { lift_count: 'not-a-number' },
+        });
+        expect(bad.statusCode).toBe(409);
+
+        const good = await app.inject({
+          method: 'PATCH',
+          url: `/api/v1/projects/${PROJECT}/custom-fields`,
+          headers: auth(),
+          payload: { lift_count: 4 },
+        });
+        expect(good.statusCode).toBe(200);
+        expect(good.json().values.lift_count).toBe(4);
+
+        const [row] = await getDatabase()
+          .select({ customFields: schema.project.customFields })
+          .from(schema.project)
+          .where(eq(schema.project.id, PROJECT));
+        expect(row!.customFields).toEqual({ lift_count: 4 });
+      });
+
+      it('retires the field, and it drops out of the active list', async () => {
+        const response = await app.inject({
+          method: 'PATCH',
+          url: `/api/v1/admin/custom-fields/${fieldId}`,
+          headers: auth(),
+          payload: { isActive: false },
+        });
+        expect(response.statusCode).toBe(200);
+
+        const list = await app.inject({
+          method: 'GET',
+          url: '/api/v1/admin/custom-fields?entityType=project',
+          headers: auth(),
+        });
+        expect(list.json().some((f: { key: string }) => f.key === 'lift_count')).toBe(false);
+
+        // Cleanup.
+        await getDatabase()
+          .update(schema.project)
+          .set({ customFields: {} })
+          .where(eq(schema.project.id, PROJECT));
+      });
     });
 
     it('searches projects by code and by name', async () => {

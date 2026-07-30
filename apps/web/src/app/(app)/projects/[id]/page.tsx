@@ -2,11 +2,134 @@ import { notFound } from 'next/navigation';
 
 import Link from 'next/link';
 
-import { Card, Empty, Money, PageHeader, ProgressBar, Stat, Table, Td, Th } from '@/components/ui';
+import { ActionForm, SubmitButton } from '@/components/Action';
+import { Badge, Card, Empty, Money, PageHeader, ProgressBar, Stat, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
 import { ApiError, apiFetchOptional, pageFetch } from '@/lib/api';
-import { money, percent, toneForIndex, toneForVariance } from '@/lib/format';
+import { date, money, percent, toneForIndex, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+import { saveCustomFieldsAction } from './actions';
+
+interface CustomFieldOption {
+  value: string;
+  label: string;
+}
+
+interface CustomFieldDefinition {
+  id: string;
+  key: string;
+  label: string;
+  helpText: string | null;
+  type: string;
+  isRequired: boolean;
+  options: CustomFieldOption[];
+}
+
+interface ProjectDetail {
+  project: {
+    id: string;
+    code: string;
+    name: string;
+    status: string;
+    currencyCode: string | null;
+    contractValue: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    customFields: Record<string, unknown>;
+  };
+  clientName: string | null;
+  projectManagerName: string | null;
+  quantitySurveyorName: string | null;
+  healthStatus: string | null;
+  practicalCompletionDate: string | null;
+  defectsLiabilityEndsOn: string | null;
+}
+
+const HEALTH_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
+  green: 'good',
+  amber: 'neutral',
+  red: 'bad',
+};
+
+const fieldClass =
+  'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1.5 text-sm outline-none focus:border-(--color-accent)';
+
+/** One editable cell for a custom field, shaped by its declared type. */
+function CustomFieldInput({ def, value }: { def: CustomFieldDefinition; value: unknown }) {
+  if (def.type === 'boolean') {
+    return (
+      <select name={def.key} defaultValue={value === true ? 'true' : 'false'} className={fieldClass}>
+        <option value="false">No</option>
+        <option value="true">Yes</option>
+      </select>
+    );
+  }
+  if (def.type === 'select') {
+    return (
+      <select name={def.key} defaultValue={typeof value === 'string' ? value : ''} className={fieldClass}>
+        <option value="">—</option>
+        {def.options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (def.type === 'textarea') {
+    return (
+      <textarea
+        name={def.key}
+        dir="auto"
+        defaultValue={typeof value === 'string' ? value : ''}
+        className={fieldClass}
+        rows={2}
+      />
+    );
+  }
+  if (def.type === 'number' || def.type === 'decimal') {
+    return (
+      <input
+        type="number"
+        name={def.key}
+        defaultValue={typeof value === 'number' || typeof value === 'string' ? value : ''}
+        className={`${fieldClass} numeric`}
+      />
+    );
+  }
+  if (def.type === 'date' || def.type === 'datetime') {
+    return (
+      <input
+        type={def.type === 'date' ? 'date' : 'datetime-local'}
+        name={def.key}
+        defaultValue={typeof value === 'string' ? value : ''}
+        className={fieldClass}
+      />
+    );
+  }
+  if (def.type === 'multiselect') {
+    return (
+      <input
+        name={def.key}
+        dir="auto"
+        placeholder="Comma-separated"
+        defaultValue={Array.isArray(value) ? value.join(', ') : ''}
+        className={fieldClass}
+      />
+    );
+  }
+  // 'text', 'url', and the relational types (user/party/item/project/document)
+  // — no picker built yet for those, so a plain id goes in a text box.
+  return (
+    <input
+      name={def.key}
+      dir="auto"
+      defaultValue={typeof value === 'string' ? value : ''}
+      className={fieldClass}
+    />
+  );
+}
 
 interface WbsNode {
   id: string;
@@ -59,17 +182,24 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   const me = await getMe();
   const currency = me.tenant.currencyCode;
 
-  let wbs: { nodes: WbsNode[] };
+  let detail: ProjectDetail;
   try {
-    wbs = await pageFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
+    detail = await pageFetch<ProjectDetail>(`/projects/${id}`);
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) notFound();
     throw error;
   }
 
+  const wbs = await pageFetch<{ nodes: WbsNode[] }>(`/projects/${id}/wbs`);
+
   // Optional: a user with `projects.project.read` but not `projects.cost.read`
   // sees the work breakdown and no money, rather than an error page.
   const position = await apiFetchOptional<Position>(`/projects/${id}/position`);
+
+  // Open to anyone signed in — a field CATALOGUE is not the record itself.
+  const customFieldDefs = await pageFetch<CustomFieldDefinition[]>(
+    '/admin/custom-fields?entityType=project',
+  );
 
   const roots = wbs.nodes.filter((n) => n.depth === 0);
   const overall = roots.reduce(
@@ -80,14 +210,21 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     { budget: 0, earned: 0 },
   );
 
+  const { project } = detail;
+  const mayEdit = can(me.permissions, 'projects.project.write') || me.user.isOwner;
+
   return (
     <>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <PageHeader
-          title="Project"
-          subtitle={`${wbs.nodes.length} work breakdown nodes · ${percent(
-            overall.budget > 0 ? (overall.earned / overall.budget) * 100 : 0,
-          )} complete`}
+          title={`${project.code} — ${project.name}`}
+          subtitle={[
+            detail.clientName,
+            `${wbs.nodes.length} work breakdown nodes`,
+            `${percent(overall.budget > 0 ? (overall.earned / overall.budget) * 100 : 0)} complete`,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         />
         {/* Every figure on this page is downstream of a measurement, and until
             now there was no way to make one. */}
@@ -100,6 +237,63 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
           </Link>
         ) : null}
       </div>
+
+      <Card className="mb-6">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat label="Status" value={<Badge tone="neutral">{project.status.replace(/_/g, ' ')}</Badge>} />
+          {detail.healthStatus ? (
+            <Stat
+              label="Health"
+              value={<Badge tone={HEALTH_TONE[detail.healthStatus] ?? 'neutral'}>{detail.healthStatus}</Badge>}
+            />
+          ) : null}
+          <Stat label="Contract value" value={<Money amount={project.contractValue} currency={currency} />} />
+          <Stat label="Dates" value={`${date(project.startDate)} – ${date(project.endDate)}`} />
+          {detail.projectManagerName ? (
+            <Stat label="Project manager" value={detail.projectManagerName} />
+          ) : null}
+          {detail.quantitySurveyorName ? (
+            <Stat label="Quantity surveyor" value={detail.quantitySurveyorName} />
+          ) : null}
+          {detail.practicalCompletionDate ? (
+            <Stat label="Practical completion" value={date(detail.practicalCompletionDate)} />
+          ) : null}
+          {detail.defectsLiabilityEndsOn ? (
+            <Stat label="DLP ends" value={date(detail.defectsLiabilityEndsOn)} />
+          ) : null}
+        </div>
+      </Card>
+
+      {customFieldDefs.length > 0 ? (
+        <Card title="Custom fields" className="mb-6">
+          <ActionForm action={saveCustomFieldsAction} className="space-y-3">
+            <input type="hidden" name="projectId" value={project.id} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              {customFieldDefs.map((def) => (
+                <label key={def.key} className="block">
+                  <span className="mb-1 block text-xs text-(--color-muted)">
+                    {def.label}
+                    {def.isRequired ? ' *' : ''}
+                  </span>
+                  {mayEdit ? (
+                    <CustomFieldInput def={def} value={project.customFields[def.key]} />
+                  ) : (
+                    <p className="text-sm">
+                      {project.customFields[def.key] == null || project.customFields[def.key] === ''
+                        ? '—'
+                        : String(project.customFields[def.key])}
+                    </p>
+                  )}
+                  {def.helpText ? (
+                    <span className="mt-1 block text-xs text-(--color-muted)">{def.helpText}</span>
+                  ) : null}
+                </label>
+              ))}
+            </div>
+            {mayEdit ? <SubmitButton pendingLabel="Saving…">Save</SubmitButton> : null}
+          </ActionForm>
+        </Card>
+      ) : null}
 
       {position ? (
         <div className="mb-6 grid gap-4 md:grid-cols-2">

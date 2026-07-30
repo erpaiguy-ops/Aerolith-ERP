@@ -6,6 +6,7 @@ import { adminRoutes } from './routes/admin';
 import { approvalRoutes } from './routes/approvals';
 import { authRoutes } from './routes/auth';
 import { contractRoutes } from './routes/contracts';
+import { customFieldRoutes } from './routes/customfields';
 import { cutlistRoutes } from './routes/cutlist';
 import { estimationRoutes } from './routes/estimation';
 import { productionRoutes } from './routes/production';
@@ -85,6 +86,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
   await app.register(adminRoutes, { prefix: '/api/v1' });
   await app.register(approvalRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
+  await app.register(customFieldRoutes, { prefix: '/api/v1' });
   await app.register(inventoryRoutes, { prefix: '/api/v1' });
   await app.register(cutlistRoutes, { prefix: '/api/v1' });
   await app.register(procurementRoutes, { prefix: '/api/v1' });

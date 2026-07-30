@@ -1339,6 +1339,57 @@ Two things worth knowing if this gets extended:
   writing loosely (`.find()` by key) rather than by position, one test in this
   same file already does.
 
+### Custom fields, wired to one entity
+
+Same story as the notification centre, a different kernel capability:
+`custom_field_definition` — the catalogue table for tenant-defined fields —
+and the `custom_fields` JSONB column it validates against on `party`, `item`
+and `project`, existed since the initial migration with nothing reading or
+writing either side of it.
+
+Investigating where to attach the first value editor found a second,
+unrelated gap: the project detail page had a work breakdown and a cost
+position but no endpoint that read the project's OWN row, so it had no code,
+name, client, status or dates anywhere on the screen — the same shape of gap
+five other entities had earlier in this log, just not yet found. `getProjectDetail`
+closes it the same way: joins against `kernel.party` for the client and
+`kernel.app_user` (twice, aliased) for the project manager and quantity
+surveyor, alongside the `projects.project_detail` row that was already there.
+Fixing that was a prerequisite for the custom fields work, not a detour from
+it — there was nowhere to put a "Custom fields" card on a page with no header.
+
+The slice itself: `createCustomFieldDefinition`/`updateCustomFieldDefinition`/
+`listCustomFieldDefinitions` in the new `packages/kernel/src/customfields/service.ts`,
+a pure `validateCustomFieldValues` that type-checks and coerces a submitted
+value set against a tenant's definitions (required, number bounds, select
+options, multiselect membership), and `setProjectCustomFields` in
+module-projects, which calls it before writing `project.custom_fields`. A
+Settings → Custom Fields page manages the catalogue for all three entity
+types; only `project` has a value editor wired into a real screen so far —
+`party` and `item` have neither a detail page to hold one nor a value-side
+endpoint yet, which is exactly why project was the one this pass picked.
+
+Two decisions worth carrying forward:
+
+- **Reading the catalogue is open to anyone signed in; only defining or
+  retiring a field needs `kernel.custom_fields.manage`.** A project's edit
+  screen needs to know what fields exist for `project` to draw them at all,
+  and that is a much larger audience than the admins who decide what those
+  fields are. Setting a VALUE uses the entity's own permission
+  (`projects.project.write`) — three different authorities, none of them
+  each other.
+- **`key` and `type` are immutable once a definition exists** — there is no
+  edit path for either, by design. The key is the JSONB property name every
+  stored value already sits under, and the type is the rule every existing
+  value was validated against; changing either in place would silently
+  reinterpret data that was written under a different rule. A tenant that got
+  it wrong retires the field and defines a new one. Relational field types
+  (`user`, `party`, `item`, `project`, `document`) are defined and stored as a
+  plain id with no picker — same scope trim as the rate grid's unlinked
+  material rows, and for the same reason: a generic entity-search component
+  is real work that belongs in the web app once a screen actually needs it,
+  not built speculatively into a kernel service.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

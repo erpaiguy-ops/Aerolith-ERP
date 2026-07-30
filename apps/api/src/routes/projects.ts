@@ -20,6 +20,7 @@ import {
   listSnags,
   getCostSummary,
   summariseCosts,
+  getProjectDetail,
   getProjectPosition,
   getWbsRollUp,
   listProjects,
@@ -28,6 +29,7 @@ import {
   recordCommitment,
   recordProgress,
   reverseCost,
+  setProjectCustomFields,
 } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -282,6 +284,46 @@ export async function projectRoutes(app: FastifyInstance) {
       withTenant((tx) => listProjects(tx, params, { status: request.query.status })),
     );
   });
+
+  app.get<{ Params: { id: string } }>('/projects/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.project.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getProjectDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Project not found.' });
+    return detail;
+  });
+
+  app.patch<{ Params: { id: string } }>(
+    '/projects/:id/custom-fields',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'projects.project.write');
+
+      const parsed = z.record(z.unknown()).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            setProjectCustomFields(tx, { projectId: request.params.id, values: parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof ProjectsError) {
+          return reply.code(409).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
 
   // --- Work breakdown -----------------------------------------------------
 
