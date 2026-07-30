@@ -272,6 +272,26 @@ suite('Production', () => {
       expect(part.barcode).toBe(`${created.number}-001`);
     });
 
+    it('resolves the routing and each operation\'s work centre to names, not just ids', async () => {
+      // `getWorkOrderProgress` used to return the bare `workOrder` row: a
+      // detail screen built on it would have had a `routingId` and a
+      // `workCentreId` to show, and nothing a person could read.
+      const created = (await createOrder()).json();
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/production/work-orders/${created.workOrderId}`,
+        headers: auth(),
+      });
+
+      const body = detail.json();
+      expect(body.routingCode).toBe('STD-DOOR');
+      expect(body.routingName).toBe('Standard door');
+      expect(body.operations[0].workCentreCode).toBe('SAW');
+      expect(body.operations[0].workCentreName).toBe('Beam Saw');
+      // No project on this order — must be null, not a crash from an inner join.
+      expect(body.projectCode).toBeNull();
+    });
+
     it('opens only the first operation, leaving the rest pending', async () => {
       const created = (await createOrder()).json();
       const operations = await operationsOf(created.workOrderId);

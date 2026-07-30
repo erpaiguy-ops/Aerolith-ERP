@@ -1101,6 +1101,27 @@ test that signs in as the site engineer role from the delivery narrative — thr
 actually refuses it, which is the first thing in the whole suite to exercise that
 omission.
 
+### A work order followed from routing to the floor
+
+The list screen answered "which orders exist and roughly where they are". It
+could not answer "what is actually happening on THIS one" — which operation it
+is sitting at, who has scanned against it, whether a failed quality gate is
+quietly blocking every station behind it. That is a detail screen's job, and
+the work order was the last one of the five flagged as "endpoint exists, no
+screen" that was actually missing an endpoint too: `getWorkOrderProgress`
+returned the bare `workOrder` row — a `routingId` and a `workCentreId` per
+operation, nothing a person could read. Fixed at the service, not papered over
+in the route: the query now resolves the project, item and routing by name, and
+joins each operation to its work centre's code and name.
+
+Everything on the page is derived from scans, the same reducers the shop-floor
+board already uses — no status field somebody has to remember to update. The
+one write this screen offers is releasing to the floor; scanning happens at the
+machine against a barcode, and a web form re-typing "start operation 3" would
+be a screen for a user who does not exist. A `Cutting plan v1 →` link appears
+the moment one has been planned, so the drawing is one click from the order it
+belongs to rather than a search through the register.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

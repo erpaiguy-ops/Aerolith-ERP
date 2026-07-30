@@ -50,11 +50,12 @@ labelled parts, becomes scanned progress.
   invoice for goods nobody received
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
-  inbox and the settings area. **Every** navigation destination is built —
-  35 of 35 — the cutting plan a work order was planned to is drawn on screen,
-  and a workspace can adopt its country, edit its own rules, add its own people
-  and invent its own roles without a developer. Right-to-left aware and
-  formatted in the user's own locale
+  inbox and the settings area, **including a detail screen for every register**
+  — a work order followed from routing to the floor, with its cutting plan one
+  click away. **Every** navigation destination is built — 35 of 35 — and a
+  workspace can adopt its country, edit its own rules, add its own people and
+  invent its own roles without a developer. Right-to-left aware and formatted
+  in the user's own locale
 - **PDF documents** (`@aerolith/pdf`) — a payment application renders to a
   sendable certificate with no dependencies and no headless browser
   (`GET /api/v1/contracts/applications/:id/pdf`)
@@ -63,7 +64,7 @@ labelled parts, becomes scanned progress.
   from the workspace itself rather than a SQL client: filterable by entity type
   and action, searchable, attributed to a name and email, gated on its own
   `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
-- **963 tests**, including integration suites that prove tenant isolation holds and
+- **964 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

@@ -12,6 +12,7 @@ import {
   emit,
   recordAudit,
   requireTenantContext,
+  schema,
   type Transaction,
 } from '@aerolith/kernel';
 import { and, asc, eq } from 'drizzle-orm';
@@ -19,6 +20,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import {
   cuttingPlan,
   productionScan,
+  routing,
   routingOperation,
   workCentre,
   workOrder,
@@ -546,36 +548,62 @@ export async function recordScan(
 export async function getWorkOrderProgress(tx: Transaction, workOrderId: string) {
   const { tenantId } = requireTenantContext();
 
-  const [order] = await tx
-    .select()
+  const [row] = await tx
+    .select({
+      order: workOrder,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+      itemCode: schema.item.code,
+      itemName: schema.item.name,
+      routingCode: routing.code,
+      routingName: routing.name,
+    })
     .from(workOrder)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, workOrder.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.item,
+      and(eq(schema.item.id, workOrder.itemId), eq(schema.item.tenantId, tenantId)),
+    )
+    .leftJoin(routing, and(eq(routing.id, workOrder.routingId), eq(routing.tenantId, tenantId)))
     .where(and(eq(workOrder.tenantId, tenantId), eq(workOrder.id, workOrderId)))
     .limit(1);
 
-  if (!order) throw new WorkOrderError('Work order not found.');
+  if (!row) throw new WorkOrderError('Work order not found.');
+  const { order, ...names } = row;
 
-  const operations = await tx
-    .select()
+  const operationRows = await tx
+    .select({
+      operation: workOrderOperation,
+      workCentreCode: workCentre.code,
+      workCentreName: workCentre.name,
+    })
     .from(workOrderOperation)
+    .innerJoin(workCentre, eq(workCentre.id, workOrderOperation.workCentreId))
     .where(eq(workOrderOperation.workOrderId, order.id))
     .orderBy(asc(workOrderOperation.sequence));
 
   const scans = await loadScans(tx, order.id);
   const targetQuantity = Number(order.quantity);
 
-  const summaries: OperationSummary[] = operations.map((op) => ({
-    id: op.id,
-    sequence: op.sequence,
-    name: op.name,
-    isQualityGate: op.isQualityGate,
+  const summaries: OperationSummary[] = operationRows.map(({ operation }) => ({
+    id: operation.id,
+    sequence: operation.sequence,
+    name: operation.name,
+    isQualityGate: operation.isQualityGate,
     targetQuantity,
   }));
 
   return {
     order,
-    operations: operations.map((op) => ({
-      ...op,
-      progress: operationProgress(op.id, scans, targetQuantity),
+    ...names,
+    operations: operationRows.map(({ operation, workCentreCode, workCentreName }) => ({
+      ...operation,
+      workCentreCode,
+      workCentreName,
+      progress: operationProgress(operation.id, scans, targetQuantity),
     })),
     progress: workOrderProgress(summaries, scans),
     scanCount: scans.length,
