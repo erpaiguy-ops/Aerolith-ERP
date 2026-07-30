@@ -109,6 +109,7 @@ function CustomFieldInput({ def, value }: { def: CustomFieldDefinition; value: u
     return (
       <input
         type="number"
+        step="any"
         name={def.key}
         defaultValue={typeof value === 'number' || typeof value === 'string' ? value : ''}
         className={`${field} numeric`}

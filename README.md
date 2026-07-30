@@ -71,19 +71,27 @@ labelled parts, becomes scanned progress.
   (`GET /api/v1/notifications`, `/notifications`). Email/Telegram/WhatsApp/SMS
   delivery, templates and quiet hours remain schema-only — see the roadmap
 - **Custom fields** — the tenant-defined-fields catalogue (`kernel.custom_field_definition`)
-  wired to two entities now: a project's own detail screen (which gained a
-  proper header in the same pass — it had none) and a party's, both reading
-  and editing whatever fields a `kernel.custom_fields.manage` admin has
-  defined, validated server-side against each field's type. Settings →
-  Custom Fields manages the catalogue for parties, items and projects; only
-  `item` has no value editor wired in so far
+  now wired to all three entities it was ever meant to cover: a project's own
+  detail screen (which gained a proper header in the same pass — it had none),
+  a party's, and an item's, all reading and editing whatever fields a
+  `kernel.custom_fields.manage` admin has defined, validated server-side
+  against each field's type. Settings → Custom Fields manages the catalogue
 - **Parties register** — the master data every module was already joining
   against (`clientPartyId`, `supplierId`, ...) and nothing could create, list
   or edit directly: one table with role flags (customer/supplier/subcontractor/
   consultant/employee, held in any combination), contacts with a single
   primary, and blocking with a mandatory reason since it stops every module
   trading with them (`GET|POST /api/v1/master-data/parties`, `/master-data/parties`)
-- **1,007 tests**, including integration suites that prove tenant isolation holds and
+- **Item catalogue, create and edit** — `kernel.item` had a list and nothing
+  else: no route existed to create one, edit one, or read a single item's
+  detail, and `inventory.item.write` sat in the manifest declared but unused.
+  The item detail screen now edits dimensions, grain direction, finish/colour
+  codes, tracking flags, standard cost and wastage, alongside its resolved
+  stock/purchase UOM and on-hand position — "never stocked" kept distinct from
+  a zero balance, the same trap the register already avoided
+  (`GET|POST /api/v1/inventory/items`, `GET|PATCH /api/v1/inventory/items/:id`,
+  `/inventory/items/:id`)
+- **1,015 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -226,6 +234,10 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/modules/catalogue` | Every module this deployment can serve |
 | `GET /api/v1/me` | The caller's tenant, modules, navigation and permissions |
 | `GET /api/v1/inventory/items` | Item catalogue, paged |
+| `POST /api/v1/inventory/items` | Create an item |
+| `GET /api/v1/inventory/items/:id` | One item, with its resolved UOMs, category and on-hand position |
+| `PATCH /api/v1/inventory/items/:id` | Update an item |
+| `PATCH /api/v1/inventory/items/:id/custom-fields` | Set an item's tenant-defined fields |
 | `GET /api/v1/inventory/stock` | Stock on hand, paged — or one item's position with `?itemId=` |
 | `GET /api/v1/inventory/offcuts` | Offcut register, paged, with a whole-register value summary |
 | `GET /api/v1/inventory/counts` | Stock counts with progress and variance |

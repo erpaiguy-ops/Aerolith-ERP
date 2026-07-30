@@ -51,12 +51,14 @@ export {
   ITEM_SORTS,
   OFFCUT_SORTS,
   STOCK_SORTS,
+  getItemDetail,
   listItems,
   listMovements,
   listOffcuts,
   listStockCounts,
   listStockOnHand,
   summariseOffcuts,
+  type ItemDetail,
   type ItemListRow,
   type MovementListRow,
   type OffcutListRow,
@@ -64,5 +66,14 @@ export {
   type StockCountListRow,
   type StockListRow,
 } from './service/registers';
+
+export {
+  ItemError,
+  createItem,
+  setItemCustomFields,
+  updateItem,
+  type CreateItemInput,
+  type UpdateItemInput,
+} from './service/items';
 
 export { INVENTORY_RLS, buildInventoryRls, buildInventoryGrants } from './db/security';

@@ -1421,6 +1421,63 @@ original three (`party`, `item`, `project`) still without a value editor —
 it already has a list page, so wiring it in is a smaller step than either
 of the previous two, and a natural next one.
 
+### Item: not a smaller step after all
+
+The plan going in was "wire a custom fields editor onto item, like project
+and party got." Checking first — a habit worth keeping after party turned
+out to need a whole register rather than a header — found the gap was
+bigger than that. `kernel.item` had a list endpoint and nothing else: no
+`createItem`, no `updateItem`, not even a single-row detail read, and
+`inventory.item.write` sat in the module's own manifest declared and never
+once checked. A catalogue every module already reads (`itemId` on a
+requisition line, an estimate component, a work order part) could not be
+built or corrected without a `psql` session. Same shape of gap as parties,
+found the same way: by trying to attach a smaller feature and discovering
+there was no larger one underneath it yet.
+
+`packages/modules/inventory/src/service/items.ts` is the new file —
+deliberately not added to `registers.ts` (reads only) or `movements.ts`
+(the stock ledger's dangerous surface): defining what an item IS is a third
+kind of write, master data rather than a posting, so it gets its own home.
+`createItem`/`updateItem`/`setItemCustomFields`, plus `getItemDetail` in
+`registers.ts` alongside the list it was missing a companion for, joining
+`kernel.unit_of_measure` twice — once aliased `stock_uom`, once
+`purchase_uom` — the same double-alias `getProjectDetail` already used for
+a project's PM and QS.
+
+Two bugs surfaced by testing this against the running app rather than only
+against `pnpm verify`, both worth recording because neither would have
+shown up any other way:
+
+- **`coalesce(sum(...), 0)` collapses "never stocked" into a false zero.**
+  `getItemDetail`'s on-hand figure was first written with a `coalesce`
+  around the sum, on the reasoning that a missing value should default to
+  something. It compiled, it typechecked, and it was wrong: an aggregate
+  query with no `GROUP BY` returns exactly one row even when zero stock
+  rows match, so `coalesce` turned "nobody has ever stocked this" into
+  "the shelf holds zero" — the identical trap the list register's own
+  comment already warns about, reintroduced by not reading it while writing
+  the detail query next to it. Fixed by dropping the `coalesce` and letting
+  a genuine absence surface as `null`, exactly as `listItems`' grouped
+  subquery already does. An integration test now pins the distinction
+  (`toBeNull()`, not `toBe('0')`) so it fails loudly next time.
+- **A decimal step is not the default on `<input type="number">`.** Typing
+  `55.75` into the Standard Cost field failed silently in Chromium — no
+  network request, no server error, just a native browser tooltip
+  ("the two nearest valid values are 55 and 56") that a screenshot-free test
+  run would never catch, because the form simply never submits. The
+  server-side integration tests all passed regardless, since they PATCH the
+  API directly and never touch the input's `step` attribute at all — a
+  reminder that a green `pnpm verify` proves the service and the route work,
+  not that a human can operate the form in front of them. Every other money
+  or quantity field in the app already carries `step="any"` (or a specific
+  decimal step, for the two that want one); this one didn't, because it was
+  new. Fixed here, and while looking, found the same omission already living
+  in the `CustomFieldInput` component's `number`/`decimal` case in all
+  three copies — party's, project's and item's — the cost of building each
+  entity's value editor by copying the last one before this pattern was
+  established. All four now carry `step="any"`.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

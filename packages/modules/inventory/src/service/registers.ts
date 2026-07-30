@@ -25,6 +25,7 @@ import {
   type Transaction,
 } from '@aerolith/kernel';
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import {
   batch as batchTable,
@@ -159,6 +160,66 @@ export async function listItems(
     .where(where);
 
   return listResult(rows, counted?.total ?? 0, params);
+}
+
+export interface ItemDetail {
+  item: typeof schema.item.$inferSelect;
+  categoryName: string | null;
+  stockUomCode: string | null;
+  purchaseUomCode: string | null;
+  /** Summed across every warehouse. Null when the item has no stock rows at all. */
+  onHand: string | null;
+}
+
+/**
+ * One item, with what it is measured and stocked in resolved to codes.
+ *
+ * Had no endpoint at all before this — only the list, same gap the project
+ * and party registers had. `stockUomId`/`purchaseUomId` both point at
+ * `kernel.unit_of_measure`, so this aliases it twice the same way
+ * `getProjectDetail` aliases `kernel.app_user` for the PM and QS.
+ */
+export async function getItemDetail(tx: Transaction, itemId: string): Promise<ItemDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const stockUom = alias(schema.unitOfMeasure, 'stock_uom');
+  const purchaseUom = alias(schema.unitOfMeasure, 'purchase_uom');
+
+  const [row] = await tx
+    .select({
+      item: schema.item,
+      categoryName: schema.itemCategory.name,
+      stockUomCode: stockUom.code,
+      purchaseUomCode: purchaseUom.code,
+    })
+    .from(schema.item)
+    .leftJoin(
+      schema.itemCategory,
+      and(eq(schema.itemCategory.id, schema.item.categoryId), eq(schema.itemCategory.tenantId, tenantId)),
+    )
+    .leftJoin(stockUom, eq(stockUom.id, schema.item.stockUomId))
+    .leftJoin(purchaseUom, eq(purchaseUom.id, schema.item.purchaseUomId))
+    .where(
+      and(
+        eq(schema.item.tenantId, tenantId),
+        eq(schema.item.id, itemId),
+        isNull(schema.item.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return null;
+
+  // Plain `sum`, not `coalesce(sum, 0)`: an aggregate over zero matching rows
+  // still returns one row here (there is no GROUP BY to collapse), so
+  // coalescing would turn "never stocked" into a false zero — the same trap
+  // `listItems`' onHand subquery avoids by grouping instead.
+  const [onHandRow] = await tx
+    .select({ quantity: sql<string | null>`sum(${stockLevel.quantity})` })
+    .from(stockLevel)
+    .where(and(eq(stockLevel.tenantId, tenantId), eq(stockLevel.itemId, itemId)));
+
+  return { ...row, onHand: onHandRow?.quantity ?? null };
 }
 
 // ---------------------------------------------------------------------------

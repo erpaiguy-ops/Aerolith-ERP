@@ -10,10 +10,13 @@ import { parseListParams, withTenant } from '@aerolith/kernel';
 import {
   COUNT_SORTS,
   ITEM_SORTS,
+  ItemError,
   MOVEMENT_SORTS,
   InvalidMovementError,
   OFFCUT_SORTS,
   STOCK_SORTS,
+  createItem,
+  getItemDetail,
   inventorySchema,
   listItems,
   listMovements,
@@ -22,9 +25,11 @@ import {
   listStockOnHand,
   postMovement,
   selectBestOffcut,
+  setItemCustomFields,
   stockOnHand,
   summariseOffcuts,
   toNumber,
+  updateItem,
   type Panel,
 } from '@aerolith/module-inventory';
 import { and, asc, eq } from 'drizzle-orm';
@@ -90,6 +95,47 @@ const movementBody = z.object({
   lines: z.array(movementLine).min(1),
 });
 
+const ITEM_TYPES = [
+  'raw_material',
+  'panel',
+  'hardware',
+  'consumable',
+  'finished_good',
+  'sub_assembly',
+  'service',
+  'asset',
+] as const;
+
+const createItemBody = z.object({
+  code: z.string().min(1).max(64),
+  name: z.string().min(1),
+  nativeName: z.string().nullish(),
+  description: z.string().nullish(),
+  type: z.enum(ITEM_TYPES),
+  categoryId: z.string().uuid().nullish(),
+  stockUomId: z.string().uuid().nullish(),
+  purchaseUomId: z.string().uuid().nullish(),
+  lengthMm: z.number().positive().nullish(),
+  widthMm: z.number().positive().nullish(),
+  thicknessMm: z.number().positive().nullish(),
+  hasGrainDirection: z.boolean().optional(),
+  finishCode: z.string().nullish(),
+  colourCode: z.string().nullish(),
+  isStocked: z.boolean().optional(),
+  isBatchTracked: z.boolean().optional(),
+  isSerialTracked: z.boolean().optional(),
+  barcode: z.string().nullish(),
+  standardCost: z.number().nonnegative().nullish(),
+  wastagePercent: z.number().min(0).max(100).optional(),
+});
+
+const updateItemBody = createItemBody
+  .omit({ code: true, type: true })
+  .partial()
+  .extend({
+    isActive: z.boolean().optional(),
+  });
+
 const warehouseBody = z.object({
   code: z.string().min(1).max(16),
   name: z.string().min(1),
@@ -151,6 +197,88 @@ export async function inventoryRoutes(app: FastifyInstance) {
           }),
         ),
       );
+    },
+  );
+
+  app.post('/inventory/items', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.item.write');
+
+    const parsed = createItemBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () => withTenant((tx) => createItem(tx, parsed.data)));
+    } catch (error) {
+      if (error instanceof ItemError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/inventory/items/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.item.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getItemDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Item not found.' });
+    return detail;
+  });
+
+  app.patch<{ Params: { id: string } }>('/inventory/items/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.item.write');
+
+    const parsed = updateItemBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateItem(tx, { itemId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof ItemError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.patch<{ Params: { id: string } }>(
+    '/inventory/items/:id/custom-fields',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.item.write');
+
+      const parsed = z.record(z.unknown()).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) => setItemCustomFields(tx, { itemId: request.params.id, values: parsed.data })),
+        );
+      } catch (error) {
+        if (error instanceof ItemError) {
+          return reply.code(409).send({ error: error.message });
+        }
+        throw error;
+      }
     },
   );
 

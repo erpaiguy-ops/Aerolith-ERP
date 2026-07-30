@@ -1,3 +1,6 @@
+import Link from 'next/link';
+
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -8,8 +11,11 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
 import { dimensions, quantity } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+import { createItemAction } from './actions';
 
 interface ItemRow {
   id: string;
@@ -39,6 +45,20 @@ const TYPES = [
   { label: 'Consumable', value: 'consumable' },
 ];
 
+const ADD_TYPES = [
+  { label: 'Panel', value: 'panel' },
+  { label: 'Hardware', value: 'hardware' },
+  { label: 'Raw material', value: 'raw_material' },
+  { label: 'Consumable', value: 'consumable' },
+  { label: 'Finished good', value: 'finished_good' },
+  { label: 'Sub-assembly', value: 'sub_assembly' },
+  { label: 'Service', value: 'service' },
+  { label: 'Asset', value: 'asset' },
+];
+
+const field =
+  'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)';
+
 export default async function ItemsPage({
   searchParams,
 }: {
@@ -46,6 +66,7 @@ export default async function ItemsPage({
 }) {
   const query = listQuery(await searchParams);
   const me = await getMe();
+  const mayManage = can(me.permissions, 'inventory.item.write') || me.user.isOwner;
 
   const result = await fetchList<ItemRow>('/inventory/items', query);
 
@@ -105,7 +126,12 @@ export default async function ItemsPage({
             {result.rows.map((row) => (
               <tr key={row.id} className="hover:bg-(--color-canvas)">
                 <Td>
-                  <span className="numeric">{row.code}</span>
+                  <Link
+                    href={`/inventory/items/${row.id}`}
+                    className="numeric text-(--color-accent) hover:underline"
+                  >
+                    {row.code}
+                  </Link>
                 </Td>
                 <Td>
                   <span className="block">{row.name}</span>
@@ -149,6 +175,50 @@ export default async function ItemsPage({
 
         <Pager base={BASE} query={query} result={result} noun={['item', 'items']} />
       </Card>
+
+      {mayManage ? (
+        <Card title="Add an item">
+          <ActionForm action={createItemAction} className="grid gap-3 sm:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Code</span>
+              <input name="code" placeholder="MEL-16-WHT" className={field} />
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Name</span>
+              <input name="name" dir="auto" placeholder="16mm White Melamine" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Type</span>
+              <select name="type" defaultValue="panel" className={field}>
+                {ADD_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Length (mm)</span>
+              <input type="number" step="any" name="lengthMm" className={`${field} numeric`} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Width (mm)</span>
+              <input type="number" step="any" name="widthMm" className={`${field} numeric`} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Thickness (mm)</span>
+              <input type="number" step="any" name="thicknessMm" className={`${field} numeric`} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Colour code</span>
+              <input name="colourCode" className={field} />
+            </label>
+            <div>
+              <SubmitButton pendingLabel="Adding…">Add item</SubmitButton>
+            </div>
+          </ActionForm>
+        </Card>
+      ) : null}
     </>
   );
 }

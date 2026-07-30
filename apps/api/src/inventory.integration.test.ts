@@ -905,4 +905,158 @@ suite('Inventory', () => {
       }
     });
   });
+
+  describe('the item catalogue', () => {
+    // Reads had a home from day one; writes did not. `inventory.item.write`
+    // sat in the manifest unused until this suite gave it a caller.
+    let panelId: string;
+
+    it('creates an item', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/items',
+        headers: auth(),
+        payload: {
+          code: 'MEL-16-WHT',
+          name: '16mm White Melamine',
+          type: 'panel',
+          lengthMm: 2440,
+          widthMm: 1220,
+          thicknessMm: 16,
+          colourCode: 'WHT',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      panelId = response.json().id;
+      expect(panelId).toBeTruthy();
+    });
+
+    it('rejects a duplicate code', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/items',
+        headers: auth(),
+        payload: { code: 'MEL-16-WHT', name: 'Duplicate', type: 'panel' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('reads back the detail, with its UOM and category resolved to names', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/items/${panelId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.item.code).toBe('MEL-16-WHT');
+      expect(body.onHand).toBeNull();
+    });
+
+    it('404s a detail lookup for an item that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/items/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('updates an item', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/items/${panelId}`,
+        headers: auth(),
+        payload: { standardCost: 42.5, wastagePercent: 5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/items/${panelId}`,
+        headers: auth(),
+      });
+      expect(Number(detail.json().item.standardCost)).toBeCloseTo(42.5, 2);
+    });
+
+    it('answers 404 for create and update on a tenant without the module', async () => {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/items',
+        headers: auth(OTHER_TOKEN, NO_INVENTORY_TENANT),
+        payload: { code: 'X', name: 'X', type: 'panel' },
+      });
+      expect(create.statusCode).toBe(404);
+
+      const update = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/items/${panelId}`,
+        headers: auth(OTHER_TOKEN, NO_INVENTORY_TENANT),
+        payload: { name: 'Renamed' },
+      });
+      expect(update.statusCode).toBe(404);
+    });
+
+    describe('custom fields on an item', () => {
+      let fieldId: string;
+
+      it('defines a custom field for items', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/admin/custom-fields',
+          headers: auth(),
+          payload: {
+            entityType: 'item',
+            key: 'lead_time_days',
+            label: 'Lead time (days)',
+            type: 'number',
+            isRequired: false,
+          },
+        });
+
+        expect(response.statusCode).toBe(200);
+        fieldId = response.json().id;
+      });
+
+      it('sets the value, validated against the definition', async () => {
+        const bad = await app.inject({
+          method: 'PATCH',
+          url: `/api/v1/inventory/items/${panelId}/custom-fields`,
+          headers: auth(),
+          payload: { lead_time_days: 'soon' },
+        });
+        expect(bad.statusCode).toBe(409);
+
+        const good = await app.inject({
+          method: 'PATCH',
+          url: `/api/v1/inventory/items/${panelId}/custom-fields`,
+          headers: auth(),
+          payload: { lead_time_days: 14 },
+        });
+        expect(good.statusCode).toBe(200);
+        expect(good.json().values.lead_time_days).toBe(14);
+
+        const [row] = await getDatabase()
+          .select({ customFields: schema.item.customFields })
+          .from(schema.item)
+          .where(eq(schema.item.id, panelId));
+        expect(row!.customFields).toEqual({ lead_time_days: 14 });
+      });
+
+      afterAll(async () => {
+        await getDatabase()
+          .delete(schema.customFieldDefinition)
+          .where(eq(schema.customFieldDefinition.id, fieldId));
+      });
+    });
+
+    afterAll(async () => {
+      await getDatabase().delete(schema.item).where(eq(schema.item.id, panelId));
+    });
+  });
 });
