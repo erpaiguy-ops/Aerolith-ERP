@@ -1287,6 +1287,58 @@ into a production BOM the way a rate built the old way does. Whoever adds that
 should reuse the item search that estimate-line entry already has, rather than
 inventing a second one.
 
+### The notification centre, one channel deep
+
+The kernel schema for a full notification centre — type catalogue, per-locale
+templates, five delivery channels, per-user preferences with quiet hours —
+existed since the initial migration and nothing read or wrote a single row of
+it. Not a partial build with a rough edge; genuinely zero code outside the
+schema file itself.
+
+Building all of it at once would have meant building a preferences screen and
+a template editor against an inbox nobody could see yet — designing blind. So
+this pass is one vertical slice, taken all the way through instead: a
+notification is created (`notify`/`notifyMany` in the new
+`packages/kernel/src/notifications/service.ts`), it lands in the recipient's
+inbox (`GET /notifications`, paged and unread-filterable, same as every other
+register), and they can clear it (`POST /notifications/:id/read`,
+`/read-all`). Channel is implicitly `in_app` throughout — `notificationTemplate`,
+`notificationDelivery` and `notificationPreference` are untouched, and quiet
+hours are not evaluated anywhere. That is the actual scope, not an oversight:
+multi-channel delivery is a real project (a template renderer, a queue per
+channel, retry and bounce handling per provider), and it deserves to be built
+against a real inbox rather than imagined requirements.
+
+The one thing this slice needed to be worth building at all was a producer,
+or the inbox would ship empty and stay that way. The approval engine is it —
+`openSequence`, the function that opens a workflow step and creates its
+`approval_task` rows, now calls `tryNotifyMany` in the same transaction, once
+per step, for every approver it just opened tasks for. `tryNotifyMany` mirrors
+`tryRecordAudit`'s own reasoning exactly: a notification failure must not fail
+the approval request it is about, so it is swallowed rather than thrown.
+Every approval workflow in the system — purchase orders, variations, stock
+write-offs, whatever a future module registers — now notifies its approvers
+for free, the same way every one of them already gets an audit trail and a
+numbered document for free. Wired at one call site, working everywhere,
+which is the whole point of putting it in the kernel rather than each module.
+
+Two things worth knowing if this gets extended:
+
+- **The instance's `entityLabel`/`entityType` are read inside `openSequence`
+  itself**, once per call rather than once per step, from the
+  `approval_instance` row by id. Threading them through every caller
+  (`requestApproval` has them on `input`; `finishInstance`, opening a later
+  sequence, does not) would have meant widening a type that already flows
+  through several functions for a value one extra indexed lookup gets more
+  cheaply.
+- **The nav item is unpermissioned, deliberately, like the approval inbox
+  right above it.** A notification is addressed to a specific person; no role
+  grants or withholds the right to see what was sent to you. Both existing
+  `/me` navigation tests that asserted the exact array of kernel nav items
+  needed updating for the new entry — a sign this is the kind of test to keep
+  writing loosely (`.find()` by key) rather than by position, one test in this
+  same file already does.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

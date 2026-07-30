@@ -52,7 +52,7 @@ labelled parts, becomes scanned progress.
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area, **including a detail screen for every register**
   — a work order followed from routing to the floor, with its cutting plan one
-  click away. **Every** navigation destination is built — 35 of 35 — and a
+  click away. **Every** navigation destination is built — 36 of 36 — and a
   workspace can adopt its country, edit its own rules, add its own people and
   invent its own roles without a developer. Right-to-left aware and formatted
   in the user's own locale
@@ -64,7 +64,13 @@ labelled parts, becomes scanned progress.
   from the workspace itself rather than a SQL client: filterable by entity type
   and action, searchable, attributed to a name and email, gated on its own
   `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
-- **984 tests**, including integration suites that prove tenant isolation holds and
+- **Notification centre** — the in-app inbox slice of it, the one channel actually
+  wired end to end: the approval engine notifies every approver a step opens
+  for, unpermissioned like the inbox itself (a notification is addressed to a
+  person, not gated by a role), readable and markable-read from the workspace
+  (`GET /api/v1/notifications`, `/notifications`). Email/Telegram/WhatsApp/SMS
+  delivery, templates and quiet hours remain schema-only — see the roadmap
+- **989 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -233,6 +239,10 @@ pnpm --filter @aerolith/api dev
 | `PUT /api/v1/estimating/rates/:id/components` | Replace a rate's whole build-up in one call — the save behind the spreadsheet-style grid |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
+| `GET /api/v1/notifications` | The caller's own in-app inbox, unread-filterable and paged |
+| `GET /api/v1/notifications/unread-count` | For a bell badge, without paying for the whole inbox |
+| `POST /api/v1/notifications/:id/read` | Mark one notification read |
+| `POST /api/v1/notifications/read-all` | Mark every unread notification read |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |

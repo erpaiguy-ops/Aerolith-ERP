@@ -25,6 +25,7 @@ import {
   type WorkflowStepDefinition,
 } from '../db/schema';
 import { emit } from '../events/bus';
+import { tryNotifyMany } from '../notifications/service';
 import { requireTenantContext } from '../tenancy/context';
 import {
   type ApprovalContext,
@@ -514,6 +515,14 @@ async function openSequence(
 ): Promise<string[]> {
   const opened: string[] = [];
 
+  // Fetched once per call rather than per step: a sequence is usually one
+  // step, and every step that opens tasks needs the same entity to describe
+  // in the notification it sends.
+  const [instanceRow] = await tx
+    .select({ entityType: approvalInstance.entityType, entityLabel: approvalInstance.entityLabel })
+    .from(approvalInstance)
+    .where(eq(approvalInstance.id, args.instanceId));
+
   for (const step of args.steps) {
     let approvers = await resolveApprovers(tx, {
       tenantId: args.tenantId,
@@ -552,6 +561,19 @@ async function openSequence(
         dueAt,
       })),
     );
+
+    // Best-effort: a notification failure must not fail the approval request
+    // it is about, the same reasoning `tryRecordAudit` already applies to the
+    // audit trail.
+    await tryNotifyMany(tx, {
+      recipientIds: unique,
+      typeKey: 'kernel.approval.requested',
+      title: `Approval needed: ${instanceRow?.entityLabel ?? instanceRow?.entityType?.replace(/[._]/g, ' ') ?? 'a request'}`,
+      body: `${step.name} — waiting on your decision.`,
+      entityType: 'kernel.approval_instance',
+      entityId: args.instanceId,
+      actionUrl: '/approvals',
+    });
 
     opened.push(...unique);
   }

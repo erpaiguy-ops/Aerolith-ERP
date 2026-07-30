@@ -73,6 +73,20 @@ export async function moduleRoutes(app: FastifyInstance) {
             },
           ],
         },
+        /*
+         * Also a kernel capability, also unpermissioned for the same reason:
+         * a notification is addressed to this user specifically, and nothing
+         * a role could grant or withhold changes that. Order 1 keeps it right
+         * under the approval inbox — the two are "what is waiting on me",
+         * read in the order of how directly each one demands an action.
+         */
+        {
+          key: 'kernel.notifications',
+          label: 'Notifications',
+          icon: 'bell',
+          path: '/notifications',
+          order: 1,
+        },
         ...navigationFor(modules, permissions),
         /*
          * Settings, likewise a kernel capability with no manifest. Last, at a

@@ -12,6 +12,7 @@ import { productionRoutes } from './routes/production';
 import { inventoryRoutes } from './routes/inventory';
 import { localisationRoutes } from './routes/localisation';
 import { moduleRoutes } from './routes/modules';
+import { notificationRoutes } from './routes/notifications';
 import { procurementRoutes } from './routes/procurement';
 import { projectRoutes } from './routes/projects';
 
@@ -83,6 +84,7 @@ export async function buildApp(options: BuildOptions = {}): Promise<FastifyInsta
   await app.register(localisationRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
   await app.register(approvalRoutes, { prefix: '/api/v1' });
+  await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(inventoryRoutes, { prefix: '/api/v1' });
   await app.register(cutlistRoutes, { prefix: '/api/v1' });
   await app.register(procurementRoutes, { prefix: '/api/v1' });

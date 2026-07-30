@@ -193,10 +193,11 @@ suite('API', () => {
 
       const body = response.json();
       expect(body.modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
-      // The kernel approvals section sits at order 0, above every module, so the
-      // first MODULE entry is the second item.
+      // The kernel approvals and notifications sections sit above every
+      // module, so the first MODULE entry is the third item.
       expect(body.navigation[0].key).toBe('kernel.approvals');
-      expect(body.navigation[1].key).toBe('inventory');
+      expect(body.navigation[1].key).toBe('kernel.notifications');
+      expect(body.navigation[2].key).toBe('inventory');
       expect(body.unavailableModules).toEqual([]);
     });
 
@@ -264,13 +265,15 @@ suite('API', () => {
       const body = response.json();
       expect(body.permissions).toEqual([]);
       // Every MODULE nav item is permission-gated, so the menu carries no links
-      // that would 403. What remains is the kernel approvals section, which is
-      // deliberately not permission-gated: an approver's authority is the task
-      // assignment itself, so a user with no roles can still be asked to decide
-      // something and must be able to reach their inbox. `/approvals` 403s for
-      // nobody, so the principle this test protects is intact.
+      // that would 403. What remains is the kernel approvals and notifications
+      // sections, neither of which is permission-gated: an approver's authority
+      // is the task assignment itself, and a notification is addressed to this
+      // user specifically, so a user with no roles can still reach both.
+      // Neither route 403s for anybody, so the principle this test protects is
+      // intact.
       expect(body.navigation.map((item: { key: string }) => item.key)).toEqual([
         'kernel.approvals',
+        'kernel.notifications',
       ]);
     });
 

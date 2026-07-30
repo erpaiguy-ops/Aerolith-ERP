@@ -203,6 +203,22 @@ export {
   tryRecordAudit,
 } from './audit/service';
 
+// Notifications
+export {
+  type NotificationRow,
+  type NotificationSort,
+  type NotifyInput,
+  NOTIFICATION_SORTS,
+  NotificationError,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  notify,
+  notifyMany,
+  tryNotifyMany,
+  unreadNotificationCount,
+} from './notifications/service';
+
 // Authentication
 export {
   type ParsedHash,

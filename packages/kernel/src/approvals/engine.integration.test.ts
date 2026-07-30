@@ -92,6 +92,7 @@ suite('approval engine and numbering', () => {
 
   afterAll(async () => {
     const db = getDatabase();
+    await db.delete(schema.notification).where(eq(schema.notification.tenantId, TENANT));
     await db.delete(schema.approvalAction).where(eq(schema.approvalAction.tenantId, TENANT));
     await db.delete(schema.approvalTask).where(eq(schema.approvalTask.tenantId, TENANT));
     await db.delete(schema.approvalInstance).where(eq(schema.approvalInstance.tenantId, TENANT));
@@ -144,6 +145,7 @@ suite('approval engine and numbering', () => {
 
   beforeEach(async () => {
     const db = getDatabase();
+    await db.delete(schema.notification).where(eq(schema.notification.tenantId, TENANT));
     await db.delete(schema.approvalAction).where(eq(schema.approvalAction.tenantId, TENANT));
     await db.delete(schema.approvalTask).where(eq(schema.approvalTask.tenantId, TENANT));
     await db.delete(schema.approvalInstance).where(eq(schema.approvalInstance.tenantId, TENANT));
@@ -181,6 +183,23 @@ suite('approval engine and numbering', () => {
       // The requester holds the manager role but must not approve their own PO.
       expect(requested.pendingApprovers).toEqual([MANAGER]);
 
+      // Opening a step notifies its approvers — the manager, not the
+      // requester and not the director, who is not up yet.
+      const managerNotifications = await getDatabase()
+        .select()
+        .from(schema.notification)
+        .where(eq(schema.notification.recipientId, MANAGER));
+      expect(managerNotifications).toHaveLength(1);
+      expect(managerNotifications[0]!.typeKey).toBe('kernel.approval.requested');
+      expect(managerNotifications[0]!.actionUrl).toBe('/approvals');
+      expect(managerNotifications[0]!.entityId).toBe(requested.instanceId);
+
+      const directorNotificationsBefore = await getDatabase()
+        .select()
+        .from(schema.notification)
+        .where(eq(schema.notification.recipientId, DIRECTOR));
+      expect(directorNotificationsBefore).toHaveLength(0);
+
       const tasks = await getDatabase()
         .select()
         .from(schema.approvalTask)
@@ -193,6 +212,13 @@ suite('approval engine and numbering', () => {
 
       expect(afterManager.instanceState).toBe('pending');
       expect(afterManager.nextApprovers).toEqual([DIRECTOR]);
+
+      // The second step opening notifies the director in turn.
+      const directorNotifications = await getDatabase()
+        .select()
+        .from(schema.notification)
+        .where(eq(schema.notification.recipientId, DIRECTOR));
+      expect(directorNotifications).toHaveLength(1);
 
       const directorTask = (
         await getDatabase()
