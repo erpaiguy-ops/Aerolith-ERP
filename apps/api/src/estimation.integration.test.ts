@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { closeDatabase, createDatabase, getDatabase, schema } from '@aerolith/kernel';
 import { estimationSchema } from '@aerolith/module-estimation';
 import { productionSchema } from '@aerolith/module-production';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -326,6 +326,72 @@ suite('Estimation', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('tender detail', () => {
+    it('resolves client, consultant and main contractor — three roles, three parties', async () => {
+      const db = getDatabase();
+      const [client, consultant, mainContractor] = await db
+        .insert(schema.party)
+        .values([
+          { tenantId: TENANT, code: 'EMAAR', name: 'Emaar Properties PJSC', isCustomer: true },
+          { tenantId: TENANT, code: 'ARCH01', name: 'AE7 Architects', isConsultant: true },
+          { tenantId: TENANT, code: 'MC01', name: 'Al Futtaim Carillion', isSubcontractor: true },
+        ])
+        .returning({ id: schema.party.id });
+
+      const tender = await newTender('Downtown residential tower');
+      await db
+        .update(estimationSchema.tender)
+        .set({
+          clientPartyId: client!.id,
+          consultantPartyId: consultant!.id,
+          mainContractorPartyId: mainContractor!.id,
+        })
+        .where(eq(estimationSchema.tender.id, tender.tenderId));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/estimating/tenders/${tender.tenderId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.tender.name).toBe('Downtown residential tower');
+      expect(body.clientName).toBe('Emaar Properties PJSC');
+      expect(body.consultantName).toBe('AE7 Architects');
+      expect(body.mainContractorName).toBe('Al Futtaim Carillion');
+
+      await db.delete(schema.party).where(
+        inArray(schema.party.id, [client!.id, consultant!.id, mainContractor!.id]),
+      );
+    });
+
+    it('lists every priced version, newest first', async () => {
+      const tender = await newTender();
+      const first = (await priceIt(tender.tenderId)).json();
+      const second = (await priceIt(tender.tenderId, { label: 'Alternate spec' })).json();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/estimating/tenders/${tender.tenderId}`,
+        headers: auth(),
+      });
+
+      const estimates = response.json().estimates as { id: string; version: number }[];
+      expect(estimates.map((e) => e.id)).toEqual([second.estimateId, first.estimateId]);
+    });
+
+    it('404s a tender id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/estimating/tenders/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
     });
   });
 

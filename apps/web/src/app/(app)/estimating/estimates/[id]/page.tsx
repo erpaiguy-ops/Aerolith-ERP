@@ -125,7 +125,12 @@ export default async function EstimatePage({ params }: { params: Promise<{ id: s
           {estimate.status.replace(/_/g, ' ')}
         </Badge>
         {estimate.isSubmitted ? <Badge tone="good">submitted</Badge> : null}
-        <span className="text-(--color-muted)">{`tender ${detail.tenderStatus.replace(/_/g, ' ')}`}</span>
+        <Link
+          href={`/estimating/tenders/${estimate.tenderId}`}
+          className="text-(--color-accent) hover:underline"
+        >
+          {`tender ${detail.tenderStatus.replace(/_/g, ' ')} →`}
+        </Link>
       </div>
 
       {!detail.marginVisible ? (

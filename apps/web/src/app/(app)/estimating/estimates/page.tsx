@@ -126,7 +126,7 @@ export default async function EstimatesPage({
                 <tr key={row.id} className="hover:bg-(--color-canvas)">
                   <Td>
                     <Link
-                      href={`/estimating/tenders?q=${encodeURIComponent(row.tenderNumber ?? row.tenderName)}`}
+                      href={`/estimating/tenders/${row.tenderId}`}
                       className="numeric block text-(--color-accent) hover:underline"
                     >
                       {row.tenderNumber ?? '—'}

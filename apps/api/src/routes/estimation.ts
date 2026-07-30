@@ -17,6 +17,7 @@ import {
   currentRateLibrary,
   estimationSchema,
   getEstimateBillOfMaterials,
+  getTenderDetail,
   listEstimates,
   listRates,
   listTenders,
@@ -158,6 +159,19 @@ export async function estimationRoutes(app: FastifyInstance) {
       );
     },
   );
+
+  app.get<{ Params: { id: string } }>('/estimating/tenders/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'estimation.tender.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getTenderDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Tender not found.' });
+    return detail;
+  });
 
   app.post<{ Params: { id: string } }>(
     '/estimating/tenders/:id/bid-decision',

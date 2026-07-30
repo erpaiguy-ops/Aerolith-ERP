@@ -1141,6 +1141,22 @@ production-planning question — no routing or project picker, because the
 person converting a bid to a job is not the person who should be assigning it
 to a saw.
 
+### A tender, with the three parties it actually involves
+
+The tender list resolves a client name; the detail screen needed all three —
+client, consultant and main contractor are frequently different
+organisations, and no endpoint existed to read a single tender at all before
+this entry, only the list. `getTenderDetail` joins `kernel.party` three times,
+aliased apart, alongside the tender's own priced versions newest first.
+
+Bid/no-bid and won/lost are modelled as decisions, not status edits, and the
+screen keeps that: each is its own small form asking for a reason, because
+"why did we not bid the Marina job" is a question asked six months later by
+someone who was not in the room. Both forms disappear once a tender is
+abandoned, cancelled, won or lost — the outcome form otherwise let a no-bid
+tender be recorded as "won", which the service itself does not forbid but
+which nothing sane means.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

@@ -24,6 +24,7 @@ import {
   type Transaction,
 } from '@aerolith/kernel';
 import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import { estimate, rateComponent, rateItem, rateLibrary, tender } from '../db/schema';
 
@@ -162,6 +163,85 @@ export async function listTenders(
     .where(where);
 
   return listResult(rows, counted?.total ?? 0, params);
+}
+
+export interface TenderEstimateRow {
+  id: string;
+  version: number;
+  label: string;
+  status: string;
+  totalValue: string;
+  isSubmitted: boolean;
+}
+
+export interface TenderDetail {
+  tender: typeof tender.$inferSelect;
+  clientName: string | null;
+  consultantName: string | null;
+  mainContractorName: string | null;
+  estimates: TenderEstimateRow[];
+}
+
+/**
+ * One tender, with its three parties resolved to names.
+ *
+ * Three joins against the same `kernel.party` table, aliased apart — a client,
+ * a consultant and a main contractor are frequently three different
+ * organisations, and a screen that can only show one of them is not reading the
+ * tender, it is reading a summary of it.
+ */
+export async function getTenderDetail(
+  tx: Transaction,
+  tenderId: string,
+): Promise<TenderDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const clientParty = alias(schema.party, 'client_party');
+  const consultantParty = alias(schema.party, 'consultant_party');
+  const mainContractorParty = alias(schema.party, 'main_contractor_party');
+
+  const [row] = await tx
+    .select({
+      tender,
+      clientName: clientParty.name,
+      consultantName: consultantParty.name,
+      mainContractorName: mainContractorParty.name,
+    })
+    .from(tender)
+    .leftJoin(
+      clientParty,
+      and(eq(clientParty.id, tender.clientPartyId), eq(clientParty.tenantId, tenantId)),
+    )
+    .leftJoin(
+      consultantParty,
+      and(eq(consultantParty.id, tender.consultantPartyId), eq(consultantParty.tenantId, tenantId)),
+    )
+    .leftJoin(
+      mainContractorParty,
+      and(
+        eq(mainContractorParty.id, tender.mainContractorPartyId),
+        eq(mainContractorParty.tenantId, tenantId),
+      ),
+    )
+    .where(and(eq(tender.tenantId, tenantId), eq(tender.id, tenderId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const estimates = await tx
+    .select({
+      id: estimate.id,
+      version: estimate.version,
+      label: estimate.label,
+      status: estimate.status,
+      totalValue: estimate.totalValue,
+      isSubmitted: estimate.isSubmitted,
+    })
+    .from(estimate)
+    .where(eq(estimate.tenderId, tenderId))
+    .orderBy(desc(estimate.version));
+
+  return { ...row, estimates };
 }
 
 // ---------------------------------------------------------------------------
