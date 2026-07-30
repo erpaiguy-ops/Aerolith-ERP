@@ -8,6 +8,7 @@
  */
 import { parseListParams, schema, withTenant } from '@aerolith/kernel';
 import {
+  BuildUpError,
   ESTIMATE_SORTS,
   EstimationError,
   RATE_SORTS,
@@ -25,8 +26,10 @@ import {
   marginScenarios,
   recordBidDecision,
   recordOutcome,
+  replaceRateComponents,
   rollUp,
   submitEstimate,
+  updateRateItem,
 } from '@aerolith/module-estimation';
 import { createWorkOrder } from '@aerolith/module-production';
 import { and, asc, eq } from 'drizzle-orm';
@@ -648,6 +651,105 @@ export async function estimationRoutes(app: FastifyInstance) {
       withTenant((tx) => getRateDetail(tx, request.params.id)),
     );
 
+    if (!detail) return reply.code(404).send({ error: 'Rate not found.' });
+    return detail;
+  });
+
+  const rateItemPatchBody = z.object({
+    description: z.string().min(1).optional(),
+    uomCode: z.string().nullish(),
+    category: z.string().nullish(),
+    overheadPercent: z.number().min(0).max(200).nullish(),
+    marginPercent: z.number().min(0).max(99.99).nullish(),
+  });
+
+  app.patch<{ Params: { id: string } }>('/estimating/rates/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'estimation.rate_library.manage');
+
+    const parsed = rateItemPatchBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateRateItem(tx, { rateItemId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof EstimationError || error instanceof BuildUpError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getRateDetail(tx, request.params.id)),
+    );
+    if (!detail) return reply.code(404).send({ error: 'Rate not found.' });
+    return detail;
+  });
+
+  // A dedicated schema rather than reusing `componentSchema`: that one's
+  // `description`/`wastagePercent` are `.optional()` (key absent, not `null`),
+  // which fits an estimate line built from scratch. A spreadsheet-style grid
+  // round-trips a full row on every save, including the ones it fetched with
+  // a `null` in them, so this accepts `null` on both.
+  const rateComponentSchema = z.object({
+    type: z.enum([
+      'material',
+      'labour',
+      'machine',
+      'finishing',
+      'hardware',
+      'subcontract',
+      'transport',
+      'other',
+    ]),
+    description: z.string().nullish(),
+    itemId: z.string().uuid().nullish(),
+    quantityPerUnit: z.number().nonnegative(),
+    unitRate: z.number().nonnegative(),
+    wastagePercent: z.number().min(0).max(200).nullish(),
+  });
+
+  const rateComponentsBody = z.object({ components: z.array(rateComponentSchema).min(1) });
+
+  /**
+   * Replaces a rate's entire build-up in one call — the save behind a
+   * spreadsheet-style grid, where the client holds every row (added, edited or
+   * removed) and submits the whole sheet rather than one cell at a time.
+   */
+  app.put<{ Params: { id: string } }>('/estimating/rates/:id/components', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'estimation.rate_library.manage');
+
+    const parsed = rateComponentsBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          replaceRateComponents(tx, {
+            rateItemId: request.params.id,
+            components: parsed.data.components,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof EstimationError || error instanceof BuildUpError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getRateDetail(tx, request.params.id)),
+    );
     if (!detail) return reply.code(404).send({ error: 'Rate not found.' });
     return detail;
   });

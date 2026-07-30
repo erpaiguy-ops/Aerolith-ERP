@@ -64,7 +64,7 @@ labelled parts, becomes scanned progress.
   from the workspace itself rather than a SQL client: filterable by entity type
   and action, searchable, attributed to a name and email, gated on its own
   `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
-- **975 tests**, including integration suites that prove tenant isolation holds and
+- **984 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -229,6 +229,8 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/procurement/requisitions/:id` | One requisition, with what it spends against and who acted on it |
 | `GET /api/v1/procurement/rfqs/:id` | One enquiry, its lines and every quote received, with the landed-cost comparison as last stored |
 | `GET /api/v1/estimating/rates/:id` | One rate, exploded into the components that price it, recomputed from the build-up rather than a stale cache |
+| `PATCH /api/v1/estimating/rates/:id` | Edit a rate's header — description, unit, category, overhead, margin |
+| `PUT /api/v1/estimating/rates/:id/components` | Replace a rate's whole build-up in one call — the save behind the spreadsheet-style grid |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |

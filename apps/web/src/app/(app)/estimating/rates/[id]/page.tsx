@@ -1,10 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { Badge, Card, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
+import { Badge, Card, Money, PageHeader, Stat } from '@/components/ui';
+import { can } from '@/lib/actions';
 import { ApiError, pageFetch } from '@/lib/api';
-import { money, percent, quantity } from '@/lib/format';
+import { money, percent } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+import { BuildUpGrid } from './BuildUpGrid';
 
 interface RateComponent {
   id: string;
@@ -35,6 +38,7 @@ interface RateDetail {
     isActive: boolean;
     lastActualCost: string | null;
     actualSampleSize: number;
+    updatedAt: string;
   };
   libraryCode: string;
   libraryName: string;
@@ -51,26 +55,17 @@ interface RateDetail {
   actualVariancePercent: number | null;
 }
 
-const TYPE_LABEL: Record<string, string> = {
-  material: 'material',
-  labour: 'labour',
-  machine: 'machine',
-  finishing: 'finishing',
-  hardware: 'hardware',
-  subcontract: 'subcontract',
-  transport: 'transport',
-  other: 'other',
-};
-
 /**
  * A rate, exploded into what actually prices it.
  *
- * Every cost figure here is RECOMPUTED from the components with the same
- * `calculateBuildUp` the rate list uses for its "assumed cost" column —
- * never read from `rate_item.direct_cost`, which nothing in the system keeps
- * in sync. `computedUnitRate` is shown next to the stored, committed
- * `unitRate` deliberately: the two are expected to agree, and a gap between
- * them means the build-up changed after the rate was priced.
+ * The build-up itself lives in `BuildUpGrid` — the app's one deliberately
+ * client-heavy surface, edited spreadsheet-style. Everything on this server
+ * page is initial data and context that does not change while editing: who
+ * this rate is, and how the currently-saved build-up has performed against
+ * real jobs. `computedUnitRate` is shown next to the stored, committed
+ * `unitRate` for exactly that reason — the two are expected to agree, and a
+ * gap between them means the build-up changed after the rate was last saved.
+ * Saving the grid closes that gap, since both are recomputed together.
  */
 export default async function RatePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -86,8 +81,10 @@ export default async function RatePage({ params }: { params: Promise<{ id: strin
 
   const { rateItem } = detail;
   const currency = detail.currencyCode ?? me.tenant.currencyCode;
+  const canManage = can(me.permissions, 'estimation.rate_library.manage') || me.user.isOwner;
   const variance = detail.actualVariancePercent;
-  const varianceTone = variance == null ? '' : variance < 0 ? 'text-(--color-bad)' : 'text-(--color-good)';
+  const varianceTone =
+    variance == null ? '' : variance < 0 ? 'text-(--color-bad)' : 'text-(--color-good)';
   const drift = Math.abs(detail.computedUnitRate - Number(rateItem.unitRate));
 
   return (
@@ -115,8 +112,9 @@ export default async function RatePage({ params }: { params: Promise<{ id: strin
 
       {drift > 0.01 ? (
         <p className="mb-4 rounded-md border border-(--color-line) bg-(--color-canvas) px-3 py-2 text-xs text-(--color-muted)">
-          The stored rate (<Money amount={rateItem.unitRate} currency={currency} />) and what the
-          build-up prices out to today (
+          The stored rate (
+          <Money amount={rateItem.unitRate} currency={currency} />) and what the build-up prices out
+          to today (
           <Money amount={detail.computedUnitRate} currency={currency} />) have drifted apart — a
           component changed since this rate was last committed.
         </p>
@@ -124,22 +122,9 @@ export default async function RatePage({ params }: { params: Promise<{ id: strin
 
       <Card className="mb-4">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Rate" value={<Money amount={rateItem.unitRate} currency={currency} />} />
           <Stat
-            label="Direct cost"
-            value={<Money amount={detail.directCost} currency={currency} />}
-          />
-          {detail.overheadCost > 0 ? (
-            <Stat
-              label="Overhead"
-              value={<Money amount={detail.overheadCost} currency={currency} />}
-              hint={rateItem.overheadPercent ? `${percent(rateItem.overheadPercent)}` : undefined}
-            />
-          ) : null}
-          <Stat
-            label="Margin"
-            value={percent(detail.effectiveMarginPercent)}
-            hint={`${percent(detail.effectiveMarkupPercent)} markup`}
+            label="Stored rate"
+            value={<Money amount={rateItem.unitRate} currency={currency} />}
           />
           <Stat
             label="Against actuals"
@@ -164,60 +149,15 @@ export default async function RatePage({ params }: { params: Promise<{ id: strin
         </div>
       </Card>
 
-      <Card title="Build-up">
-        <Table
-          head={
-            <tr>
-              <Th>#</Th>
-              <Th>Type</Th>
-              <Th>Component</Th>
-              <Th numeric>Qty / unit</Th>
-              <Th numeric>Rate</Th>
-              <Th numeric>Wastage</Th>
-              <Th numeric>Cost</Th>
-            </tr>
-          }
-        >
-          {detail.components.map((c) => (
-            <tr key={c.id}>
-              <Td>
-                <span className="numeric">{c.sequence}</span>
-              </Td>
-              <Td>
-                <Badge tone="neutral">{TYPE_LABEL[c.type] ?? c.type}</Badge>
-              </Td>
-              <Td>
-                <span className="block">{c.description ?? '—'}</span>
-                {c.itemCode ? (
-                  <span className="numeric block text-xs text-(--color-muted)">
-                    {`${c.itemCode} · ${c.itemName}`}
-                  </span>
-                ) : null}
-              </Td>
-              <Td numeric>{quantity(c.quantityPerUnit)}</Td>
-              <Td numeric>
-                <Money amount={c.unitRate} currency={currency} />
-              </Td>
-              <Td numeric>
-                {c.wastagePercent ? (
-                  percent(c.wastagePercent)
-                ) : (
-                  <span className="text-(--color-muted)">—</span>
-                )}
-              </Td>
-              <Td numeric>
-                <Money amount={c.grossCost} currency={currency} />
-                {c.wastageCost > 0 ? (
-                  <span className="block text-xs text-(--color-muted)">
-                    {`net `}
-                    <Money amount={c.netCost} currency={currency} />
-                  </span>
-                ) : null}
-              </Td>
-            </tr>
-          ))}
-        </Table>
-      </Card>
+      <BuildUpGrid
+        key={rateItem.updatedAt}
+        rateItemId={rateItem.id}
+        currency={currency}
+        canManage={canManage}
+        initialComponents={detail.components}
+        initialOverheadPercent={rateItem.overheadPercent}
+        initialMarginPercent={rateItem.marginPercent}
+      />
     </>
   );
 }

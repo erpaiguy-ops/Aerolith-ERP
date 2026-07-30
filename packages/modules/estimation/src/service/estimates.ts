@@ -27,6 +27,7 @@ import {
   calculateBuildUp,
   rollUp,
   type BuildUpComponent,
+  type ComponentType,
   type EstimateLine as DomainLine,
 } from '../domain/buildUp';
 
@@ -565,6 +566,178 @@ export async function getEstimateBillOfMaterials(tx: Transaction, estimateId: st
       quantity: round(quantity, 4),
     })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Rate library
+// ---------------------------------------------------------------------------
+
+/** Recomputes the cached `directCost`/`unitRate` from a rate's live components. */
+async function refreshRateItemCache(
+  tx: Transaction,
+  input: { rateItemId: string; overheadPercent: number | null; marginPercent: number | null },
+): Promise<void> {
+  const components = await tx
+    .select()
+    .from(rateComponent)
+    .where(eq(rateComponent.rateItemId, input.rateItemId))
+    .orderBy(asc(rateComponent.sequence));
+
+  const built = calculateBuildUp(
+    components.map((c) => ({
+      type: c.type,
+      description: c.description ?? undefined,
+      quantityPerUnit: Number(c.quantityPerUnit),
+      unitRate: Number(c.unitRate),
+      wastagePercent: c.wastagePercent == null ? undefined : Number(c.wastagePercent),
+    })),
+    {
+      overheadPercent: input.overheadPercent ?? undefined,
+      marginPercent: input.marginPercent ?? undefined,
+    },
+  );
+
+  // Not load-bearing — `getRateDetail` and `createEstimate` both recompute from
+  // the live components rather than trust this column. Kept in sync anyway,
+  // because it is the one place a rate with zero components still needs a
+  // number to fall back on.
+  await tx
+    .update(rateItem)
+    .set({
+      directCost: String(built.directCost),
+      unitRate: String(built.unitRate),
+      updatedAt: new Date(),
+    })
+    .where(eq(rateItem.id, input.rateItemId));
+}
+
+export interface UpdateRateItemInput {
+  description?: string;
+  uomCode?: string | null;
+  category?: string | null;
+  overheadPercent?: number | null;
+  marginPercent?: number | null;
+}
+
+/**
+ * Edits a rate's header — description, unit, category, overhead and margin.
+ *
+ * Does not touch anything already priced from this rate: `createEstimate`
+ * snapshots cost and rate onto the estimate line the moment it is created, so
+ * an edit here changes the basis of the NEXT tender priced from this rate, and
+ * nothing about the last one.
+ */
+export async function updateRateItem(
+  tx: Transaction,
+  input: { rateItemId: string } & UpdateRateItemInput,
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [existing] = await tx
+    .select()
+    .from(rateItem)
+    .where(and(eq(rateItem.tenantId, tenantId), eq(rateItem.id, input.rateItemId)));
+  if (!existing) throw new EstimationError('Rate not found.');
+
+  const overheadPercent =
+    input.overheadPercent !== undefined ? input.overheadPercent : numOrNull(existing.overheadPercent);
+  const marginPercent =
+    input.marginPercent !== undefined ? input.marginPercent : numOrNull(existing.marginPercent);
+
+  await tx
+    .update(rateItem)
+    .set({
+      description: input.description ?? existing.description,
+      uomCode: input.uomCode !== undefined ? input.uomCode : existing.uomCode,
+      category: input.category !== undefined ? input.category : existing.category,
+      overheadPercent: overheadPercent == null ? null : String(overheadPercent),
+      marginPercent: marginPercent == null ? null : String(marginPercent),
+      updatedAt: new Date(),
+    })
+    .where(eq(rateItem.id, input.rateItemId));
+
+  await refreshRateItemCache(tx, { rateItemId: input.rateItemId, overheadPercent, marginPercent });
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'estimation.rate_item',
+    entityId: input.rateItemId,
+    entityLabel: existing.code,
+    action: 'update',
+  });
+}
+
+export interface RateComponentInput {
+  type: ComponentType;
+  description?: string | null;
+  itemId?: string | null;
+  quantityPerUnit: number;
+  unitRate: number;
+  wastagePercent?: number | null;
+}
+
+/**
+ * Replaces a rate's entire build-up in one transaction — the save behind a
+ * spreadsheet-style grid, where the client holds every row and submits the
+ * whole sheet rather than one cell at a time.
+ *
+ * Sequence is assigned from array order, so reordering rows in the grid and
+ * saving is how a component's position changes; there is no separate "move"
+ * operation.
+ */
+export async function replaceRateComponents(
+  tx: Transaction,
+  input: { rateItemId: string; components: RateComponentInput[] },
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [existing] = await tx
+    .select()
+    .from(rateItem)
+    .where(and(eq(rateItem.tenantId, tenantId), eq(rateItem.id, input.rateItemId)));
+  if (!existing) throw new EstimationError('Rate not found.');
+
+  if (input.components.length === 0) {
+    throw new EstimationError(
+      'A rate needs at least one component — an empty build-up prices nothing.',
+    );
+  }
+
+  await tx
+    .delete(rateComponent)
+    .where(and(eq(rateComponent.tenantId, tenantId), eq(rateComponent.rateItemId, input.rateItemId)));
+
+  await tx.insert(rateComponent).values(
+    input.components.map((c, index) => ({
+      tenantId,
+      rateItemId: input.rateItemId,
+      sequence: index + 1,
+      type: c.type,
+      description: c.description ?? null,
+      itemId: c.itemId ?? null,
+      quantityPerUnit: String(c.quantityPerUnit),
+      unitRate: String(c.unitRate),
+      wastagePercent: c.wastagePercent == null ? null : String(c.wastagePercent),
+    })),
+  );
+
+  await refreshRateItemCache(tx, {
+    rateItemId: input.rateItemId,
+    overheadPercent: numOrNull(existing.overheadPercent),
+    marginPercent: numOrNull(existing.marginPercent),
+  });
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'estimation.rate_item',
+    entityId: input.rateItemId,
+    entityLabel: existing.code,
+    action: 'update',
+  });
+}
+
+function numOrNull(value: string | null): number | null {
+  return value == null ? null : Number(value);
 }
 
 function round(value: number, decimals: number): number {

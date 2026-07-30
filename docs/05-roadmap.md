@@ -1228,6 +1228,65 @@ build-up engine's whole reason for existing is that these are not the same
 number — and the actual-cost variance in red when a rate is quietly losing
 money against real jobs, exactly as the list page already flags it.
 
+### The rate build-up, as a spreadsheet
+
+The read-only rate screen above shipped first; immediately afterwards, the
+actual ask surfaced: rate analysis in this trade is done in CostX or Candy, and
+a report is not what "fill in and update a build-up" means to someone who
+estimates for a living. So the build-up got a second pass — the app's first
+genuinely client-side interactive surface — a grid where every row is a
+component, cells are click-to-edit, Tab moves along the row natively, Enter
+drops to the same column on the next row and adds one at the bottom of the
+sheet, and nothing is sent to the server until Save.
+
+Two write endpoints exist now where none did before: `PATCH
+/estimating/rates/:id` for the header (description, unit, category, overhead,
+margin) and `PUT /estimating/rates/:id/components`, which replaces the whole
+build-up in one call — the save behind the grid, because the client holds
+every row (added, edited, reordered, or deleted) and submits the sheet rather
+than one cell at a time. Sequence is assigned from array order, so reordering
+rows and saving is the only "move" operation there is.
+
+Three things worth knowing before touching this code:
+
+- **The live totals in the grid are a client-side mirror of
+  `calculateBuildUp`, not a call to it.** The web app has no dependency on the
+  estimation package — every page in it talks to the API as JSON only — so the
+  grid re-implements the same order of operations (wastage per component, then
+  overhead, then margin divides) in a few lines of plain arithmetic, purely for
+  responsive typing. The server recomputes for real with the actual domain
+  function on save, and a save remounts the grid (keyed on the rate's
+  `updatedAt`) with whatever the server actually computed, closing any float-
+  rounding gap between the two.
+- **A dedicated `rateComponentSchema` exists at the route separately from the
+  `componentSchema` used for estimate lines**, and the difference matters:
+  the estimate-line one uses `.optional()` for `description`/`wastagePercent`
+  (a freshly typed line either has the key or doesn't), while a spreadsheet
+  round-trips every row on every save, including the ones it fetched with a
+  `null` already in them. `.optional()` rejects an explicit `null`; only
+  `.nullish()` accepts both. Reusing the estimate-line schema here was the
+  first thing tried, and it 400'd every save that had a blank cell in it.
+- **`@/components/ui` and `@/lib/format` cannot be imported into a client
+  component.** Both reach `lib/locale`, which is marked `server-only` — the
+  same restriction the app's other client file, `Action.tsx`, already works
+  around with its own `<bdi>` instead of `ui.tsx`'s `Bidi`. The grid's money
+  and percent formatting is therefore a plain browser-locale
+  `Intl.NumberFormat`, not the tenant-locale-aware one the rest of the app
+  uses — an accepted, narrow gap, since this is a live preview while editing
+  and the authoritative, correctly-localised figures are what the page shows
+  once Save has run.
+
+Deliberately out of scope this round, by explicit agreement rather than
+oversight: pasting multiple rows from an actual Excel/CostX export (real extra
+work — clipboard parsing, fanning a paste across rows and columns — left for a
+later pass), and editing many rates at once as a single workbook (this grid is
+one rate's build-up at a time). Linking a new material row to a real stock
+item also has no picker yet — existing links round-trip untouched on save, but
+a row added in the grid prices without one, which means it will not explode
+into a production BOM the way a rate built the old way does. Whoever adds that
+should reuse the item search that estimate-line entry already has, rather than
+inventing a second one.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

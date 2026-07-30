@@ -33,11 +33,15 @@ export {
   getEstimateBillOfMaterials,
   recordBidDecision,
   recordOutcome,
+  replaceRateComponents,
   submitEstimate,
+  updateRateItem,
   type CreateEstimateInput,
   type CreateEstimateResult,
   type CreateTenderInput,
   type EstimateLineInput,
+  type RateComponentInput,
+  type UpdateRateItemInput,
 } from './service/estimates';
 
 export {

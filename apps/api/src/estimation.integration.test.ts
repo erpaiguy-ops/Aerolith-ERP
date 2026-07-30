@@ -903,6 +903,170 @@ suite('Estimation', () => {
     });
   });
 
+  describe('editing a rate build-up', () => {
+    let editableRateId: string;
+
+    it('creates a rate with one component, to edit', async () => {
+      const [row] = await getDatabase()
+        .insert(estimationSchema.rateItem)
+        .values({
+          tenantId: TENANT,
+          libraryId,
+          code: 'EDIT-ME',
+          description: 'Rate under test',
+          uomCode: 'NR',
+        })
+        .returning({ id: estimationSchema.rateItem.id });
+      editableRateId = row!.id;
+
+      await getDatabase()
+        .insert(estimationSchema.rateComponent)
+        .values({
+          tenantId: TENANT,
+          rateItemId: editableRateId,
+          sequence: 1,
+          type: 'material',
+          description: 'Starting component',
+          quantityPerUnit: '1',
+          unitRate: '10',
+        });
+    });
+
+    it('edits the header — overhead and margin — like a spreadsheet cell', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/estimating/rates/${editableRateId}`,
+        headers: auth(),
+        payload: { overheadPercent: 10, marginPercent: 20 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      // directCost 10, +10% overhead = 11 total cost.
+      expect(body.totalCost).toBeCloseTo(11, 4);
+      // 11 / (1 - 0.20) = 13.75 — margin divides, it does not multiply.
+      expect(body.computedUnitRate).toBeCloseTo(13.75, 4);
+    });
+
+    it('refuses a header edit without the manage permission', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/estimating/rates/${editableRateId}`,
+        headers: auth(ESTIMATOR_TOKEN),
+        payload: { description: 'Not allowed' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('refuses a component replace without the manage permission', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/estimating/rates/${editableRateId}/components`,
+        headers: auth(ESTIMATOR_TOKEN),
+        payload: {
+          components: [{ type: 'material', quantityPerUnit: 1, unitRate: 1 }],
+        },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('replaces the whole build-up in one call — the grid save', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/estimating/rates/${editableRateId}/components`,
+        headers: auth(),
+        payload: {
+          components: [
+            {
+              type: 'material',
+              description: 'Board',
+              quantityPerUnit: 2,
+              unitRate: 50,
+              wastagePercent: 10,
+            },
+            { type: 'labour', description: 'Fit', quantityPerUnit: 1, unitRate: 40 },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.components).toHaveLength(2);
+      // (2 x 50 x 1.10 = 110) + 40 = 150. The old single component is gone.
+      expect(body.directCost).toBeCloseTo(150, 4);
+
+      const rows = await getDatabase()
+        .select()
+        .from(estimationSchema.rateComponent)
+        .where(eq(estimationSchema.rateComponent.rateItemId, editableRateId));
+      expect(rows).toHaveLength(2);
+    });
+
+    it('keeps the cached rate_item columns in sync, for the zero-component fallback', async () => {
+      const [row] = await getDatabase()
+        .select()
+        .from(estimationSchema.rateItem)
+        .where(eq(estimationSchema.rateItem.id, editableRateId));
+
+      expect(Number(row!.directCost)).toBeCloseTo(150, 4);
+    });
+
+    it('accepts null for description and wastage — what a grid sends for a blank cell', async () => {
+      // The grid round-trips every row on every save, including ones with a
+      // blank description or no wastage set, and it sends null rather than
+      // omitting the key. A plain `.optional()` schema (fine for a freshly
+      // typed estimate line) rejects that; this rate route needs `.nullish()`.
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/estimating/rates/${editableRateId}/components`,
+        headers: auth(),
+        payload: {
+          components: [
+            {
+              type: 'material',
+              description: null,
+              quantityPerUnit: 3,
+              unitRate: 20,
+              wastagePercent: null,
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().directCost).toBeCloseTo(60, 4);
+    });
+
+    it('refuses an empty build-up — nothing to price', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/estimating/rates/${editableRateId}/components`,
+        headers: auth(),
+        payload: { components: [] },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('404s a component replace on a rate id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/estimating/rates/00000000-0000-4000-8000-000000000000/components',
+        headers: auth(),
+        payload: {
+          components: [{ type: 'material', quantityPerUnit: 1, unitRate: 1 }],
+        },
+      });
+
+      // The service raises EstimationError, which this route reports as a
+      // conflict rather than a not-found — consistent with every other
+      // mutation in this module.
+      expect(response.statusCode).toBe(409);
+    });
+  });
+
   describe('the registers', () => {
     it('pages tenders, soonest deadline first', async () => {
       const response = await app.inject({
