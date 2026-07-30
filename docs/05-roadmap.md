@@ -1390,6 +1390,37 @@ Two decisions worth carrying forward:
   is real work that belongs in the web app once a screen actually needs it,
   not built speculatively into a kernel service.
 
+### Parties: the register nothing could reach
+
+The gap this time was not a schema nobody read — it was starker than that.
+`kernel.party` backs `clientPartyId` on a tender, `supplierId` on a quote,
+every "who is this for" field across five modules, all of them resolving a
+name through a join. Nothing in the API could create one, list them, read
+one back, or edit one. A tenant's suppliers and clients existed only as rows
+someone put there directly in Postgres — there was no register at all,
+which is a different and more basic gap than "no detail screen for an
+existing list" every earlier entry in this log was closing.
+
+`packages/kernel/src/masterdata/service.ts` is the register: `createParty`/
+`updateParty`/`listParties`/`getPartyDetail`, plus contacts
+(`addPartyContact`/`removePartyContact`, with a party model borrowed
+directly from the schema's own comment — one table with role flags rather
+than separate customer/supplier tables, because the same company is
+routinely a client on one job and a subcontractor on another, and splitting
+them guarantees duplicate records). Blocking a party requires a reason for
+the same reason retiring a workflow step does elsewhere: it stops every
+module trading with them, and a reason-less toggle on a control with that
+much reach is the kind of thing nobody can explain six months later.
+
+Party was also the second entity — after project — to get a custom fields
+value editor, which is why `setPartyCustomFields` lives in the kernel's own
+masterdata service rather than a module: `party` has no owning module to
+put it in, the same reason `party` itself lives in the kernel rather than
+Procurement or Estimating. That leaves `item` as the one entity in the
+original three (`party`, `item`, `project`) still without a value editor —
+it already has a list page, so wiring it in is a smaller step than either
+of the previous two, and a natural next one.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

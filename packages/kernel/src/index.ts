@@ -234,6 +234,27 @@ export {
   validateCustomFieldValues,
 } from './customfields/service';
 
+// Master data — parties
+export {
+  type AddPartyContactInput,
+  type CreatePartyInput,
+  type PartyContactRow,
+  type PartyDetail,
+  type PartyListRow,
+  type PartyRole,
+  type PartySort,
+  type UpdatePartyInput,
+  MasterDataError,
+  PARTY_SORTS,
+  addPartyContact,
+  createParty,
+  getPartyDetail,
+  listParties,
+  removePartyContact,
+  setPartyCustomFields,
+  updateParty,
+} from './masterdata/service';
+
 // Authentication
 export {
   type ParsedHash,

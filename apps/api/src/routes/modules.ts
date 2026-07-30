@@ -87,6 +87,24 @@ export async function moduleRoutes(app: FastifyInstance) {
           path: '/notifications',
           order: 1,
         },
+        /*
+         * Parties are kernel master data every module already joins against —
+         * a client, a supplier, a subcontractor — and unlike Approvals and
+         * Notifications this DOES need a permission: reading and editing
+         * shared reference data is exactly the kind of thing a shop-floor
+         * scanner user should not see a menu for.
+         */
+        ...(principal.isOwner || permissions.has('kernel.master_data.read')
+          ? [
+              {
+                key: 'kernel.master_data.parties',
+                label: 'Parties',
+                icon: 'building',
+                path: '/master-data/parties',
+                order: 2,
+              },
+            ]
+          : []),
         ...navigationFor(modules, permissions),
         /*
          * Settings, likewise a kernel capability with no manifest. Last, at a

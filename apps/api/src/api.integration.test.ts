@@ -91,6 +91,8 @@ suite('API', () => {
   afterAll(async () => {
     const db = getDatabase();
     const tenants = [TENANT_FULL, TENANT_SOLO];
+    await db.delete(schema.partyContact).where(inArray(schema.partyContact.tenantId, tenants));
+    await db.delete(schema.party).where(inArray(schema.party.tenantId, tenants));
     await db.delete(schema.tenantRequirement).where(inArray(schema.tenantRequirement.tenantId, tenants));
     await db.delete(schema.tenantTaxCode).where(inArray(schema.tenantTaxCode.tenantId, tenants));
     await db.delete(schema.tenantHoliday).where(inArray(schema.tenantHoliday.tenantId, tenants));
@@ -193,11 +195,12 @@ suite('API', () => {
 
       const body = response.json();
       expect(body.modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
-      // The kernel approvals and notifications sections sit above every
-      // module, so the first MODULE entry is the third item.
+      // The kernel approvals, notifications and master-data sections sit
+      // above every module, so the first MODULE entry is the fourth item.
       expect(body.navigation[0].key).toBe('kernel.approvals');
       expect(body.navigation[1].key).toBe('kernel.notifications');
-      expect(body.navigation[2].key).toBe('inventory');
+      expect(body.navigation[2].key).toBe('kernel.master_data.parties');
+      expect(body.navigation[3].key).toBe('inventory');
       expect(body.unavailableModules).toEqual([]);
     });
 
@@ -837,6 +840,188 @@ suite('API', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('parties', () => {
+    let partyId: string;
+
+    it('creates a party holding two roles at once', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/parties',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          code: 'EMAAR',
+          name: 'Emaar Properties PJSC',
+          isCustomer: true,
+          isConsultant: true,
+          countryCode: 'AE',
+          email: 'contracts@emaar.test',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      partyId = response.json().id;
+    });
+
+    it('refuses a code already in use', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/parties',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'EMAAR', name: 'Duplicate', isCustomer: true },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a party with no role at all', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/parties',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'NOBODY', name: 'Has no role' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/at least one role/);
+    });
+
+    it('lists parties, searchable and filterable by role', async () => {
+      const all = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/parties',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(all.json().rows.some((r: { code: string }) => r.code === 'EMAAR')).toBe(true);
+
+      const searched = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/parties?q=emaar',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(searched.json().total).toBe(1);
+
+      const wrongRole = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/parties?role=supplier&q=emaar',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(wrongRole.json().total).toBe(0);
+    });
+
+    it('reads one party back with its contacts', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.party.code).toBe('EMAAR');
+      expect(body.contacts).toEqual([]);
+    });
+
+    it('404s a party id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${randomUUID()}`,
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('adds a contact, and a second primary demotes the first', async () => {
+      const first = await app.inject({
+        method: 'POST',
+        url: `/api/v1/master-data/parties/${partyId}/contacts`,
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Fatima Al Suwaidi', jobTitle: 'Contracts Manager', isPrimary: true },
+      });
+      expect(first.statusCode).toBe(200);
+
+      const second = await app.inject({
+        method: 'POST',
+        url: `/api/v1/master-data/parties/${partyId}/contacts`,
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Omar Khalil', jobTitle: 'Quantity Surveyor', isPrimary: true },
+      });
+      expect(second.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+      });
+      const contacts = detail.json().contacts as { name: string; isPrimary: boolean }[];
+      expect(contacts).toHaveLength(2);
+      expect(contacts.find((c) => c.name === 'Omar Khalil')!.isPrimary).toBe(true);
+      expect(contacts.find((c) => c.name === 'Fatima Al Suwaidi')!.isPrimary).toBe(false);
+    });
+
+    it('removes a contact', async () => {
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+      });
+      const contactId = detail.json().contacts[0].id;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/master-data/parties/${partyId}/contacts/${contactId}/remove`,
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(response.statusCode).toBe(200);
+
+      const after = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(after.json().contacts).toHaveLength(1);
+    });
+
+    it('requires a reason to block a party — it stops every module trading with them', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isBlocked: true },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('blocks a party with a reason', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isBlocked: true, blockReason: 'Two overdue invoices, on hold pending finance review.' },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${partyId}`,
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(detail.json().party.isBlocked).toBe(true);
+    });
+
+    it('refuses a non-owner with no master-data permission', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/parties',
+        headers: auth(STAFF_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
     });
   });
 
