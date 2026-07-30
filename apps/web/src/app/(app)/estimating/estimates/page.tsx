@@ -136,7 +136,12 @@ export default async function EstimatesPage({
                     </span>
                   </Td>
                   <Td>
-                    <span className="numeric block">v{row.version}</span>
+                    <Link
+                      href={`/estimating/estimates/${row.id}`}
+                      className="numeric block text-(--color-accent) hover:underline"
+                    >
+                      v{row.version}
+                    </Link>
                     <span className="text-xs text-(--color-muted)">{row.label}</span>
                   </Td>
                   <Td>

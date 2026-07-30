@@ -1122,6 +1122,25 @@ be a screen for a user who does not exist. A `Cutting plan v1 →` link appears
 the moment one has been planned, so the drawing is one click from the order it
 belongs to rather than a search through the register.
 
+### An estimate you can read past the total
+
+Same gap, one module over: `GET /estimating/estimates/:id` returned the bare
+`estimate` row plus its lines — a `tenderId` with nothing a person could read
+next to it, exactly like the work order before this entry. Fixed the same way,
+at the route: the query now joins the tender's number, name, status and client,
+so the header can say "Business Bay lobby and lift lobbies · Emaar Properties
+PJSC" instead of two ids.
+
+Cost and margin redaction, which already existed in this route, is untouched —
+`estimation.margin.view` is a separate permission from reading an estimate, and
+the screen says so in a sentence rather than rendering columns that quietly
+disappear. **Raise work order** appears only once the tender the estimate
+belongs to is actually won and Production is bought; **Submit as bid** only
+while the estimate is still a draft. Neither button asks a commercial user a
+production-planning question — no routing or project picker, because the
+person converting a bid to a job is not the person who should be assigning it
+to a saw.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

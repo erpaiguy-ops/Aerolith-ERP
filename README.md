@@ -64,7 +64,7 @@ labelled parts, becomes scanned progress.
   from the workspace itself rather than a SQL client: filterable by entity type
   and action, searchable, attributed to a name and email, gated on its own
   `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
-- **964 tests**, including integration suites that prove tenant isolation holds and
+- **965 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

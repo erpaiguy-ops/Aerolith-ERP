@@ -297,8 +297,29 @@ export async function estimationRoutes(app: FastifyInstance) {
     return withPrincipal(principal, () =>
       withTenant(async (tx) => {
         const [row] = await tx
-          .select()
+          .select({
+            estimate: estimationSchema.estimate,
+            tenderNumber: estimationSchema.tender.number,
+            tenderName: estimationSchema.tender.name,
+            tenderStatus: estimationSchema.tender.status,
+            clientName: schema.party.name,
+            currencyCode: estimationSchema.tender.currencyCode,
+          })
           .from(estimationSchema.estimate)
+          .innerJoin(
+            estimationSchema.tender,
+            and(
+              eq(estimationSchema.tender.id, estimationSchema.estimate.tenderId),
+              eq(estimationSchema.tender.tenantId, principal.context.tenantId),
+            ),
+          )
+          .leftJoin(
+            schema.party,
+            and(
+              eq(schema.party.id, estimationSchema.tender.clientPartyId),
+              eq(schema.party.tenantId, principal.context.tenantId),
+            ),
+          )
           .where(
             and(
               eq(estimationSchema.estimate.tenantId, principal.context.tenantId),
@@ -308,17 +329,19 @@ export async function estimationRoutes(app: FastifyInstance) {
           .limit(1);
 
         if (!row) return reply.code(404).send({ error: 'Estimate not found.' });
+        const { estimate, ...meta } = row;
 
         const lines = await tx
           .select()
           .from(estimationSchema.estimateLine)
-          .where(eq(estimationSchema.estimateLine.estimateId, row.id))
+          .where(eq(estimationSchema.estimateLine.estimateId, estimate.id))
           .orderBy(asc(estimationSchema.estimateLine.lineNumber));
 
         return {
+          ...meta,
           estimate: canSeeMargin
-            ? row
-            : { ...row, totalCost: undefined, marginPercent: undefined },
+            ? estimate
+            : { ...estimate, totalCost: undefined, marginPercent: undefined },
           lines: canSeeMargin
             ? lines
             : lines.map((l) => ({ ...l, unitCost: undefined, lineCost: undefined })),

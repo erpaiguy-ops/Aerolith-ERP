@@ -459,6 +459,26 @@ suite('Estimation', () => {
       expect(response.json().estimate.totalCost).toBeDefined();
     });
 
+    it('names the tender the estimate belongs to, not just its id', async () => {
+      // A detail screen built on the bare `estimate` row has a `tenderId` and
+      // nothing a person could read next to it.
+      const tender = await newTender('Souk Al Bahar villas');
+      const created = (await priceIt(tender.tenderId)).json();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/estimating/estimates/${created.estimateId}`,
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.tenderNumber).toBe(tender.number);
+      expect(body.tenderName).toBe('Souk Al Bahar villas');
+      expect(body.currencyCode).toBe('AED');
+      // No client party was set on this tender.
+      expect(body.clientName).toBeNull();
+    });
+
     it('refuses scenario analysis to a user who cannot see margin', async () => {
       const tender = await newTender();
       const created = (await priceIt(tender.tenderId)).json();
