@@ -37,6 +37,7 @@ import {
   createRfq,
   getOrderPosition,
   getRequisitionDetail,
+  getRfqDetail,
   issuePurchaseOrder,
   linkCommitment,
   linkReceiptPostings,
@@ -415,6 +416,19 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
     return handle(reply, () =>
       withPrincipal(principal, () => withTenant((tx) => createRfq(tx, parsed.data))),
     );
+  });
+
+  app.get('/procurement/rfqs/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'procurement.rfq.read');
+
+    const { id } = request.params as { id: string };
+
+    const detail = await withPrincipal(principal, () => withTenant((tx) => getRfqDetail(tx, id)));
+
+    if (!detail) return reply.code(404).send({ error: 'RFQ not found.' });
+    return detail;
   });
 
   app.post('/procurement/rfqs/:id/quotes', async (request, reply) => {

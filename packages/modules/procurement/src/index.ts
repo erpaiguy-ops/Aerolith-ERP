@@ -83,4 +83,12 @@ export {
   type RfqComparison,
 } from './service/purchasing';
 
-export { RFQ_SORTS, listRfqs, type RfqListRow } from './service/rfq-register';
+export {
+  RFQ_SORTS,
+  getRfqDetail,
+  listRfqs,
+  type RfqDetail,
+  type RfqListRow,
+  type RfqLineRow,
+  type RfqQuoteRow,
+} from './service/rfq-register';

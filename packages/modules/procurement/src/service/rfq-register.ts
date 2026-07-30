@@ -171,3 +171,101 @@ export async function listRfqs(
 
   return listResult(rows, counted?.total ?? 0, params);
 }
+
+export interface RfqLineRow {
+  id: string;
+  lineNumber: number;
+  description: string;
+  specification: string | null;
+  quantity: string;
+  uomCode: string | null;
+}
+
+export interface RfqQuoteRow {
+  id: string;
+  supplierId: string;
+  supplierName: string | null;
+  status: string;
+  reference: string | null;
+  receivedOn: string | null;
+  leadTimeDays: number | null;
+  /** Set once `compareRfqLine` has run against this quote; null until then. */
+  landedCost: string | null;
+  effectiveUnitCost: string | null;
+  premiumOverBest: string | null;
+  comparedAt: string | null;
+}
+
+export interface RfqDetail {
+  rfq: typeof rfq.$inferSelect;
+  projectCode: string | null;
+  projectName: string | null;
+  lines: RfqLineRow[];
+  quotes: RfqQuoteRow[];
+}
+
+/**
+ * One enquiry, with its lines and every quote received against it.
+ *
+ * `landedCost`/`effectiveUnitCost`/`premiumOverBest` are shown exactly as
+ * `compareRfqLine` last stored them — this does not recompute the comparison,
+ * because a past figure that silently restated itself as exchange rates moved
+ * is the one thing an awarded RFQ must not do. A quote with `comparedAt: null`
+ * has not been run through the comparison yet.
+ */
+export async function getRfqDetail(tx: Transaction, rfqId: string): Promise<RfqDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select({
+      rfq,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+    })
+    .from(rfq)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, rfq.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(and(eq(rfq.tenantId, tenantId), eq(rfq.id, rfqId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const lines = await tx
+    .select({
+      id: rfqLine.id,
+      lineNumber: rfqLine.lineNumber,
+      description: rfqLine.description,
+      specification: rfqLine.specification,
+      quantity: rfqLine.quantity,
+      uomCode: rfqLine.uomCode,
+    })
+    .from(rfqLine)
+    .where(eq(rfqLine.rfqId, rfqId))
+    .orderBy(asc(rfqLine.lineNumber));
+
+  const quotes = await tx
+    .select({
+      id: quote.id,
+      supplierId: quote.supplierId,
+      supplierName: schema.party.name,
+      status: quote.status,
+      reference: quote.reference,
+      receivedOn: sql<string | null>`${quote.receivedOn}`,
+      leadTimeDays: quote.leadTimeDays,
+      landedCost: quote.landedCost,
+      effectiveUnitCost: quote.effectiveUnitCost,
+      premiumOverBest: quote.premiumOverBest,
+      comparedAt: sql<string | null>`${quote.comparedAt}`,
+    })
+    .from(quote)
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, quote.supplierId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(eq(quote.rfqId, rfqId))
+    .orderBy(asc(quote.createdAt));
+
+  return { ...row, lines, quotes };
+}

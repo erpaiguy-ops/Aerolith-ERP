@@ -1176,6 +1176,30 @@ requisition is reversible in the sense that matters, and a confirmation
 dialogue on a routine authorisation only trains people to click through
 dialogues.
 
+### The last detail screen — an enquiry, with every quote received
+
+The fifth and last of the "endpoint exists or not, screen never built" list.
+No endpoint read a single RFQ before this one either — `getRfqDetail` resolves
+the project and every supplier by name across the quotes received.
+
+Landed cost, effective unit cost and the premium over the best quote are shown
+exactly as `compareRfqLine` last stored them on the quote row, not recomputed
+on this page. That is deliberate and matches the API's own comment on the
+comparison endpoint: it is a GET that writes, storing the ranking so an award
+can be explained later, and a figure that silently restated itself as exchange
+rates moved is the one thing an awarded RFQ must not do. A quote with no
+`comparedAt` says "not compared yet" rather than a blank or a zero — running
+that comparison is still an API-only action in this iteration; a full landed-
+cost picker with a country selector is a screen in itself and did not fit this
+entry. Award is the one action offered: pick the winning quote, and give a
+reason if it is not the cheapest — the same rule `awardRfq` already enforces.
+
+That closes the batch: work order, estimate, tender, requisition, RFQ — five
+screens, all following the same shape (join the ids the detail endpoint
+returned bare, then build the page), and all five gaps traced back to the
+same root cause: a `GET /:id` either did not resolve names at all, or did not
+exist.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

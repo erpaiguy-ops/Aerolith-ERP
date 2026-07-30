@@ -552,6 +552,39 @@ suite('Procurement', () => {
       expect(Number(row!.exchangeRate)).toBe(4);
     });
 
+    it('reads the RFQ back with both quotes named and their stored comparison', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/procurement/rfqs/${rfqId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.rfq.title).toBe('Carcass MDF');
+      expect(body.projectCode).toBe('P-2026-100');
+      expect(body.lines).toHaveLength(1);
+      expect(body.lines[0].description).toBe('18mm MDF 2440x1220');
+
+      const gulf = body.quotes.find((q: { id: string }) => q.id === gulfQuoteId);
+      const italy = body.quotes.find((q: { id: string }) => q.id === italyQuoteId);
+      expect(gulf.supplierName).toBe('Gulf Panels Trading');
+      expect(italy.supplierName).toBe('Lombardia Legno SRL');
+      // The comparison is served as it was stored, not recomputed.
+      expect(Number(italy.landedCost)).toBe(15_360);
+    });
+
+    it('404s an rfq id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/rfqs/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
     it('refuses an off-lowest award with no recorded reason', async () => {
       const response = await app.inject({
         method: 'POST',
