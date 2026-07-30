@@ -8,10 +8,11 @@
  * details must not be reconstructable from the audit trail, which would
  * otherwise become the easiest way around field-level permissions.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm';
 
 import { type Transaction } from '../db';
-import { auditLog, type auditAction } from '../db/schema';
+import { appUser, auditLog, type auditAction } from '../db/schema';
+import { listResult, searchPattern, type ListParams, type ListResult } from '../db/list';
 import { getTenantContext, requireTenantContext } from '../tenancy/context';
 
 export type AuditAction = (typeof auditAction.enumValues)[number];
@@ -191,6 +192,139 @@ export async function actorActivity(
     )
     .orderBy(desc(auditLog.occurredAt))
     .limit(input.limit ?? 500);
+}
+
+export const AUDIT_LOG_SORTS = ['occurredAt'] as const;
+export type AuditLogSort = (typeof AUDIT_LOG_SORTS)[number];
+
+export interface AuditLogRow {
+  id: string;
+  occurredAt: Date;
+  actorId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  actorType: string;
+  moduleKey: string | null;
+  entityType: string;
+  entityId: string | null;
+  entityLabel: string | null;
+  action: AuditAction;
+  changes: Record<string, FieldChange> | null;
+  redactedFields: string[] | null;
+  reason: string | null;
+}
+
+export interface AuditLogFilters {
+  entityType?: string;
+  action?: AuditAction;
+  actorId?: string;
+}
+
+/**
+ * The audit trail as a whole — filtered, searched and paged. This is the query
+ * an investigation actually starts from: "what happened in this workspace
+ * recently", not "what happened to this one record" (`entityHistory`) or "what
+ * did this one person do" (`actorActivity`), both of which need a specific ID
+ * in hand before they are useful.
+ *
+ * `changes` is returned as written: redaction already happened in
+ * `recordAudit`, so there is nothing sensitive left to filter out here.
+ */
+export async function listAuditEvents(
+  tx: Transaction,
+  params: ListParams<AuditLogSort>,
+  filters: AuditLogFilters = {},
+): Promise<ListResult<AuditLogRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(auditLog.tenantId, tenantId)];
+  if (filters.entityType) conditions.push(eq(auditLog.entityType, filters.entityType));
+  if (filters.action) conditions.push(eq(auditLog.action, filters.action));
+  if (filters.actorId) conditions.push(eq(auditLog.actorId, filters.actorId));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(auditLog.entityLabel, pattern),
+        ilike(appUser.name, pattern),
+        ilike(appUser.email, pattern),
+        ilike(auditLog.reason, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const rows = await tx
+    .select({
+      id: auditLog.id,
+      occurredAt: auditLog.occurredAt,
+      actorId: auditLog.actorId,
+      actorName: appUser.name,
+      actorEmail: appUser.email,
+      actorType: auditLog.actorType,
+      moduleKey: auditLog.moduleKey,
+      entityType: auditLog.entityType,
+      entityId: auditLog.entityId,
+      entityLabel: auditLog.entityLabel,
+      action: auditLog.action,
+      changes: auditLog.changes,
+      redactedFields: auditLog.redactedFields,
+      reason: auditLog.reason,
+    })
+    .from(auditLog)
+    .leftJoin(appUser, eq(appUser.id, auditLog.actorId))
+    .where(where)
+    .orderBy(
+      params.direction === 'asc' ? asc(auditLog.occurredAt) : desc(auditLog.occurredAt),
+      asc(auditLog.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(auditLog)
+    .leftJoin(appUser, eq(appUser.id, auditLog.actorId))
+    .where(where);
+
+  return listResult(rows, counted?.total ?? 0, params);
+}
+
+/**
+ * Every entity type this tenant's audit trail actually contains, over the
+ * WHOLE trail rather than the current filter — the same reason the
+ * localisation rules screen computes its domain list unfiltered: a filter's
+ * own options must not disappear once it is applied.
+ */
+export async function listAuditEntityTypes(tx: Transaction): Promise<string[]> {
+  const { tenantId } = requireTenantContext();
+
+  const rows = await tx
+    .selectDistinct({ entityType: auditLog.entityType })
+    .from(auditLog)
+    .where(eq(auditLog.tenantId, tenantId))
+    .orderBy(asc(auditLog.entityType));
+
+  return rows.map((row) => row.entityType);
+}
+
+/**
+ * Every action actually recorded, for the same reason: `audit_action` has
+ * fourteen values, and a tenant whose modules only ever create/update/delete
+ * should not be offered ten dead filter chips for actions nothing has done.
+ */
+export async function listAuditActions(tx: Transaction): Promise<AuditAction[]> {
+  const { tenantId } = requireTenantContext();
+
+  const rows = await tx
+    .selectDistinct({ action: auditLog.action })
+    .from(auditLog)
+    .where(eq(auditLog.tenantId, tenantId))
+    .orderBy(asc(auditLog.action));
+
+  return rows.map((row) => row.action);
 }
 
 /** Best-effort audit that never breaks the operation it is recording. */

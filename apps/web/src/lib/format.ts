@@ -146,6 +146,25 @@ export function date(value: string | Date | null | undefined, locale = currentLo
 }
 
 /**
+ * A date with the time of day, for records where several can land on the same
+ * day and the order between them is the point — an audit trail entry, most of
+ * all.
+ */
+export function datetime(value: string | Date | null | undefined, locale = currentLocale()): string {
+  if (!value) return '—';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  }).format(d);
+}
+
+/**
  * Whether a figure should read as good, bad or neutral.
  *
  * Centralised because the sign convention is not obvious and gets inverted

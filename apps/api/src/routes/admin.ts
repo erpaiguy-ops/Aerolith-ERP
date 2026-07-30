@@ -10,11 +10,16 @@
  * now had never been checked anywhere, because nothing asked for them.
  */
 import {
+  AUDIT_LOG_SORTS,
   MemberError,
   addMember,
   createRole,
+  listAuditActions,
+  listAuditEntityTypes,
+  listAuditEvents,
   listMembers,
   listRoles,
+  parseListParams,
   schema,
   setMemberRoles,
   setMemberStatus,
@@ -26,6 +31,19 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import { authenticate, requirePermission, withPrincipal } from '../context';
+
+interface AuditQuery {
+  page?: string;
+  pageSize?: string;
+  sort?: string;
+  direction?: string;
+  q?: string;
+  entityType?: string;
+  action?: string;
+  actorId?: string;
+}
+
+const AUDIT_ACTIONS = new Set(schema.auditAction.enumValues as readonly string[]);
 
 const memberBody = z.object({
   email: z.string().email(),
@@ -225,6 +243,44 @@ export async function adminRoutes(app: FastifyInstance) {
 
         return { permissions };
       }),
+    );
+  });
+
+  // --- Audit trail ---------------------------------------------------------
+
+  /**
+   * The audit trail, browsable rather than merely written.
+   *
+   * `entityHistory`/`actorActivity` in the kernel have existed since the first
+   * migration and every mutation across five modules already calls
+   * `recordAudit` — the table is full. Nothing before this route could read it
+   * back except a raw SQL client.
+   */
+  app.get<{ Querystring: AuditQuery }>('/admin/audit', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.audit.read');
+
+    const action =
+      request.query.action && AUDIT_ACTIONS.has(request.query.action)
+        ? (request.query.action as (typeof schema.auditAction.enumValues)[number])
+        : undefined;
+
+    const params = parseListParams(request.query, {
+      sortable: AUDIT_LOG_SORTS,
+      defaultSort: 'occurredAt',
+      defaultDirection: 'desc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => ({
+        ...(await listAuditEvents(tx, params, {
+          entityType: request.query.entityType,
+          action,
+          actorId: request.query.actorId,
+        })),
+        entityTypes: await listAuditEntityTypes(tx),
+        actions: await listAuditActions(tx),
+      })),
     );
   });
 }

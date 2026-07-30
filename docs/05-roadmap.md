@@ -1064,6 +1064,43 @@ inside `'use server'` functions in page files. `pageFetch` turns a refusal into
 catches and reports as "something went wrong" — losing the real message. Those
 are back on `apiFetch`, which is what returns a message.
 
+### A trail that could be recorded but not read
+
+`recordAudit` has been called from every mutation across five modules — projects,
+estimation, production, inventory, procurement, contracts — since each of them was
+built. `kernel.audit_log` is append-only, redacts salary/passport/bank fields
+before a row is written, and has been filling up the whole time. Nothing could
+read it back except a database client with the owner credential, which is a
+strange place for "who approved this variation" to live.
+
+`entityHistory` (one entity) and `actorActivity` (one actor, already known) were
+the only queries the kernel offered, and both need an ID in hand before they are
+useful — neither answers "what happened in this workspace recently", which is
+where an actual investigation starts. `listAuditEvents` does: tenant-scoped,
+paged through the same `parseListParams`/`ListResult` machinery every other list
+endpoint uses, filterable by entity type and action, searchable across the actor's
+name, email, the entity's label and the recorded reason.
+
+The two filter chip rows — entity type, action — are populated from what the
+tenant's trail actually contains (`listAuditEntityTypes`, `listAuditActions`), not
+from the full fourteen-value `audit_action` enum. A tenant whose modules only ever
+create, update and delete should not be offered ten dead chips for actions nothing
+has done, and the count is taken **unfiltered**, the same rule the localisation
+rules screen's domain list follows — a filter's own other options must not
+disappear once it is applied.
+
+`changes` is returned exactly as it was written. Redaction already happened in
+`recordAudit`, so a redacted field renders `[redacted]` on this screen because
+that is genuinely what the database holds — there is nothing further to hide at
+read time, and nothing further that could leak even if there were.
+
+Gated on `kernel.audit.read`, a permission the catalogue has declared since the
+first migration and nothing had ever checked. New in this entry: an integration
+test that signs in as the site engineer role from the delivery narrative — three
+`projects.*` permissions, nothing from `kernel` — and confirms the endpoint
+actually refuses it, which is the first thing in the whole suite to exercise that
+omission.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

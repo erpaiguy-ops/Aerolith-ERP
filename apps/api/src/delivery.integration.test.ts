@@ -1533,4 +1533,77 @@ it('lists variations with the notice clock resolved per row', async () => {
       }
     });
   });
+
+  describe('9 — the audit trail', () => {
+    it('reads back what every earlier section actually did', async () => {
+      // Nothing in this suite has read `audit_log` before now — every mutation
+      // in sections 1-8 called `recordAudit` on its way past, and this is the
+      // first assertion that the table is not merely being written to.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/audit',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      expect(body.total).toBeGreaterThan(0);
+      expect(body.entityTypes).toEqual(
+        expect.arrayContaining(['contracts.contract', 'contracts.payment_application']),
+      );
+      expect(body.actions.length).toBeGreaterThan(0);
+
+      // Newest first by default: the whole reason this reads better than a
+      // raw SQL client is that the recent change is the one somebody wants.
+      const timestamps = body.rows.map((row: { occurredAt: string }) => row.occurredAt);
+      expect([...timestamps].sort().reverse()).toEqual(timestamps);
+    });
+
+    it('narrows to one entity type without the option list losing the others', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/audit?entityType=contracts.payment_application',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.rows.length).toBeGreaterThan(0);
+      for (const row of body.rows) {
+        expect(row.entityType).toBe('contracts.payment_application');
+      }
+
+      // Computed over the whole trail, not the filtered slice — the same rule
+      // the localisation rules screen's domain list follows, and for the same
+      // reason: a filter's own other options must not disappear once applied.
+      expect(body.entityTypes).toEqual(expect.arrayContaining(['contracts.contract']));
+    });
+
+    it('names who did it, not just their id', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/audit?entityType=contracts.contract',
+        headers: auth(),
+      });
+
+      const rows: { actorId: string | null; actorName: string | null; actorEmail: string | null }[] =
+        response.json().rows;
+      const attributed = rows.find((row) => row.actorId != null);
+      expect(attributed?.actorName).toBe('Commercial Manager');
+      expect(attributed?.actorEmail).toBe('cm@delivery.test');
+    });
+
+    it('refuses a user who holds no kernel.audit.read permission', async () => {
+      // The site engineer's role (section setup) grants three `projects.*`
+      // permissions and nothing from `kernel` — this is the first thing in the
+      // suite to check that omission actually bites.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/audit',
+        headers: auth(ENGINEER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+  });
 });

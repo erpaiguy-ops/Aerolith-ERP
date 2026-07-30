@@ -51,14 +51,19 @@ labelled parts, becomes scanned progress.
 - **Web app** (Next.js) — the shell and screens for every module: Projects,
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area. **Every** navigation destination is built —
-  34 of 34 — the cutting plan a work order was planned to is drawn on screen,
+  35 of 35 — the cutting plan a work order was planned to is drawn on screen,
   and a workspace can adopt its country, edit its own rules, add its own people
   and invent its own roles without a developer. Right-to-left aware and
   formatted in the user's own locale
 - **PDF documents** (`@aerolith/pdf`) — a payment application renders to a
   sendable certificate with no dependencies and no headless browser
   (`GET /api/v1/contracts/applications/:id/pdf`)
-- **961 tests**, including integration suites that prove tenant isolation holds and
+- **Audit trail viewer** — every change any module already recorded (`kernel.audit_log`
+  has been append-only and populated since the first migration), now readable
+  from the workspace itself rather than a SQL client: filterable by entity type
+  and action, searchable, attributed to a name and email, gated on its own
+  `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
+- **963 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -218,6 +223,7 @@ pnpm --filter @aerolith/api dev
 | `POST /api/v1/admin/roles` | Create a role |
 | `PATCH /api/v1/admin/roles/:id` | Replace a role's permissions |
 | `GET /api/v1/admin/permissions` | The permission catalogue every module declares |
+| `GET /api/v1/admin/audit` | The audit trail, paged, filtered by entity type or action, searchable |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |

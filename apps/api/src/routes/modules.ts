@@ -113,6 +113,11 @@ export async function moduleRoutes(app: FastifyInstance) {
                   { key: 'kernel.settings.roles', label: 'Roles', path: '/settings/roles', order: 40 },
                 ]
               : []),
+            // Gated separately again: reading who did what is a distinct
+            // authority from reading who is allowed to sign in.
+            ...(may('kernel.audit.read')
+              ? [{ key: 'kernel.settings.audit', label: 'Audit trail', path: '/settings/audit', order: 50 }]
+              : []),
           ];
 
           return children.length > 0
