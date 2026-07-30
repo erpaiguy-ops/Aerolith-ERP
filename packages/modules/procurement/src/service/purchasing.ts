@@ -32,6 +32,7 @@ import {
   type Transaction,
 } from '@aerolith/kernel';
 import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import {
   goodsReceipt,
@@ -2026,6 +2027,72 @@ export async function listRequisitions(
     counted?.total ?? 0,
     params,
   );
+}
+
+export interface RequisitionDetail {
+  requisition: typeof requisition.$inferSelect;
+  projectCode: string | null;
+  projectName: string | null;
+  costCentreCode: string | null;
+  costCentreName: string | null;
+  requestedByName: string | null;
+  approvedByName: string | null;
+  lines: (typeof requisitionLine.$inferSelect)[];
+}
+
+/**
+ * One requisition, with what it is spending against resolved to names.
+ *
+ * `quantityOrdered` stays on each line rather than being rolled up here — a
+ * requisition is "actioned" line by line, not as a whole, and a reader needs
+ * to see which two of five lines have gone to a supplier and which three have
+ * not, not just a fraction of the total.
+ */
+export async function getRequisitionDetail(
+  tx: Transaction,
+  requisitionId: string,
+): Promise<RequisitionDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const requester = alias(schema.appUser, 'requester');
+  const approver = alias(schema.appUser, 'approver');
+
+  const [row] = await tx
+    .select({
+      requisition,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+      costCentreCode: schema.costCentre.code,
+      costCentreName: schema.costCentre.name,
+      requestedByName: requester.name,
+      approvedByName: approver.name,
+    })
+    .from(requisition)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, requisition.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.costCentre,
+      and(
+        eq(schema.costCentre.id, requisition.costCentreId),
+        eq(schema.costCentre.tenantId, tenantId),
+      ),
+    )
+    .leftJoin(requester, eq(requester.id, requisition.requestedBy))
+    .leftJoin(approver, eq(approver.id, requisition.approvedBy))
+    .where(and(eq(requisition.tenantId, tenantId), eq(requisition.id, requisitionId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const lines = await tx
+    .select()
+    .from(requisitionLine)
+    .where(eq(requisitionLine.requisitionId, requisitionId))
+    .orderBy(asc(requisitionLine.lineNumber));
+
+  return { ...row, lines };
 }
 
 export interface PurchaseOrderListRow {

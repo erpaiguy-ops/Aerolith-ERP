@@ -353,6 +353,33 @@ suite('Procurement', () => {
       expect(row!.approvedBy).toBe(BUYER);
     });
 
+    it('reads the requisition back with what it spends against, and who acted on it', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/procurement/requisitions/${requisitionId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.requisition.title).toBe('Carcass MDF — Palm Villa');
+      expect(body.projectCode).toBe('P-2026-100');
+      expect(body.projectName).toBe('Palm Villa joinery');
+      expect(body.approvedByName).toBe('Buyer');
+      expect(body.lines).toHaveLength(1);
+      expect(body.lines[0].description).toBe('18mm MDF 2440x1220');
+    });
+
+    it('404s a requisition id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/requisitions/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
     it('does not let the storeman approve spend', async () => {
       const second = await app.inject({
         method: 'POST',

@@ -64,7 +64,7 @@ labelled parts, becomes scanned progress.
   from the workspace itself rather than a SQL client: filterable by entity type
   and action, searchable, attributed to a name and email, gated on its own
   `kernel.audit.read` permission (`GET /api/v1/admin/audit`, `/settings/audit`)
-- **968 tests**, including integration suites that prove tenant isolation holds and
+- **971 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -226,6 +226,7 @@ pnpm --filter @aerolith/api dev
 | `GET /api/v1/admin/permissions` | The permission catalogue every module declares |
 | `GET /api/v1/admin/audit` | The audit trail, paged, filtered by entity type or action, searchable |
 | `GET /api/v1/estimating/tenders/:id` | One tender, with client, consultant and main contractor resolved, and its priced versions |
+| `GET /api/v1/procurement/requisitions/:id` | One requisition, with what it spends against and who acted on it |
 | `GET /api/v1/approvals/inbox` | What is waiting on the caller |
 | `POST /api/v1/approvals/tasks/:id/decide` | Approve or reject |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |

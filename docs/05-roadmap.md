@@ -1157,6 +1157,25 @@ abandoned, cancelled, won or lost — the outcome form otherwise let a no-bid
 tender be recorded as "won", which the service itself does not forbid but
 which nothing sane means.
 
+### A requisition, with what it spends against
+
+Same shape again, one more module over: no endpoint read a single requisition
+before this — the list joined a project code, and that was as far as it went.
+`getRequisitionDetail` resolves the project, the cost centre, and the
+requester and approver by name (two more aliased joins on the same
+`kernel.app_user` table, the same technique the tender detail entry used
+against `kernel.party`).
+
+`quantityOrdered` is kept per LINE rather than rolled up to the requisition as
+a whole. A requisition is actioned line by line — a buyer sources the timber
+from one supplier and the ironmongery from another — and a single blended
+"60% ordered" figure would hide exactly the line still sitting unsourced.
+Approve is the one action this screen offers, one click and no confirmation:
+nothing commits to a supplier until an order is issued, so approving a
+requisition is reversible in the sense that matters, and a confirmation
+dialogue on a routine authorisation only trains people to click through
+dialogues.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
