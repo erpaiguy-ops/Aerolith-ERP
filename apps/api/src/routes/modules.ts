@@ -105,6 +105,24 @@ export async function moduleRoutes(app: FastifyInstance) {
               },
             ]
           : []),
+        /*
+         * Documents, likewise a kernel capability with no manifest: every
+         * module attaches files to its own records, but the register itself
+         * — the folder tree, the raw upload/download — belongs to nobody in
+         * particular, the same shape as Parties. Gated the same way, on the
+         * read half of the permission that guards it.
+         */
+        ...(principal.isOwner || permissions.has('kernel.document.read')
+          ? [
+              {
+                key: 'kernel.documents',
+                label: 'Documents',
+                icon: 'folder',
+                path: '/documents',
+                order: 3,
+              },
+            ]
+          : []),
         ...navigationFor(modules, permissions),
         /*
          * Settings, likewise a kernel capability with no manifest. Last, at a
