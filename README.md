@@ -220,7 +220,28 @@ labelled parts, becomes scanned progress.
   links to a server-rendered history of every version with its uploader,
   size and change note
   (`GET /api/v1/documents/:id/versions`, `/documents`)
-- **1,111 tests**, including integration suites that prove tenant isolation holds and
+- **The submittal register — the fit-out approval clock** had no screen because
+  it had no table at all: a shop drawing, sample or method statement submitted
+  for review, and the cycle it goes through until a consultant signs it off.
+  Split into a register row (where the ball sits now, who acts next) and a
+  revision history (every submit-review cycle it took to get there) — the same
+  reasoning a payment application is split from its certificate. A drawing sent
+  back for revision and resubmitted is a new revision, never the old one edited
+  in place. `submitRevision` refuses once approved; `recordReview` refuses
+  reviewing the current revision twice and refuses reviewing a submittal with
+  nothing submitted yet
+  (`POST /api/v1/contracts/:id/submittals`, `POST /api/v1/contracts/submittals/:id/revisions`,
+  `POST /api/v1/contracts/submittals/:id/review`, `/contracts/submittals`)
+- **The cutlist optimiser's one known gap is closed.** It used to settle for 8
+  of a possible 9 identical parts on a sheet, and separately missed layouts
+  combining a grid with a rotated part in a leftover strip — both traced to the
+  same cause, a guillotine split that always kept whichever half was locally
+  larger, committing to a leftover shape before the rest of the cutting list
+  was known. The split axis is now one more thing the existing multi-strategy
+  search tries, the same mechanism that already searches sort order and fit
+  score. A realistic wardrobe-carcass job that used to need 21 sheets now runs
+  in 20.
+- **1,123 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

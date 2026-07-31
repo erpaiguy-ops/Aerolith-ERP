@@ -189,6 +189,40 @@ CREATE TABLE "contracts"."retention_release" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "contracts"."submittal" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"contract_id" uuid NOT NULL,
+	"number" varchar(48),
+	"number_period" varchar(16),
+	"number_value" integer,
+	"title" text NOT NULL,
+	"submittal_type" varchar(24) NOT NULL,
+	"spec_section" varchar(32),
+	"status" varchar(24) DEFAULT 'draft' NOT NULL,
+	"ball_in_court" varchar(16) DEFAULT 'contractor' NOT NULL,
+	"current_revision" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "submittal_number_uq" UNIQUE("tenant_id","number")
+);
+--> statement-breakpoint
+CREATE TABLE "contracts"."submittal_revision" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"submittal_id" uuid NOT NULL,
+	"revision" integer NOT NULL,
+	"document_id" uuid,
+	"submitted_on" date NOT NULL,
+	"due_on" date,
+	"reviewed_on" date,
+	"decision" varchar(24),
+	"review_comments" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "submittal_revision_uq" UNIQUE("submittal_id","revision")
+);
+--> statement-breakpoint
 CREATE TABLE "contracts"."variation" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -253,6 +287,8 @@ ALTER TABLE "contracts"."payment_application_line" ADD CONSTRAINT "payment_appli
 ALTER TABLE "contracts"."payment_application_line" ADD CONSTRAINT "payment_application_line_variation_id_variation_id_fk" FOREIGN KEY ("variation_id") REFERENCES "contracts"."variation"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "contracts"."retention_release" ADD CONSTRAINT "retention_release_contract_id_contract_id_fk" FOREIGN KEY ("contract_id") REFERENCES "contracts"."contract"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "contracts"."retention_release" ADD CONSTRAINT "retention_release_application_id_payment_application_id_fk" FOREIGN KEY ("application_id") REFERENCES "contracts"."payment_application"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "contracts"."submittal" ADD CONSTRAINT "submittal_contract_id_contract_id_fk" FOREIGN KEY ("contract_id") REFERENCES "contracts"."contract"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "contracts"."submittal_revision" ADD CONSTRAINT "submittal_revision_submittal_id_submittal_id_fk" FOREIGN KEY ("submittal_id") REFERENCES "contracts"."submittal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "contracts"."variation" ADD CONSTRAINT "variation_contract_id_contract_id_fk" FOREIGN KEY ("contract_id") REFERENCES "contracts"."contract"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "contracts"."variation_line" ADD CONSTRAINT "variation_line_variation_id_variation_id_fk" FOREIGN KEY ("variation_id") REFERENCES "contracts"."variation"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "contracts"."variation_line" ADD CONSTRAINT "variation_line_source_contract_line_id_contract_line_id_fk" FOREIGN KEY ("source_contract_line_id") REFERENCES "contracts"."contract_line"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -265,5 +301,6 @@ CREATE INDEX "payment_application_status_idx" ON "contracts"."payment_applicatio
 CREATE INDEX "payment_application_line_idx" ON "contracts"."payment_application_line" USING btree ("tenant_id","application_id");--> statement-breakpoint
 CREATE INDEX "payment_application_line_contract_idx" ON "contracts"."payment_application_line" USING btree ("tenant_id","contract_line_id");--> statement-breakpoint
 CREATE INDEX "retention_release_idx" ON "contracts"."retention_release" USING btree ("tenant_id","contract_id","due_on");--> statement-breakpoint
+CREATE INDEX "submittal_status_idx" ON "contracts"."submittal" USING btree ("tenant_id","status","ball_in_court");--> statement-breakpoint
 CREATE INDEX "variation_contract_idx" ON "contracts"."variation" USING btree ("tenant_id","contract_id","status");--> statement-breakpoint
 CREATE INDEX "variation_instructed_idx" ON "contracts"."variation" USING btree ("tenant_id","instructed_on");

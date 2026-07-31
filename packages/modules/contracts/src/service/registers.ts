@@ -17,7 +17,15 @@ import {
 } from '@aerolith/kernel';
 import { and, asc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 
-import { contract, correspondence, paymentApplication, retentionRelease, variation } from '../db/schema';
+import {
+  contract,
+  correspondence,
+  paymentApplication,
+  retentionRelease,
+  submittal,
+  submittalRevision,
+  variation,
+} from '../db/schema';
 
 // ---------------------------------------------------------------------------
 // Correspondence — the notice register
@@ -285,6 +293,135 @@ export async function listRetention(
       contract,
       and(eq(contract.id, retentionRelease.contractId), eq(contract.tenantId, tenantId)),
     )
+    .where(where);
+
+  return listResult(rows, counted?.total ?? 0, params);
+}
+
+// ---------------------------------------------------------------------------
+// Submittals — the fit-out approval clock
+// ---------------------------------------------------------------------------
+
+export interface SubmittalListRow {
+  id: string;
+  contractId: string;
+  contractNumber: string | null;
+  contractName: string;
+  number: string | null;
+  title: string;
+  submittalType: string;
+  status: string;
+  ballInCourt: string;
+  currentRevision: number;
+  dueOn: string | null;
+  /** Days until the current revision's decision is due. Negative once late. */
+  daysToDue: number | null;
+  /** With the consultant, past its due date — the drawing nobody is chasing. */
+  isOverdue: boolean;
+}
+
+export const SUBMITTAL_SORTS = ['dueOn', 'number', 'status', 'submittalType'] as const;
+
+export async function listSubmittals(
+  tx: Transaction,
+  params: ListParams,
+  filters: {
+    contractId?: string;
+    status?: string;
+    ballInCourt?: string;
+    openOnly?: boolean;
+  } = {},
+): Promise<ListResult<SubmittalListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const daysToDue = sql<number | null>`
+    case
+      when ${submittalRevision.dueOn} is null then null
+      else (${submittalRevision.dueOn} - current_date)
+    end
+  `;
+
+  const isOverdue = sql<boolean>`(
+    ${submittal.ballInCourt} = 'consultant'
+    and ${submittalRevision.dueOn} is not null
+    and ${submittalRevision.dueOn} < current_date
+  )`;
+
+  const conditions = [eq(submittal.tenantId, tenantId)];
+  if (filters.contractId) conditions.push(eq(submittal.contractId, filters.contractId));
+  if (filters.status) conditions.push(eq(submittal.status, filters.status));
+  if (filters.ballInCourt) conditions.push(eq(submittal.ballInCourt, filters.ballInCourt));
+  // Still going through the cycle — not yet approved, approved-as-noted or rejected.
+  if (filters.openOnly) {
+    conditions.push(
+      sql`${submittal.status} not in ('approved', 'approved_as_noted', 'rejected')`,
+    );
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(submittal.number, pattern),
+        ilike(submittal.title, pattern),
+        ilike(contract.number, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn =
+    {
+      dueOn: submittalRevision.dueOn,
+      number: submittal.number,
+      status: submittal.status,
+      submittalType: submittal.submittalType,
+    }[params.sort as string] ?? submittalRevision.dueOn;
+
+  // The current revision's own due date, joined by (submittalId, revision) —
+  // every resubmission runs its own clock, so the register always shows the
+  // one that is actually live. Left join: a draft with no revision yet has
+  // none, and that is a real state, not a missing row.
+  const rows = await tx
+    .select({
+      id: submittal.id,
+      contractId: submittal.contractId,
+      contractNumber: contract.number,
+      contractName: contract.name,
+      number: submittal.number,
+      title: submittal.title,
+      submittalType: submittal.submittalType,
+      status: submittal.status,
+      ballInCourt: submittal.ballInCourt,
+      currentRevision: submittal.currentRevision,
+      dueOn: submittalRevision.dueOn,
+      daysToDue,
+      isOverdue,
+    })
+    .from(submittal)
+    .innerJoin(contract, and(eq(contract.id, submittal.contractId), eq(contract.tenantId, tenantId)))
+    .leftJoin(
+      submittalRevision,
+      and(
+        eq(submittalRevision.submittalId, submittal.id),
+        eq(submittalRevision.revision, submittal.currentRevision),
+      ),
+    )
+    .where(where)
+    .orderBy(
+      params.direction === 'asc'
+        ? sql`${sortColumn} asc nulls last`
+        : sql`${sortColumn} desc nulls last`,
+      asc(submittal.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(submittal)
+    .innerJoin(contract, and(eq(contract.id, submittal.contractId), eq(contract.tenantId, tenantId)))
     .where(where);
 
   return listResult(rows, counted?.total ?? 0, params);

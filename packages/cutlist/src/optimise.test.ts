@@ -201,24 +201,23 @@ describe('optimise — offcuts', () => {
     expect(plan.boards[0]!.stockId).toBe('oc-snug');
   });
 
-  // Nine parts, not three. Eight 800x400 go on a sheet, so the ninth needs a
-  // second one — unless it comes off the rack, which is when the packer will
-  // take it. With three parts the offcut saves nothing and is correctly left
-  // alone; that is a different behaviour with its own tests below.
+  // Ten parts, not nine. The true 3x3 grid takes nine 800x400 parts on one
+  // 2440x1220 sheet — the split-preference search below finds it — so the
+  // tenth is what needs the offcut.
   it('consumes each offcut only once', () => {
     // An offcut is a unique physical piece, not a stock line.
-    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 9 })], [
+    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 10 })], [
       sheet(),
       offcut('oc-1', 850, 450),
     ]);
 
     const usedOffcuts = plan.boards.filter((b) => b.source === 'offcut');
     expect(usedOffcuts).toHaveLength(1);
-    expect(plan.summary.partsPlaced).toBe(9);
+    expect(plan.summary.partsPlaced).toBe(10);
   });
 
   it('falls back to sheets when the offcuts run out', () => {
-    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 9 })], [
+    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 10 })], [
       sheet(),
       offcut('oc-1', 850, 450),
     ]);
@@ -485,6 +484,16 @@ describe('optimise — known optima', () => {
     const plan = optimise([part({ lengthMm: 600, widthMm: 600, quantity: 8 })], [sheet()]);
     expect(plan.summary.boardsUsed).toBe(1);
   });
+
+  it('fits the true 3x3 grid, not the 8-piece shortfall the corner split used to settle for', () => {
+    // 3 across (2406.4) x 3 down (1206.4) is the grid maximum. The corner
+    // split that maximises the FIRST remaining rectangle used to leave a
+    // shape the third row could not use, packing 8; forcing the split axis
+    // as one more strategy to search finds the 9th.
+    const plan = optimise([part({ lengthMm: 800, widthMm: 400, quantity: 9 })], [sheet()]);
+    expect(plan.summary.boardsUsed).toBe(1);
+    expect(plan.summary.partsPlaced).toBe(9);
+  });
 });
 
 describe('optimise — edge trim applies to sheets, not to remnants', () => {
@@ -613,8 +622,13 @@ describe('optimise — realistic joinery job', () => {
     //
     // Do not read this number as the product's yield — it is a property of this
     // cutting list. See the note on known gaps in optimise.ts.
-    expect(plan.summary.totalYieldPercent).toBeGreaterThan(69);
-    expect(plan.summary.boardsUsed).toBeLessThanOrEqual(21);
+    //
+    // 20 boards, not 21: searching the split axis (see `SplitPreference`) finds
+    // the corner split that leaves a strip a rotated part actually fits, which
+    // is exactly the "worth roughly one sheet in twenty" this mix was recorded
+    // as costing before that search existed.
+    expect(plan.summary.totalYieldPercent).toBeGreaterThan(73);
+    expect(plan.summary.boardsUsed).toBeLessThanOrEqual(20);
     expect(plan.summary.materialCost).toBe(plan.summary.boardsUsed * 92);
   });
 });

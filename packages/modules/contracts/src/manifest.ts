@@ -18,7 +18,7 @@ export const contractsModule = defineModule({
   name: 'Aerolith Contract Administration',
   description:
     'Contracts, variations, interim payment applications and certificates, ' +
-    'retention, back charges and the notice register.',
+    'retention, back charges, the notice register and the submittal register.',
   version: '0.1.0',
   category: 'commercial',
   dbSchema: 'contracts',
@@ -76,6 +76,13 @@ export const contractsModule = defineModule({
     },
     { key: 'contracts.back_charge.manage', resource: 'back_charge', action: 'manage', label: 'Manage back charges' },
     { key: 'contracts.correspondence.manage', resource: 'correspondence', action: 'manage', label: 'Manage the notice register' },
+    {
+      key: 'contracts.submittal.manage',
+      resource: 'submittal',
+      action: 'manage',
+      label: 'Manage the submittal register',
+      description: 'Shop drawings, samples and method statements — the fit-out approval clock.',
+    },
   ],
 
   nav: [
@@ -90,6 +97,7 @@ export const contractsModule = defineModule({
         { key: 'contracts.applications', label: 'Payment Applications', path: '/contracts/applications', permission: 'contracts.application.read', order: 30 },
         { key: 'contracts.retention', label: 'Retention', path: '/contracts/retention', permission: 'contracts.contract.read', order: 40 },
         { key: 'contracts.register', label: 'Notice Register', path: '/contracts/correspondence', permission: 'contracts.correspondence.manage', order: 50 },
+        { key: 'contracts.submittals', label: 'Submittals', path: '/contracts/submittals', permission: 'contracts.submittal.manage', order: 60 },
       ],
     },
   ],
@@ -202,5 +210,6 @@ export const contractsModule = defineModule({
     { entityType: 'contracts.contract', code: 'CON', pattern: 'CON-{YYYY}-{SEQ}' },
     { entityType: 'contracts.variation', code: 'VO', pattern: 'VO-{YYYY}-{SEQ}' },
     { entityType: 'contracts.payment_application', code: 'IPC', pattern: 'IPC-{YYYY}-{SEQ}' },
+    { entityType: 'contracts.submittal', code: 'SUB', pattern: 'SUB-{YYYY}-{SEQ}' },
   ],
 });

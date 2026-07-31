@@ -594,6 +594,75 @@ export const correspondence = contracts.table(
   ],
 );
 
+/**
+ * The fit-out approval clock: a shop drawing, sample or method statement
+ * submitted for review, and the cycle it goes through until the consultant
+ * signs it off.
+ *
+ * Split into a register row and a revision history for the same reason a
+ * payment application is split from its certificate: "approved" is an answer
+ * to a specific submission, and a rejected drawing resubmitted as a new
+ * revision is a different event from the same drawing being edited in place.
+ * `submittal` carries where the ball sits NOW; `submittalRevision` carries
+ * every cycle it took to get there.
+ */
+export const submittal = contracts.table(
+  'submittal',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantColumn(),
+    contractId: uuid('contract_id')
+      .notNull()
+      .references(() => contract.id, { onDelete: 'cascade' }),
+    number: varchar('number', { length: 48 }),
+    numberPeriod: varchar('number_period', { length: 16 }),
+    numberValue: integer('number_value'),
+    title: text('title').notNull(),
+    /** 'shop_drawing' | 'material_sample' | 'method_statement' | 'product_data' | 'mock_up' | 'other' */
+    submittalType: varchar('submittal_type', { length: 24 }).notNull(),
+    /** The spec section this answers, e.g. "09 40 00" — free text, not enforced. */
+    specSection: varchar('spec_section', { length: 32 }),
+    /** 'draft' | 'submitted' | 'under_review' | 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected' */
+    status: varchar('status', { length: 24 }).notNull().default('draft'),
+    /**
+     * 'contractor' | 'consultant' — whose turn it is to act. The single fact
+     * that makes this a register and not a folder of PDFs: it answers "what
+     * is sitting on someone's desk right now" without opening a single row.
+     */
+    ballInCourt: varchar('ball_in_court', { length: 16 }).notNull().default('contractor'),
+    currentRevision: integer('current_revision').notNull().default(0),
+    ...timestamps(),
+  },
+  (t) => [
+    unique('submittal_number_uq').on(t.tenantId, t.number),
+    index('submittal_status_idx').on(t.tenantId, t.status, t.ballInCourt),
+  ],
+);
+
+export const submittalRevision = contracts.table(
+  'submittal_revision',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantColumn(),
+    submittalId: uuid('submittal_id')
+      .notNull()
+      .references(() => submittal.id, { onDelete: 'cascade' }),
+    revision: integer('revision').notNull(),
+    /** The actual file, in the kernel document register. Optional: a method
+     *  statement submitted as prose in the comments needs no attachment. */
+    documentId: uuid('document_id'),
+    submittedOn: date('submitted_on').notNull(),
+    /** When a decision is due on THIS revision — a fresh clock every resubmission. */
+    dueOn: date('due_on'),
+    reviewedOn: date('reviewed_on'),
+    /** 'approved' | 'approved_as_noted' | 'revise_resubmit' | 'rejected'. Null until reviewed. */
+    decision: varchar('decision', { length: 24 }),
+    reviewComments: text('review_comments'),
+    ...timestamps(),
+  },
+  (t) => [unique('submittal_revision_uq').on(t.submittalId, t.revision)],
+);
+
 // ---------------------------------------------------------------------------
 // Security
 // ---------------------------------------------------------------------------
@@ -608,4 +677,6 @@ export const CONTRACTS_TENANT_TABLES = [
   'retention_release',
   'back_charge',
   'correspondence',
+  'submittal',
+  'submittal_revision',
 ] as const;

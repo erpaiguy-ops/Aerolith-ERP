@@ -11,9 +11,10 @@
  *     empty is what makes the small ones fit in the gaps afterwards.
  *  2. Each open board keeps a list of free rectangles. A part is placed in the
  *     one that leaves the least waste (best-area-fit).
- *  3. Placing splits that rectangle in two, guillotine style, choosing the split
- *     that leaves the LARGER single piece — one big usable remnant is worth more
- *     than two awkward strips.
+ *  3. Placing splits that rectangle in two, guillotine style. Which of the two
+ *     valid splits to keep is itself searched — see `SplitPreference` — rather
+ *     than fixed to a single rule, because the split that looks best for THIS
+ *     placement is not always the one the rest of the cutting list needs.
  *  4. When nothing fits, a new board opens. Offcuts are tried before sheets, and
  *     the smallest usable offcut is taken first, so the big remnants stay on the
  *     rack for big parts.
@@ -22,22 +23,22 @@
  *
  * Measured behaviour, so nobody has to guess:
  *
- *  - It reaches the grid-optimal count per sheet on every part shape tested
- *    (see optimise.test.ts, "known optima").
+ *  - It reaches the grid-optimal count per sheet on every part shape tested,
+ *    including 800x400 into 2440x1220's true 3x3 grid (9, not 8 — see
+ *    optimise.test.ts, "known optima").
  *  - Achieved yield depends almost entirely on the PARTS, not on the algorithm.
  *    A mix of awkward large panels has a low geometric ceiling no packer can
- *    beat: the wardrobe job in the tests tops out near 74% because a 2100x900
- *    back leaves a 340mm strip nothing else fits into. Friendlier mixes reach
- *    the low 80s.
- *  - Known gap: it does not find layouts that combine a grid with a rotated
- *    part in the leftover strip, which is worth roughly one sheet in twenty on
- *    mixes like the wardrobe job. Closing it needs a real search rather than a
- *    greedy pass; noted rather than hidden.
- *  - Known gap: it does not always reach a plain grid either. 800x400 into
- *    2440x1220 admits a 3x3 grid (2406.4 x 1206.4 with a 3.2mm kerf) and the
- *    free-rectangle split produces 8, not 9 — an 11% shortfall on that shape.
- *    Same cause: the split commits to a shape of leftover before the rest of
- *    the parts are known. Measured, so an improvement is provable.
+ *    beat: the wardrobe job in the tests reaches 20 boards at just under 74%
+ *    because a 2100x900 back leaves a 340mm strip only a few other parts in
+ *    that list fit into. Friendlier mixes reach the low 80s.
+ *  - Two gaps recorded here previously — the packer settling for 8 rather than
+ *    9 on the 800x400 grid, and not combining a grid with a rotated part in a
+ *    leftover strip (worth roughly one sheet in twenty on the wardrobe job) —
+ *    shared one root cause: the split kept was fixed to "leave the larger
+ *    piece," a good local rule that commits to a leftover SHAPE before the
+ *    rest of the list is known. Making the split axis one more thing the
+ *    existing strategy portfolio searches, rather than a single deterministic
+ *    rule, closes both: the wardrobe job now runs in 20 boards instead of 21.
  */
 import type {
   BoardPlan,
@@ -97,9 +98,32 @@ interface Unit {
 type SortKey = 'area' | 'longest-side' | 'length' | 'width' | 'perimeter';
 type FitScore = 'best-area' | 'best-short-side' | 'best-long-side';
 
+/**
+ * Which guillotine split to take after a part is placed in a free rectangle's
+ * corner.
+ *
+ *  - `auto` — the original rule: keep whichever of the two options leaves the
+ *    larger single remaining piece.
+ *  - `lengthwise` / `widthwise` — always cut across the same axis first,
+ *    regardless of which leftover piece that makes bigger.
+ *
+ * `auto` is a good LOCAL choice — the largest remaining piece is the most
+ * generally useful — but it commits to a leftover SHAPE before the rest of the
+ * cutting list is known, which is exactly the gap this module's own docs
+ * record: an 800x400 part packs 8 to a 2440x1220 sheet under `auto`, one short
+ * of the true 3x3 grid, because the corner split that maximises the first
+ * remaining rectangle is not the split a grid needs. Forcing the axis instead
+ * of scoring it turns "the one split we computed" into one more thing the
+ * existing strategy portfolio searches over — same mechanism that already
+ * finds the best sort order and fit score, applied to the one decision that
+ * was never searched.
+ */
+type SplitPreference = 'auto' | 'lengthwise' | 'widthwise';
+
 interface Strategy {
   sort: SortKey;
   score: FitScore;
+  split: SplitPreference;
   /** Whether this pass reaches for the rack before opening a new sheet. */
   preferOffcuts: boolean;
   /** Whether this pass may open a remnant at all. */
@@ -116,6 +140,8 @@ const PACKINGS: { sort: SortKey; score: FitScore }[] = [
   { sort: 'perimeter', score: 'best-area' },
   { sort: 'area', score: 'best-long-side' },
 ];
+
+const SPLITS: SplitPreference[] = ['auto', 'lengthwise', 'widthwise'];
 
 /**
  * Reaching for the rack is a STRATEGY, not a rule.
@@ -150,7 +176,9 @@ function strategiesFor(opts: Required<CutlistOptions>): Strategy[] {
       // rack left alone entirely leaves the offcuts out of `stock`.
       [{ preferOffcuts: false, sheetsOnly: false }];
 
-  return modes.flatMap((mode) => PACKINGS.map((p) => ({ ...p, ...mode })));
+  return modes.flatMap((mode) =>
+    PACKINGS.flatMap((p) => SPLITS.map((split) => ({ ...p, split, ...mode }))),
+  );
 }
 
 export function optimise(
@@ -251,7 +279,7 @@ function packWith(
   const failed: { unit: Unit; reason: string }[] = [];
 
   for (const unit of sorted) {
-    if (placeOnExisting(unit, open, opts, strategy.score)) continue;
+    if (placeOnExisting(unit, open, opts, strategy.score, strategy.split)) continue;
 
     const board = openBoard(unit, stock, remainingStock, open.length, opts, strategy);
     if (!board) {
@@ -264,7 +292,7 @@ function packWith(
 
     open.push(board);
 
-    if (!placeOnExisting(unit, [board], opts, strategy.score)) {
+    if (!placeOnExisting(unit, [board], opts, strategy.score, strategy.split)) {
       // Should not happen — openBoard only returns a board the part fits on.
       failed.push({ unit, reason: 'Part did not fit the board opened for it.' });
       open.pop();
@@ -316,6 +344,7 @@ function placeOnExisting(
   open: OpenBoard[],
   opts: Required<CutlistOptions>,
   score: FitScore,
+  split: SplitPreference,
 ): boolean {
   let best:
     | { board: OpenBoard; rectIndex: number; rotated: boolean; primary: number; secondary: number }
@@ -378,35 +407,63 @@ function placeOnExisting(
     rotated: best.rotated,
   });
 
-  best.board.free.splice(best.rectIndex, 1, ...splitRect(rect, placedLength, placedWidth, opts.kerfMm));
+  best.board.free.splice(
+    best.rectIndex,
+    1,
+    ...splitRect(rect, placedLength, placedWidth, opts.kerfMm, split),
+  );
   return true;
 }
 
 /**
  * Splits a free rectangle after a part is placed in its corner.
  *
- * Two guillotine options; take the one whose LARGER piece is bigger. Keeping one
- * substantial rectangle beats keeping two mediocre ones, both for the parts
- * still to place and for what ends up back on the offcut rack.
+ * Two guillotine options, each a valid tiling of the same leftover area:
+ *
+ *  - Option A — cut across the length first: a full-width strip plus a stub.
+ *  - Option B — cut along the width first: a full-length strip plus a stub.
+ *
+ * `auto` takes whichever leaves the LARGER single piece — a good local choice,
+ * but see the note on `SplitPreference` for why it is not the only one tried.
+ * `lengthwise`/`widthwise` force the axis regardless of which leftover piece
+ * that makes bigger, so the strategy portfolio can discover the split a grid
+ * or a later rotated part actually needs, rather than only the split that
+ * looks best one placement at a time.
  */
-function splitRect(rect: FreeRect, usedLength: number, usedWidth: number, kerf: number): FreeRect[] {
+function splitRect(
+  rect: FreeRect,
+  usedLength: number,
+  usedWidth: number,
+  kerf: number,
+  preference: SplitPreference,
+): FreeRect[] {
   const restLength = rect.length - usedLength - kerf;
   const restWidth = rect.width - usedWidth - kerf;
 
-  // Option A — cut across the length first: a full-width strip plus a stub.
   const a: FreeRect[] = [
     { x: rect.x + usedLength + kerf, y: rect.y, length: restLength, width: rect.width },
     { x: rect.x, y: rect.y + usedWidth + kerf, length: usedLength, width: restWidth },
   ];
 
-  // Option B — cut along the width first: a full-length strip plus a stub.
   const b: FreeRect[] = [
     { x: rect.x + usedLength + kerf, y: rect.y, length: restLength, width: usedWidth },
     { x: rect.x, y: rect.y + usedWidth + kerf, length: rect.length, width: restWidth },
   ];
 
-  const largest = (rects: FreeRect[]) => Math.max(...rects.map((r) => r.length * r.width));
-  const chosen = largest(a) >= largest(b) ? a : b;
+  let chosen: FreeRect[];
+  switch (preference) {
+    case 'lengthwise':
+      chosen = a;
+      break;
+    case 'widthwise':
+      chosen = b;
+      break;
+    case 'auto':
+    default: {
+      const largest = (rects: FreeRect[]) => Math.max(...rects.map((r) => r.length * r.width));
+      chosen = largest(a) >= largest(b) ? a : b;
+    }
+  }
 
   return chosen.filter((r) => r.length > 0 && r.width > 0);
 }

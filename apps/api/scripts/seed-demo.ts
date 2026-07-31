@@ -53,9 +53,12 @@ import {
   certifyApplication,
   createContract,
   createPaymentApplication,
+  createSubmittal,
   createVariation,
+  recordReview,
   scheduleRetentionRelease,
   submitApplication,
+  submitRevision,
   contractsSchema,
 } from '@aerolith/module-contracts';
 import {
@@ -118,6 +121,8 @@ async function main() {
       contractsSchema.variation,
       contractsSchema.backCharge,
       contractsSchema.correspondence,
+      contractsSchema.submittalRevision,
+      contractsSchema.submittal,
       contractsSchema.contractLine,
       contractsSchema.contract,
 
@@ -334,6 +339,7 @@ async function main() {
       { tenantId: TENANT, entityType: 'contracts.contract', code: 'CON', name: 'Contract', pattern: 'CON-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.variation', code: 'VO', name: 'Variation', pattern: 'VO-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.payment_application', code: 'IPC', name: 'Payment Application', pattern: 'IPC-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'contracts.submittal', code: 'SUB', name: 'Submittal', pattern: 'SUB-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'projects.snag', code: 'SNG', name: 'Snag', pattern: 'SNG-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'estimation.tender', code: 'TND', name: 'Tender', pattern: 'TND-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'production.work_order', code: 'WO', name: 'Work Order', pattern: 'WO-{YYYY}-{SEQ}' },
@@ -1583,6 +1589,59 @@ async function main() {
       },
     ]);
 
+    // The submittal register: the fit-out approval clock. One drawing sent
+    // back and resubmitted before it was approved, one sample still sitting
+    // with the consultant past its due date, and one method statement never
+    // even submitted — a draft is a real state on this register, not an
+    // empty row.
+    const shopDrawing = await createSubmittal(tx, {
+      contractId: head!.id,
+      title: 'Reception desk — shop drawing',
+      submittalType: 'shop_drawing',
+      specSection: '06 41 00',
+    });
+    await submitRevision(tx, {
+      submittalId: shopDrawing.id,
+      submittedOn: '2026-06-10',
+      dueOn: '2026-06-24',
+    });
+    await recordReview(tx, {
+      submittalId: shopDrawing.id,
+      decision: 'revise_resubmit',
+      reviewedOn: '2026-06-20',
+      reviewComments: 'Confirm edge banding colour against the approved sample board.',
+    });
+    await submitRevision(tx, {
+      submittalId: shopDrawing.id,
+      submittedOn: '2026-06-25',
+      dueOn: '2026-07-09',
+    });
+    await recordReview(tx, {
+      submittalId: shopDrawing.id,
+      decision: 'approved',
+      reviewedOn: '2026-07-05',
+    });
+
+    const veneerSample = await createSubmittal(tx, {
+      contractId: head!.id,
+      title: 'Veneer sample — lift lobby returns',
+      submittalType: 'material_sample',
+      specSection: '06 40 23',
+    });
+    await submitRevision(tx, {
+      submittalId: veneerSample.id,
+      submittedOn: '2026-07-06',
+      // Past due with nobody chasing it — exactly the state this register
+      // exists to surface.
+      dueOn: '2026-07-20',
+    });
+
+    await createSubmittal(tx, {
+      contractId: head!.id,
+      title: 'Fire-rated door installation — method statement',
+      submittalType: 'method_statement',
+    });
+
     // Retention. Half at practical completion, half at the end of the defects
     // period — the schedule comes from the contract terms, which came from the
     // country pack.
@@ -1876,7 +1935,7 @@ async function main() {
   console.log('  stores:   /inventory/items · /inventory/stock · /inventory/offcuts · /inventory/counts');
   console.log('  estimating: /estimating/tenders · /estimating/estimates · /estimating/rates');
   console.log('  approvals: /approvals · /approvals/submitted   (2 waiting, from Rana Haddad)');
-  console.log('  registers: /contracts/correspondence · /contracts/retention · /procurement/rfqs · /projects/costs · /projects/progress · /projects/snags');
+  console.log('  registers: /contracts/correspondence · /contracts/retention · /contracts/submittals · /procurement/rfqs · /projects/costs · /projects/progress · /projects/snags');
   console.log('  factory:  /production/orders · /production/board · /production/cutlist · /production/finishing · /production/routings');
 
   await closeDatabase();

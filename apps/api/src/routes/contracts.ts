@@ -15,6 +15,8 @@ import {
   ContractsError,
   CorrespondenceError,
   RETENTION_SORTS,
+  SUBMITTAL_SORTS,
+  SubmittalError,
   activateContract,
   approveVariation,
   certifyApplication,
@@ -23,21 +25,26 @@ import {
   createContract,
   createCorrespondence,
   createPaymentApplication,
+  createSubmittal,
   createVariation,
   getContractPosition,
   getNoticeExposure,
+  getSubmittalDetail,
   getVariationPosition,
   listBackCharges,
   listContracts,
   listCorrespondence,
   listPaymentApplications,
   listRetention,
+  listSubmittals,
   listVariations,
   noticeStatus,
+  recordReview,
   recordVariationNotice,
   recordPracticalCompletion,
   scheduleRetentionRelease,
   submitApplication,
+  submitRevision,
   summariseRetention,
   updateBackCharge,
   updateCorrespondence,
@@ -181,6 +188,31 @@ const updateCorrespondenceBody = z.object({
   responseDueOn: z.string().date().nullish(),
   variationId: z.string().uuid().nullish(),
   documentId: z.string().uuid().nullish(),
+});
+
+const submittalBody = z.object({
+  title: z.string().min(1),
+  submittalType: z.enum([
+    'shop_drawing',
+    'material_sample',
+    'method_statement',
+    'product_data',
+    'mock_up',
+    'other',
+  ]),
+  specSection: z.string().nullish(),
+});
+
+const submittalRevisionBody = z.object({
+  documentId: z.string().uuid().nullish(),
+  submittedOn: z.string().date(),
+  dueOn: z.string().date().nullish(),
+});
+
+const submittalReviewBody = z.object({
+  decision: z.enum(['approved', 'approved_as_noted', 'revise_resubmit', 'rejected']),
+  reviewedOn: z.string().date(),
+  reviewComments: z.string().nullish(),
 });
 
 const applicationBody = z.object({
@@ -329,6 +361,113 @@ export async function contractRoutes(app: FastifyInstance) {
 
     return { updated: true };
   });
+
+  app.get<{
+    Querystring: ListQuery & { contractId?: string; ballInCourt?: string; open?: string };
+  }>('/contracts/submittals', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.submittal.manage');
+
+    const params = parseListParams(request.query, {
+      sortable: SUBMITTAL_SORTS,
+      defaultSort: 'dueOn',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listSubmittals(tx, params, {
+          contractId: request.query.contractId,
+          status: request.query.status,
+          ballInCourt: request.query.ballInCourt,
+          openOnly: request.query.open === 'true',
+        }),
+      ),
+    );
+  });
+
+  app.get<{ Params: { id: string } }>('/contracts/submittals/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.submittal.manage');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getSubmittalDetail(tx, request.params.id)),
+    );
+    if (!detail) return reply.code(404).send({ error: 'Submittal not found.' });
+    return detail;
+  });
+
+  app.post<{ Params: { id: string } }>('/contracts/:id/submittals', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.submittal.manage');
+
+    const parsed = submittalBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createSubmittal(tx, { contractId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof SubmittalError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/contracts/submittals/:id/revisions',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'contracts.submittal.manage');
+
+      const parsed = submittalRevisionBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            submitRevision(tx, { submittalId: request.params.id, ...parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof SubmittalError) return reply.code(409).send({ error: error.message });
+        throw error;
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/contracts/submittals/:id/review',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'contracts.submittal.manage');
+
+      const parsed = submittalReviewBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        await withPrincipal(principal, () =>
+          withTenant((tx) => recordReview(tx, { submittalId: request.params.id, ...parsed.data })),
+        );
+      } catch (error) {
+        if (error instanceof SubmittalError) return reply.code(409).send({ error: error.message });
+        throw error;
+      }
+
+      return { reviewed: true };
+    },
+  );
 
   app.get<{ Querystring: ListQuery & { contractId?: string; state?: string } }>(
     '/contracts/retention',

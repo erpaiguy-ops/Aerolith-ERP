@@ -78,12 +78,15 @@ export {
 export {
   CORRESPONDENCE_SORTS,
   RETENTION_SORTS,
+  SUBMITTAL_SORTS,
   listCorrespondence,
   listRetention,
+  listSubmittals,
   summariseRetention,
   type CorrespondenceListRow,
   type RetentionListRow,
   type RetentionSummary,
+  type SubmittalListRow,
 } from './service/registers';
 
 export {
@@ -93,6 +96,19 @@ export {
   type CreateCorrespondenceInput,
   type UpdateCorrespondenceInput,
 } from './service/correspondence';
+
+export {
+  SubmittalError,
+  createSubmittal,
+  getSubmittalDetail,
+  recordReview,
+  submitRevision,
+  type CreateSubmittalInput,
+  type RecordReviewInput,
+  type SubmitRevisionInput,
+  type SubmittalDetail,
+  type SubmittalRevisionRow,
+} from './service/submittals';
 
 export {
   BACK_CHARGE_SORTS,

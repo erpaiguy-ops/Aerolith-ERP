@@ -68,19 +68,28 @@ with barcodes, becomes scanned progress, becomes a payment application. **Nobody
 else joins those dots.** At the end of phase 2 you have something a joinery
 business will pay for.
 
-### Cutlist optimiser — delivered, with a known gap
+### Cutlist optimiser — delivered, its one known gap since closed
 
-`@aerolith/cutlist` is built and tested (57 tests). Two things to be honest about:
+`@aerolith/cutlist` is built and tested (64 tests). One thing to be honest
+about, and one that was recorded here as a known gap and has since been fixed:
 
 - **Achieved yield depends on the parts, not the algorithm.** The optimiser
   reaches the grid-optimal count per sheet on every shape tested. A mix with
   large awkward panels has a low geometric ceiling nothing can beat — the
-  wardrobe test job tops out near 74% because a 2100x900 back leaves a 340mm
-  strip nothing else fits into.
-- **Known gap:** it does not find layouts combining a grid with a rotated part in
-  the leftover strip, worth roughly one sheet in twenty on mixes like that job.
-  Closing it needs a real search rather than a greedy pass. Recorded rather than
-  hidden; worth doing once there is a customer whose material bill justifies it.
+  wardrobe test job reaches 20 boards at just under 74% because a 2100x900
+  back leaves a 340mm strip only a few other parts in that list fit into.
+- **Previously a known gap, now closed:** the packer did not find layouts
+  combining a grid with a rotated part in the leftover strip, worth roughly
+  one sheet in twenty on mixes like the wardrobe job — and separately did not
+  always reach a plain grid either (800x400 into 2440x1220 packed 8, one short
+  of the true 3x3). Both traced to the same cause: the guillotine split after
+  placing a part always kept whichever half was locally larger, a good rule
+  placement to placement that commits to a leftover SHAPE before the rest of
+  the cutting list is known. The split axis is now one more thing the
+  strategy portfolio searches — the same mechanism that already found the
+  best sort order and fit score, applied to the one decision that was never
+  searched. Both cases are fixed: the 800x400 sheet packs 9, and the wardrobe
+  job runs in 20 boards instead of 21.
 
 ### Phase 2 status — the wedge is joined end to end
 
@@ -106,9 +115,14 @@ Both compositions live in the application layer. The boundary checker enforces
 that neither module imports the other, which is what keeps each one sellable on
 its own — and what leaves the door open to extracting any of them later.
 
-Remaining in phase 2, deliberately deferred rather than forgotten: shop drawing
-and submittal registers (the fit-out approval clock), certificate PDF generation,
-and the cutlist gap recorded above.
+Nothing is left deliberately deferred in phase 2. Three items were tracked here
+across earlier drafts of this section — the shop drawing and submittal
+register, certificate PDF generation, and the cutlist's rotated-part gap — and
+all three are now closed: certificate PDF generation shipped in "A payment
+application you can send" below (this bullet was previously stale, still
+listing it as outstanding after the fact); the cutlist gap is closed per the
+note above; the submittal register — the fit-out approval clock — is built
+below in "The submittal register, the fit-out approval clock had no screen".
 
 ### The web shell — delivered
 
@@ -1904,6 +1918,73 @@ Seven new integration tests across the two slices that needed them
 holder surfacing on the register, and the version list resolving uploader
 names in order) plus three new unit tests for the `fileSize` formatter the
 document register needed and none of the platform had yet.
+
+### The submittal register: the fit-out approval clock had no screen — or a table
+
+The last of the three items this section had, at different points, listed as
+deliberately deferred: a shop drawing, sample or method statement submitted
+for review, and the cycle it goes through until a consultant signs it off.
+Unlike the four gaps above, there was no route with no screen behind it —
+there was no table at all, so this is the one genuinely new register in this
+sweep rather than a UI closing a gap in something that already existed.
+
+**Split into a register row and a revision history, the same reasoning a
+payment application is split from its certificate.** `submittal` carries
+where the ball sits NOW — its status, who is meant to act next, which
+revision is current; `submittal_revision` carries every cycle it took to get
+there — submitted on, due by, reviewed on, the decision, the comments. A
+drawing sent back "revise and resubmit" and resubmitted is a new revision
+row, never the old one edited in place, for the same reason a rejected
+variation is never turned into an approved one by changing a field: the
+history of how a decision was reached is as much the record as the decision
+itself. `createBudgetVersion` and `addDocumentVersion` already establish this
+shape elsewhere in the codebase; this is a third instance of the same
+pattern, not a new one.
+
+**The service enforces the review cycle's actual rules, not just its happy
+path.** `submitRevision` refuses once a submittal is `approved` or
+`approved_as_noted` — an approved shop drawing does not get resubmitted.
+`recordReview` refuses reviewing a submittal that has nothing submitted yet
+(`currentRevision === 0`), and refuses reviewing the current revision twice —
+both real mistakes a click could make, not defensive programming against
+inputs that can't occur. Every decision, either way, puts the ball back on
+the contractor: to proceed once approved, or to raise the next revision once
+it is not. `ballInCourt` is the one field that makes this a register and not
+a folder of PDFs — it answers "what is sitting on someone's desk right now"
+without opening a single row, the same design point the notice register's
+`isAtRisk` already makes for a missed deadline.
+
+**Numbering needed the same manual provisioning every other module's series
+has needed all session** — declaring `contracts.submittal` in the manifest's
+`numberSeries` does not provision it; nothing in module enablement consumes
+that declaration yet, the platform gap recorded three times already in the
+stock-movement-approval entry above. Provisioned the same way: the API
+integration test's `beforeAll`, and `seed-demo.ts`.
+
+**Regenerating the migration surfaced the same "one migration file per
+module" convention every module in this repo already follows** — no module
+has accumulated incremental migration files; each carries exactly one,
+regenerated fresh from the current schema when it changes, because there is
+no production deployment yet whose history needs preserving. Regenerating
+it produces a new migration file name, which `drizzle-orm`'s tracking table
+does not recognise as already applied — it tried to `CREATE SCHEMA
+"contracts"` a second time and failed. Fixed by dropping the `contracts` and
+`drizzle_contracts` schemas in the (local, disposable) dev and test
+databases and re-migrating clean, the same reset every other schema change
+in this session has needed.
+
+Eleven new integration tests drive the full cycle end to end: raised as a
+draft, refused a review with nothing submitted yet, submitted and moved to
+the consultant, listed as overdue once its due date passes with the ball
+still there, sent back for revise-and-resubmit and moved back to the
+contractor, refused a second review of the same revision, resubmitted as a
+genuinely new revision and approved, refused a further revision once
+approved, and dropped from the "still going through the cycle" filter once
+closed. Verified live against the seeded demo data too: a shop drawing that
+took two rounds before approval, a sample sitting with the consultant eleven
+days past its due date with the overdue banner correctly showing, and a
+method statement submitted from draft straight through the browser, its
+revision history updating to show it awaiting review.
 
 ## Phase 3 — Commercial completion (months 14-20)
 

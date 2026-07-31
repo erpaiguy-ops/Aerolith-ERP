@@ -118,6 +118,7 @@ suite('Projects and Contract Administration', () => {
       { tenantId: TENANT, entityType: 'contracts.contract', code: 'CON', name: 'Contract', pattern: 'CON-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.variation', code: 'VO', name: 'Variation', pattern: 'VO-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.payment_application', code: 'IPC', name: 'Payment Application', pattern: 'IPC-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'contracts.submittal', code: 'SUB', name: 'Submittal', pattern: 'SUB-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'projects.snag', code: 'SNG', name: 'Snag', pattern: 'SNG-{YYYY}-{SEQ}' },
     ]);
 
@@ -137,6 +138,8 @@ suite('Projects and Contract Administration', () => {
     await db.delete(c.variation).where(eq(c.variation.tenantId, TENANT));
     await db.delete(c.backCharge).where(eq(c.backCharge.tenantId, TENANT));
     await db.delete(c.correspondence).where(eq(c.correspondence.tenantId, TENANT));
+    await db.delete(c.submittalRevision).where(eq(c.submittalRevision.tenantId, TENANT));
+    await db.delete(c.submittal).where(eq(c.submittal.tenantId, TENANT));
     await db.delete(c.contractLine).where(eq(c.contractLine.tenantId, TENANT));
     await db.delete(c.contract).where(eq(c.contract.tenantId, TENANT));
 
@@ -2261,6 +2264,195 @@ it('lists variations with the notice clock resolved per row', async () => {
       });
       const row = list.json().rows.find((r: { id: string }) => r.id === rfiId);
       expect(row.variationId).toBe(variationId);
+    });
+  });
+
+  describe('12 — the submittal register, the fit-out approval clock', () => {
+    let submittalId: string;
+
+    it('raises a shop drawing submittal', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/submittals`,
+        headers: auth(),
+        payload: {
+          title: 'Reception desk — shop drawing',
+          submittalType: 'shop_drawing',
+          specSection: '06 41 00',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.number).toMatch(/^SUB-/);
+      submittalId = body.id;
+    });
+
+    it('refuses a site engineer who holds no contracts.submittal.manage permission', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/submittals`,
+        headers: auth(ENGINEER_TOKEN),
+        payload: { title: 'Should be refused', submittalType: 'shop_drawing' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('starts as a draft, with nothing yet to review', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals/${submittalId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.status).toBe('draft');
+      expect(body.ballInCourt).toBe('contractor');
+      expect(body.currentRevision).toBe(0);
+      expect(body.revisions).toEqual([]);
+    });
+
+    it('refuses a review before anything has been submitted', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/review`,
+        headers: auth(),
+        payload: { decision: 'approved', reviewedOn: '2026-05-01' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('submits revision A for review, moving the ball to the consultant', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/revisions`,
+        headers: auth(),
+        payload: { submittedOn: '2026-04-20', dueOn: '2026-05-04' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().revision).toBe(1);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals/${submittalId}`,
+        headers: auth(),
+      });
+      const body = detail.json();
+      expect(body.status).toBe('under_review');
+      expect(body.ballInCourt).toBe('consultant');
+      expect(body.currentRevision).toBe(1);
+      expect(body.revisions).toHaveLength(1);
+    });
+
+    it('lists it as overdue once the due date has passed with the ball still at the consultant', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals?contractId=${contractId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = response.json().rows.find((r: { id: string }) => r.id === submittalId);
+      expect(row.dueOn).toBe('2026-05-04');
+      expect(row.isOverdue).toBe(true);
+    });
+
+    it('sends revision A back for revise and resubmit, putting the ball back on the contractor', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/review`,
+        headers: auth(),
+        payload: {
+          decision: 'revise_resubmit',
+          reviewedOn: '2026-05-02',
+          reviewComments: 'Confirm the edge banding colour against the sample board.',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals/${submittalId}`,
+        headers: auth(),
+      });
+      const body = detail.json();
+      expect(body.status).toBe('revise_resubmit');
+      expect(body.ballInCourt).toBe('contractor');
+      expect(body.revisions[0].decision).toBe('revise_resubmit');
+      expect(body.revisions[0].reviewComments).toMatch(/edge banding/);
+    });
+
+    it('refuses reviewing the same revision twice', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/review`,
+        headers: auth(),
+        payload: { decision: 'approved', reviewedOn: '2026-05-03' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('submits revision B, and approves it — a genuinely new cycle, not the old one edited', async () => {
+      const revision = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/revisions`,
+        headers: auth(),
+        payload: { submittedOn: '2026-05-06', dueOn: '2026-05-20' },
+      });
+      expect(revision.statusCode).toBe(200);
+      expect(revision.json().revision).toBe(2);
+
+      const approval = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/review`,
+        headers: auth(),
+        payload: { decision: 'approved', reviewedOn: '2026-05-10' },
+      });
+      expect(approval.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals/${submittalId}`,
+        headers: auth(),
+      });
+      const body = detail.json();
+      expect(body.status).toBe('approved');
+      expect(body.ballInCourt).toBe('contractor');
+      expect(body.currentRevision).toBe(2);
+      expect(body.revisions).toHaveLength(2);
+      // Newest first: the approved revision, then the one sent back.
+      expect(body.revisions[0].revision).toBe(2);
+      expect(body.revisions[0].decision).toBe('approved');
+      expect(body.revisions[1].revision).toBe(1);
+      expect(body.revisions[1].decision).toBe('revise_resubmit');
+    });
+
+    it('refuses a further revision once approved', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/submittals/${submittalId}/revisions`,
+        headers: auth(),
+        payload: { submittedOn: '2026-05-11' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('drops out of the open filter once approved', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/submittals?contractId=${contractId}&open=true`,
+        headers: auth(),
+      });
+
+      const rows: { id: string }[] = response.json().rows;
+      expect(rows.some((r) => r.id === submittalId)).toBe(false);
     });
   });
 });
