@@ -348,6 +348,7 @@ async function main() {
       { tenantId: TENANT, entityType: 'inventory.issue', code: 'ISS', name: 'Stock Issue', pattern: 'ISS-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'inventory.transfer', code: 'STR', name: 'Stock Transfer', pattern: 'STR-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'inventory.adjustment', code: 'ADJ', name: 'Stock Adjustment', pattern: 'ADJ-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'inventory.stock_count', code: 'CNT', name: 'Stock Count', pattern: 'CNT-{YYYY}-{SEQ}' },
     ]);
 
     await tx.insert(schema.project).values({

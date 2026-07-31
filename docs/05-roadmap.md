@@ -1678,6 +1678,70 @@ variation it created any lines — fixed by giving the test's variation a
 line, since chasing the route's error mapping was not what this slice was
 for.
 
+### Stock counts: a whole lifecycle the schema had and nothing else did
+
+The last of the three candidates the back-charges survey found (correspondence
+was the second, closed above): `inventory.stock_count.reconcile`, gating the
+Stock Counts nav entry and, underneath it, exactly one thing — a list route.
+The schema was the most fully-designed of any gap closed this session: a
+`draft → counting → pending_approval → posted` status enum, an
+`adjustmentMovementId` column waiting to be set, a `stockCountLine.variance`
+generated column, and a manifest permission whose own description already
+said what the finished feature does ("Writes off variances. Restricted —
+this is how stock loss gets hidden"). None of it had a service function
+behind it.
+
+One design decision the other three gaps didn't need: whether counting a
+line and reconciling it should sit behind the same permission. There was no
+lesser permission declared for raising a count or entering a quantity —
+only `.reconcile` — so the whole surface sits behind it, the same shape as
+`contracts.back_charge.manage` and `contracts.correspondence.manage` gating
+their entire registers. `pending_approval` isn't a manual step either: a
+count moves into it the instant its last line gets a counted quantity,
+computed from the data rather than a button that could be clicked before
+every shelf was actually checked — and `reconcileStockCount` requires
+exactly that status, which is what makes "every line counted" enforcement
+free rather than a separate check.
+
+**A real bug the feature needed fixed to work at all, not a pre-existing
+one merely found:** `postMovement` rejected any movement line with
+`quantity <= 0`, uniformly across every movement type. That's correct for
+a receipt or an issue — there is no such thing as issuing zero units — but
+an adjustment *sets* an absolute quantity rather than moving one, and a
+shelf that is genuinely empty is quantity zero, not a line to skip.
+Reconciling a count where something had been fully consumed since it was
+booked in would 500 on exactly that line. Fixed by allowing zero only for
+`adjustment`, since every other type still has no meaning at zero.
+
+**A gap in how a new document type gets wired up, once it hit a live
+tenant:** `allocateNumber` throws `NoNumberSeriesError` when no matching
+row exists in `kernel.number_series` for the tenant — and nothing in the
+platform automatically provisions a module's declared `numberSeries` into
+that table. Every number series that exists today, across every module,
+was inserted by hand: once in each integration test's `beforeAll`, and
+separately in `apps/api/scripts/seed-demo.ts` for the demo tenant. Adding
+`inventory.stock_count` to the manifest's own `numberSeries` array (correct,
+descriptive, and how every other module already documents its series) did
+nothing for a tenant that enabled Inventory before this feature existed —
+which the demo tenant had. First surfaced as a 500 in a live Playwright
+pass, not a test, because every integration test's `beforeAll` inserts its
+own series by hand and so never exercises the gap a live tenant actually
+has. Fixed for the demo tenant with a direct insert and for future reseeds
+by adding the row to `seed-demo.ts`; the platform-level gap — manifest
+metadata with no code path that ever provisions it — is recorded here
+rather than fixed, since fixing it properly means deciding whether module
+enablement should sync `numberSeries` automatically, which is a bigger
+question than this slice.
+
+The live verification this feature got was better than a fresh demo row
+would have been: the seed data already contained a stock count
+(`SC-2026-0001`) sitting in `counting` with three of its four lines
+counted and one still open — left that way, it turned out, because
+nothing existed yet to finish it. Completing it end to end through the
+web UI — recording the last line, watching the status move itself to
+`pending_approval`, reconciling — closed a loose thread the demo had been
+carrying since before this feature existed, rather than adding a new one.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

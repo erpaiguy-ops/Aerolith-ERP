@@ -155,7 +155,20 @@ labelled parts, becomes scanned progress.
   variation checks it belongs to the same contract before allowing it
   (`POST /api/v1/contracts/:id/correspondence`,
   `PATCH /api/v1/contracts/correspondence/:id`, `/contracts/correspondence`)
-- **1,089 tests**, including integration suites that prove tenant isolation holds and
+- **Stock counts, from a list to a reconciliation** — `inventory.stock_count.reconcile`
+  gated the nav entry and nothing else; the schema's own
+  `draft → counting → pending_approval → posted` lifecycle had no code
+  behind it at all. Generating a sheet freezes the book quantity per line;
+  a count moves to `pending_approval` on its own once every line is
+  counted, not on a separate button; reconciling posts one adjustment
+  movement for every line that varied and leaves the ones that matched the
+  book alone — including writing a shelf down to genuine zero, which
+  needed a real fix to `postMovement`'s "quantity must be positive" check,
+  since an adjustment *sets* an absolute quantity and zero is a valid one
+  (`POST /api/v1/inventory/counts`, `POST /api/v1/inventory/counts/:id/generate`,
+  `PATCH /api/v1/inventory/counts/lines/:id`, `POST /api/v1/inventory/counts/:id/reconcile`,
+  `/inventory/counts`)
+- **1,100 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

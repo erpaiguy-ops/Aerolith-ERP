@@ -130,6 +130,13 @@ suite('Inventory', () => {
         name: 'Adjustment',
         pattern: 'ADJ-{YYYY}-{SEQ}',
       },
+      {
+        tenantId: TENANT,
+        entityType: 'inventory.stock_count',
+        code: 'CNT',
+        name: 'Stock Count',
+        pattern: 'CNT-{YYYY}-{SEQ}',
+      },
     ]);
 
     app = await buildApp();
@@ -1057,6 +1064,285 @@ suite('Inventory', () => {
 
     afterAll(async () => {
       await getDatabase().delete(schema.item).where(eq(schema.item.id, panelId));
+    });
+  });
+
+  describe('stock counts, from nothing to reconciled', () => {
+    const STOREKEEPER = 'cccccccc-0000-4000-8000-000000000002';
+    const STOREKEEPER_TOKEN = 'storekeeper-read-only-token';
+    let roleId: string;
+    let countWarehouseId: string;
+    let steadyItemId: string;
+    let shortItemId: string;
+    let zeroedItemId: string;
+    let countId: string;
+    let steadyLineId: string;
+    let shortLineId: string;
+
+    beforeAll(async () => {
+      const db = getDatabase();
+
+      // Read the register without any authority to write to it — proves
+      // `inventory.stock.read` alone does not imply `.reconcile`, the same
+      // separation the movement ledger already relies on.
+      const [role] = await db
+        .insert(schema.role)
+        .values({ tenantId: TENANT, code: 'storekeeper-ro', name: 'Storekeeper (read only)' })
+        .returning({ id: schema.role.id });
+      roleId = role!.id;
+      await db
+        .insert(schema.rolePermission)
+        .values({ tenantId: TENANT, roleId, permissionKey: 'inventory.stock.read' });
+
+      await db.insert(schema.appUser).values({
+        id: STOREKEEPER,
+        email: 'storekeeper@inv.test',
+        name: 'Storekeeper',
+      });
+      await db
+        .insert(schema.membership)
+        .values({ tenantId: TENANT, userId: STOREKEEPER, status: 'active', isOwner: false });
+      await db
+        .insert(schema.userRole)
+        .values({ tenantId: TENANT, userId: STOREKEEPER, roleId });
+      await db.insert(schema.session).values({
+        userId: STOREKEEPER,
+        tenantId: TENANT,
+        tokenHash: hash(STOREKEEPER_TOKEN),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+
+      const wh = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/warehouses',
+        headers: auth(),
+        payload: { code: 'CNT-WH', name: 'Count Test Warehouse', type: 'factory' },
+      });
+      countWarehouseId = wh.json().warehouse.id;
+
+      const items = await db
+        .insert(schema.item)
+        .values([
+          { tenantId: TENANT, code: 'CNT-STEADY', name: 'Counted exactly right', type: 'consumable' },
+          { tenantId: TENANT, code: 'CNT-SHORT', name: 'Counted short', type: 'consumable' },
+          { tenantId: TENANT, code: 'CNT-ZERO', name: 'Counted down to nothing', type: 'consumable' },
+        ])
+        .returning({ id: schema.item.id });
+      steadyItemId = items[0]!.id;
+      shortItemId = items[1]!.id;
+      zeroedItemId = items[2]!.id;
+
+      // Establishes a known book quantity for each — the count exists to
+      // measure a variance FROM this, not from whatever earlier sections in
+      // this file happened to leave behind.
+      for (const [itemId, quantity] of [
+        [steadyItemId, 60],
+        [shortItemId, 100],
+        [zeroedItemId, 20],
+      ] as const) {
+        const receipt = await app.inject({
+          method: 'POST',
+          url: '/api/v1/inventory/movements',
+          headers: auth(),
+          payload: {
+            type: 'receipt',
+            lines: [{ itemId, quantity, toWarehouseId: countWarehouseId, unitCost: 10 }],
+          },
+        });
+        expect(receipt.statusCode).toBe(200);
+      }
+    });
+
+    afterAll(async () => {
+      const db = getDatabase();
+      await db.delete(schema.userRole).where(eq(schema.userRole.roleId, roleId));
+      await db.delete(schema.rolePermission).where(eq(schema.rolePermission.roleId, roleId));
+      await db.delete(schema.role).where(eq(schema.role.id, roleId));
+      await db.delete(schema.session).where(eq(schema.session.userId, STOREKEEPER));
+      await db.delete(schema.membership).where(eq(schema.membership.userId, STOREKEEPER));
+      await db.delete(schema.appUser).where(eq(schema.appUser.id, STOREKEEPER));
+    });
+
+    it('refuses a warehouse that does not exist', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/counts',
+        headers: auth(),
+        payload: { warehouseId: '00000000-0000-4000-8000-000000000000' },
+      });
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a storekeeper who holds only inventory.stock.read', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/counts',
+        headers: auth(STOREKEEPER_TOKEN),
+        payload: { warehouseId: countWarehouseId },
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('raises a count, allocating a CNT-prefixed number', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/counts',
+        headers: auth(),
+        payload: { warehouseId: countWarehouseId, countDate: '2026-07-01' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().number).toMatch(/^CNT-/);
+      countId = response.json().id;
+    });
+
+    it('generates the count sheet, freezing the book quantity per line', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/counts/${countId}/generate`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().lineCount).toBe(3);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/counts/${countId}`,
+        headers: auth(),
+      });
+      expect(detail.json().status).toBe('counting');
+
+      const lines: { id: string; itemId: string; systemQuantity: string }[] = detail.json().lines;
+      steadyLineId = lines.find((l) => l.itemId === steadyItemId)!.id;
+      shortLineId = lines.find((l) => l.itemId === shortItemId)!.id;
+      expect(Number(lines.find((l) => l.itemId === shortItemId)!.systemQuantity)).toBe(100);
+    });
+
+    it('refuses to generate the same sheet twice', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/counts/${countId}/generate`,
+        headers: auth(),
+      });
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('stays in counting until every line has a counted quantity', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/counts/lines/${steadyLineId}`,
+        headers: auth(),
+        payload: { countedQuantity: 60 },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/counts/${countId}`,
+        headers: auth(),
+      });
+      // Two of three lines still uncounted (short and zero), so the count is
+      // not ready for a decision yet.
+      expect(detail.json().status).toBe('counting');
+    });
+
+    it('refuses to reconcile before every line is counted', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/counts/${countId}/reconcile`,
+        headers: auth(),
+      });
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('moves to pending_approval the instant the last line is counted', async () => {
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/counts/lines/${shortLineId}`,
+        headers: auth(),
+        payload: { countedQuantity: 95, varianceReason: 'Five damaged in transit' },
+      });
+
+      const zeroLine = (
+        await app.inject({
+          method: 'GET',
+          url: `/api/v1/inventory/counts/${countId}`,
+          headers: auth(),
+        })
+      ).json().lines.find((l: { itemId: string }) => l.itemId === zeroedItemId);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/counts/lines/${zeroLine.id}`,
+        headers: auth(),
+        // The shelf is genuinely empty — not skipped, counted AS zero.
+        payload: { countedQuantity: 0 },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/counts/${countId}`,
+        headers: auth(),
+      });
+      expect(detail.json().status).toBe('pending_approval');
+    });
+
+    it('refuses a negative counted quantity', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/inventory/counts/lines/${steadyLineId}`,
+        headers: auth(),
+        payload: { countedQuantity: -1 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('reconciles: an adjustment for what varied, nothing for the line that matched, the shelf written down to zero', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/counts/${countId}/reconcile`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().adjustmentMovementId).not.toBeNull();
+
+      const posted = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/counts/${countId}`,
+        headers: auth(),
+      });
+      expect(posted.json().status).toBe('posted');
+
+      const [steady, short, zeroed] = await Promise.all(
+        [steadyItemId, shortItemId, zeroedItemId].map((itemId) =>
+          app
+            .inject({
+              method: 'GET',
+              url: `/api/v1/inventory/stock?itemId=${itemId}&warehouseId=${countWarehouseId}`,
+              headers: auth(),
+            })
+            .then((r) => r.json()),
+        ),
+      );
+
+      // Matched the book exactly — untouched, on purpose.
+      expect(steady.quantity).toBe(60);
+      // Five short, written down to what was actually on the shelf.
+      expect(short.quantity).toBe(95);
+      // Not skipped: driven all the way down to zero.
+      expect(zeroed.quantity).toBe(0);
+    });
+
+    it('refuses to reconcile an already-posted count', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/counts/${countId}/reconcile`,
+        headers: auth(),
+      });
+      expect(response.statusCode).toBe(409);
     });
   });
 });

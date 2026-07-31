@@ -15,8 +15,12 @@ import {
   InvalidMovementError,
   OFFCUT_SORTS,
   STOCK_SORTS,
+  StockCountError,
   createItem,
+  createStockCount,
+  generateCountSheet,
   getItemDetail,
+  getStockCountDetail,
   inventorySchema,
   listItems,
   listMovements,
@@ -24,6 +28,8 @@ import {
   listStockCounts,
   listStockOnHand,
   postMovement,
+  recordCountLine,
+  reconcileStockCount,
   selectBestOffcut,
   setItemCustomFields,
   stockOnHand,
@@ -142,6 +148,22 @@ const warehouseBody = z.object({
   type: z.enum(['factory', 'site', 'yard', 'transit', 'virtual']).optional(),
   projectId: z.string().uuid().nullish(),
   legalEntityId: z.string().uuid().nullish(),
+});
+
+const createCountBody = z.object({
+  warehouseId: z.string().uuid(),
+  countDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  itemCategoryId: z.string().uuid().nullish(),
+  notes: z.string().nullish(),
+});
+
+const recordCountLineBody = z.object({
+  countedQuantity: z.number().nonnegative(),
+  varianceReason: z.string().nullish(),
+});
+
+const reconcileCountBody = z.object({
+  notes: z.string().nullish(),
 });
 
 const matchBody = z.object({
@@ -338,6 +360,107 @@ export async function inventoryRoutes(app: FastifyInstance) {
           }),
         ),
       );
+    },
+  );
+
+  app.post('/inventory/counts', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock_count.reconcile');
+
+    const parsed = createCountBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createStockCount(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof StockCountError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/inventory/counts/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getStockCountDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Stock count not found.' });
+    return detail;
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/inventory/counts/:id/generate',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.stock_count.reconcile');
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) => generateCountSheet(tx, { countId: request.params.id })),
+        );
+      } catch (error) {
+        if (error instanceof StockCountError) return reply.code(409).send({ error: error.message });
+        throw error;
+      }
+    },
+  );
+
+  app.patch<{ Params: { id: string } }>(
+    '/inventory/counts/lines/:id',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.stock_count.reconcile');
+
+      const parsed = recordCountLineBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            recordCountLine(tx, { countLineId: request.params.id, ...parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof StockCountError) return reply.code(409).send({ error: error.message });
+        throw error;
+      }
+
+      return { updated: true };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/inventory/counts/:id/reconcile',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'inventory.stock_count.reconcile');
+
+      const parsed = reconcileCountBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) => reconcileStockCount(tx, { countId: request.params.id, ...parsed.data })),
+        );
+      } catch (error) {
+        if (error instanceof StockCountError) return reply.code(409).send({ error: error.message });
+        throw error;
+      }
     },
   );
 

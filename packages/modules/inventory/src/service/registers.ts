@@ -667,6 +667,92 @@ export async function listStockCounts(
   return listResult(rows, counted?.total ?? 0, params);
 }
 
+export interface StockCountLineRow {
+  id: string;
+  itemId: string;
+  itemCode: string;
+  itemName: string;
+  binCode: string | null;
+  batchCode: string | null;
+  systemQuantity: string;
+  countedQuantity: string | null;
+  variance: string | null;
+  varianceReason: string | null;
+  countedAt: string | null;
+}
+
+export interface StockCountDetail {
+  id: string;
+  number: string | null;
+  warehouseId: string;
+  warehouseCode: string;
+  warehouseName: string;
+  status: string;
+  countDate: string;
+  itemCategoryId: string | null;
+  adjustmentMovementId: string | null;
+  postedAt: string | null;
+  notes: string | null;
+  lines: StockCountLineRow[];
+}
+
+/** One count, with every line resolved to something a human recognises. */
+export async function getStockCountDetail(
+  tx: Transaction,
+  countId: string,
+): Promise<StockCountDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [header] = await tx
+    .select({
+      id: stockCount.id,
+      number: stockCount.number,
+      warehouseId: stockCount.warehouseId,
+      warehouseCode: warehouse.code,
+      warehouseName: warehouse.name,
+      status: stockCount.status,
+      countDate: stockCount.countDate,
+      itemCategoryId: stockCount.itemCategoryId,
+      adjustmentMovementId: stockCount.adjustmentMovementId,
+      postedAt: sql<string | null>`${stockCount.postedAt}`,
+      notes: stockCount.notes,
+    })
+    .from(stockCount)
+    .innerJoin(
+      warehouse,
+      and(eq(warehouse.id, stockCount.warehouseId), eq(warehouse.tenantId, tenantId)),
+    )
+    .where(and(eq(stockCount.tenantId, tenantId), eq(stockCount.id, countId)));
+
+  if (!header) return null;
+
+  const lines = await tx
+    .select({
+      id: stockCountLine.id,
+      itemId: stockCountLine.itemId,
+      itemCode: schema.item.code,
+      itemName: schema.item.name,
+      binCode: storageBin.code,
+      batchCode: batchTable.code,
+      systemQuantity: stockCountLine.systemQuantity,
+      countedQuantity: stockCountLine.countedQuantity,
+      variance: sql<string | null>`${stockCountLine.variance}`,
+      varianceReason: stockCountLine.varianceReason,
+      countedAt: sql<string | null>`${stockCountLine.countedAt}`,
+    })
+    .from(stockCountLine)
+    .innerJoin(
+      schema.item,
+      and(eq(schema.item.id, stockCountLine.itemId), eq(schema.item.tenantId, tenantId)),
+    )
+    .leftJoin(storageBin, eq(storageBin.id, stockCountLine.binId))
+    .leftJoin(batchTable, eq(batchTable.id, stockCountLine.batchId))
+    .where(and(eq(stockCountLine.tenantId, tenantId), eq(stockCountLine.countId, countId)))
+    .orderBy(asc(schema.item.code));
+
+  return { ...header, lines };
+}
+
 // ---------------------------------------------------------------------------
 // Movement ledger
 // ---------------------------------------------------------------------------

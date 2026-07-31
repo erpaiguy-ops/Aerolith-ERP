@@ -1,3 +1,6 @@
+import Link from 'next/link';
+
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -8,7 +11,19 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, PageHeader, ProgressBar, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
+import { pageFetch } from '@/lib/api';
 import { date, quantity } from '@/lib/format';
+import { getMe } from '@/lib/session';
+
+import { createStockCountAction } from './actions';
+
+interface Warehouse {
+  id: string;
+  code: string;
+  name: string;
+  isActive: boolean;
+}
 
 interface CountRow {
   id: string;
@@ -40,8 +55,20 @@ export default async function CountsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = listQuery(await searchParams);
+  const me = await getMe();
+  const mayReconcile = can(me.permissions, 'inventory.stock_count.reconcile') || me.user.isOwner;
 
-  const result = await fetchList<CountRow>('/inventory/counts', query);
+  const [result, warehouses] = await Promise.all([
+    fetchList<CountRow>('/inventory/counts', query),
+    mayReconcile
+      ? (await pageFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses')).warehouses.filter(
+          (w) => w.isActive,
+        )
+      : [],
+  ]);
+
+  const field =
+    'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-3 py-1.5 text-sm outline-none focus:border-(--color-accent)';
 
   return (
     <>
@@ -49,6 +76,53 @@ export default async function CountsPage({
         title="Stock counts"
         subtitle="What was counted, what disagreed with the book, and by how much."
       />
+
+      {mayReconcile ? (
+        <Card className="mb-4">
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">Raise a count</summary>
+            <ActionForm action={createStockCountAction} className="mt-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label htmlFor="warehouseId" className="mb-1 block text-xs text-(--color-muted)">
+                    Warehouse
+                  </label>
+                  <select id="warehouseId" name="warehouseId" className={field} defaultValue="">
+                    <option value="" disabled>
+                      Choose a warehouse…
+                    </option>
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {`${w.code} — ${w.name}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="countDate" className="mb-1 block text-xs text-(--color-muted)">
+                    Count date
+                  </label>
+                  <input
+                    id="countDate"
+                    name="countDate"
+                    type="date"
+                    defaultValue={new Date().toISOString().slice(0, 10)}
+                    className={field}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <SubmitButton pendingLabel="Raising…">Raise count</SubmitButton>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-(--color-muted)">
+                Raising a count only creates the header — the book quantity per line is frozen when
+                you generate the sheet, on the count&apos;s own screen, so a count sitting unopened
+                overnight does not measure against a quantity that moved in the meantime.
+              </p>
+            </ActionForm>
+          </details>
+        </Card>
+      ) : null}
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1.5">
@@ -103,7 +177,12 @@ export default async function CountsPage({
               return (
                 <tr key={row.id} className="hover:bg-(--color-canvas)">
                   <Td>
-                    <span className="numeric">{row.number ?? '—'}</span>
+                    <Link
+                      href={`/inventory/counts/${row.id}`}
+                      className="numeric text-(--color-accent) hover:underline"
+                    >
+                      {row.number ?? '—'}
+                    </Link>
                   </Td>
                   <Td>
                     <span className="block">{row.warehouseName}</span>

@@ -163,5 +163,6 @@ export const inventoryModule = defineModule({
     { entityType: 'inventory.return', code: 'RTN', pattern: 'RTN-{YYYY}-{SEQ}' },
     { entityType: 'inventory.scrap', code: 'SCR', pattern: 'SCR-{YYYY}-{SEQ}' },
     { entityType: 'inventory.production_output', code: 'PRO', pattern: 'PRO-{YYYY}-{SEQ}' },
+    { entityType: 'inventory.stock_count', code: 'CNT', pattern: 'CNT-{YYYY}-{SEQ}' },
   ],
 });

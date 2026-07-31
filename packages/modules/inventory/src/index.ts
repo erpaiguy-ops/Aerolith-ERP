@@ -52,6 +52,7 @@ export {
   OFFCUT_SORTS,
   STOCK_SORTS,
   getItemDetail,
+  getStockCountDetail,
   listItems,
   listMovements,
   listOffcuts,
@@ -63,6 +64,8 @@ export {
   type MovementListRow,
   type OffcutListRow,
   type OffcutSummary,
+  type StockCountDetail,
+  type StockCountLineRow,
   type StockCountListRow,
   type StockListRow,
 } from './service/registers';
@@ -75,5 +78,16 @@ export {
   type CreateItemInput,
   type UpdateItemInput,
 } from './service/items';
+
+export {
+  StockCountError,
+  createStockCount,
+  generateCountSheet,
+  recordCountLine,
+  reconcileStockCount,
+  type CreateStockCountInput,
+  type ReconcileStockCountInput,
+  type RecordCountLineInput,
+} from './service/counts';
 
 export { INVENTORY_RLS, buildInventoryRls, buildInventoryGrants } from './db/security';

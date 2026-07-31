@@ -165,7 +165,13 @@ export async function postMovement(
 
   for (const [index, line] of input.lines.entries()) {
     const stockQuantity = line.stockQuantity ?? line.quantity;
-    if (stockQuantity <= 0) {
+    // An adjustment SETS an absolute quantity rather than moving one, and zero
+    // is a real shelf, not a meaningless line — a count that finds nothing
+    // left must be able to write the book down to zero. Every other type
+    // moves a positive amount by definition; there is no such thing as
+    // issuing zero units.
+    const zeroIsValid = input.type === 'adjustment' && stockQuantity === 0;
+    if (stockQuantity < 0 || (stockQuantity === 0 && !zeroIsValid)) {
       throw new InvalidMovementError(`Line ${index + 1}: quantity must be positive.`);
     }
 
