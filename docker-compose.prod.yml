@@ -1,0 +1,109 @@
+# Production compose for the single-box deployment described in
+# docs/04-infrastructure.md (an OCI Always-Free Ampere VM, fronted by
+# Cloudflare Tunnel — nothing here opens a port to the internet directly).
+#
+# `docker-compose.yml` (dev) starts Postgres alone and expects `pnpm dev` to
+# run the apps on the host. This file runs the built images instead, and
+# adds the one-shot migration step dev handles by hand
+# (`pnpm db:migrate && pnpm db:seed`).
+#
+# Secrets (POSTGRES_PASSWORD, APP_DB_PASSWORD, AUTH_SECRET, the R2/S3 keys)
+# are read from a `.env` file next to this compose file — never committed,
+# per docs/04-infrastructure.md's security baseline. Copy `.env.example` and
+# fill it in.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aerolith
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: aerolith
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U aerolith -d aerolith']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No published port: only containers on this compose network reach it.
+    # Reach it from the host for `pg_dump` via `docker compose exec postgres`.
+
+  # Applies migrations and seeds the country packs, then exits. `api` and
+  # `web` wait on it completing successfully before they start.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://aerolith:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/aerolith
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}
+    command: ['pnpm', 'db:migrate']
+
+  seed:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: 'no'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://aerolith:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/aerolith
+    # Idempotent — see packages/kernel/scripts/seed.ts. Safe to re-run on
+    # every deploy; it upserts rather than duplicating.
+    command: ['pnpm', 'db:seed']
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      DATABASE_APP_URL: postgres://aerolith_app:${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}@postgres:5432/aerolith
+      WEB_URL: ${WEB_URL:?WEB_URL must be set — the API's CORS origin}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET must be set, 32 bytes minimum}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      SMTP_URL: ${SMTP_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      AEROLITH_API_URL: http://api:3001
+
+  # Cloudflare Tunnel terminates TLS at the edge and forwards to `web`/`api`
+  # over the compose network — no port on this box is ever opened publicly.
+  # `TUNNEL_TOKEN` comes from the Cloudflare dashboard once the tunnel is
+  # created there; nothing to build, it is a config-only container.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?TUNNEL_TOKEN must be set — see docs/04-infrastructure.md}
+    depends_on:
+      - web
+      - api
+
+volumes:
+  postgres-data:

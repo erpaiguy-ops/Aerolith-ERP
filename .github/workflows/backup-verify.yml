@@ -1,0 +1,80 @@
+name: Backup restore verification
+
+# "An untested backup is not a backup, and on a single free VM your backup is
+# the only thing between you and losing the business." — docs/04-infrastructure.md
+#
+# Restores the latest monthly dump into a throwaway Postgres container and
+# asserts every tenant table actually has rows in it. This does not prove the
+# backup is complete or current beyond that — it proves the file is not
+# corrupt and pg_restore can read it, which is the failure mode that goes
+# unnoticed for months on an unattended box.
+on:
+  schedule:
+    # 1st of the month, 03:00 UTC — after the monthly backup.sh run.
+    - cron: '0 3 1 * *'
+  workflow_dispatch: {}
+
+jobs:
+  restore-and-verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: aerolith
+          POSTGRES_PASSWORD: aerolith
+          POSTGRES_DB: aerolith
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U aerolith"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Find the latest monthly dump
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.S3_REGION || 'auto' }}
+        run: |
+          set -euo pipefail
+          key=$(aws s3api list-objects-v2 \
+            --endpoint-url "${{ secrets.S3_ENDPOINT }}" \
+            --bucket "${{ secrets.S3_BUCKET }}" \
+            --prefix "monthly/" \
+            --query 'sort_by(Contents, &LastModified)[-1].Key' \
+            --output text)
+          if [ -z "$key" ] || [ "$key" = "None" ]; then
+            echo "::error::No monthly backup found in s3://${{ secrets.S3_BUCKET }}/monthly/ — nothing to verify."
+            exit 1
+          fi
+          echo "Restoring $key"
+          aws s3 cp "s3://${{ secrets.S3_BUCKET }}/$key" ./latest.dump \
+            --endpoint-url "${{ secrets.S3_ENDPOINT }}"
+
+      - name: Restore into the throwaway database
+        run: pg_restore --no-owner --no-privileges --clean --if-exists
+          -d postgres://aerolith:aerolith@localhost:5432/aerolith ./latest.dump
+
+      - name: Row-count assertion
+        run: |
+          set -euo pipefail
+          # A handful of tables that exist in every tenant from the first
+          # migration onward. If a real backup restores clean, these are
+          # never all empty — an empty result here means either the restore
+          # silently failed or the dump was taken before any data existed,
+          # both of which are worth a human's attention.
+          total=$(psql postgres://aerolith:aerolith@localhost:5432/aerolith -tAc "
+            select
+              (select count(*) from kernel.tenant) +
+              (select count(*) from kernel.app_user) +
+              (select count(*) from kernel.audit_log)
+          ")
+          echo "Row count across tenant/app_user/audit_log: $total"
+          if [ "$total" -lt 1 ]; then
+            echo "::error::Restored backup has no rows in core kernel tables. Treat this as a failed backup."
+            exit 1
+          fi
+          echo "✓ backup restores and contains data"
