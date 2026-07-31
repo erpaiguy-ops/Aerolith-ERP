@@ -34,6 +34,7 @@ import {
   variation,
   variationLine,
 } from '../db/schema';
+import { sumAgreedBackCharges } from './backcharges';
 import {
   compareCertification,
   paymentDue,
@@ -657,6 +658,13 @@ export async function createPaymentApplication(
         )
       : 100);
 
+  // Straight from the register when the caller does not override it — see
+  // `sumAgreedBackCharges` for why 'disputed' and 'written_off' are excluded.
+  // An explicit `0` is a real override (nothing to deduct this cycle) and is
+  // left alone; only `undefined` falls back to the register.
+  const backChargesToDate =
+    input.backChargesToDate ?? (await sumAgreedBackCharges(tx, input.contractId));
+
   const valuationInput: ValuationInput = {
     contractSum: num(head.currentSum),
     workDoneToDate: input.workDoneToDate,
@@ -684,7 +692,7 @@ export async function createPaymentApplication(
           }
         : undefined,
     retentionReleased: input.retentionReleased,
-    backChargesToDate: input.backChargesToDate,
+    backChargesToDate,
     liquidatedDamagesToDate: input.liquidatedDamagesToDate,
     previouslyCertifiedNet,
     previouslyRecoveredAdvance: last ? num(last.advanceRecoveredToDate) : 0,

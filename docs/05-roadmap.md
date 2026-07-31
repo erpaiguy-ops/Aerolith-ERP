@@ -1596,6 +1596,45 @@ research instead of four rounds of "here's what the last one got wrong."
 The fix is writing better briefs — check existing conventions before handing
 them out, not just describe the target shape — not abandoning the approach.
 
+### Back charges: closing the loop from a dead field to a deduction
+
+The `backCharge` table existed since the first migration —
+`contracts.back_charge.manage` was even declared in the manifest — and
+nothing read or wrote it. Every payment application since had taken
+`backChargesToDate` as a number typed straight into the create-application
+form, trusting whoever filled it in to remember what the register would
+have said. Closer reading of `getContractPosition` turned up a second,
+smaller gap in the same feature: it already computed
+`backChargesOutstanding` from the table (a "still owed" figure, summing
+`raised`/`notified`/`agreed`/`disputed`), and that number was already
+flowing into the web page's `Position` type — just never rendered. The
+initial survey ("no service function anywhere touches this table") was
+right about the write path and wrong about the read path; the fix ended up
+being both a new CRUD service and surfacing a field that had been computed
+and thrown away on every page load.
+
+`sumAgreedBackCharges` is a narrower query than `backChargesOutstanding`:
+only `agreed` and `recovered`, at the agreed amount where one was recorded
+rather than the originally claimed amount. `createPaymentApplication` now
+falls back to it when the caller doesn't supply `backChargesToDate`
+explicitly — an explicit `0` is a real override (nothing to deduct this
+cycle) and is left alone; only `undefined` triggers the register lookup.
+`disputed` is excluded from both the deduction and the terminal-state UI
+logic on purpose: a contested figure isn't a settled one, and unilaterally
+withholding it while it's still being argued is how a dispute over one line
+turns into a dispute over the whole certificate.
+
+Writing the integration tests surfaced a pre-existing fixture leak rather
+than a new bug: `delivery.integration.test.ts`'s certification section
+creates a second payment application (to assert `from-progress`'s
+returned figures) and never submits or certifies it, leaving it sitting in
+`draft` forever within that section. A new application-creation test
+landing after it in the same file hit a 409 — "an application is already
+open" — for a reason that had nothing to do with back charges. Fixed by
+having the new test find and close out any open draft via a direct query
+before asserting on its own, rather than touching the older section's test
+data setup.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

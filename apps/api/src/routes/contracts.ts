@@ -9,6 +9,8 @@
  */
 import { parseListParams, schema, withTenant } from '@aerolith/kernel';
 import {
+  BACK_CHARGE_SORTS,
+  BackChargeError,
   CORRESPONDENCE_SORTS,
   ContractsError,
   RETENTION_SORTS,
@@ -16,12 +18,14 @@ import {
   approveVariation,
   certifyApplication,
   contractsSchema,
+  createBackCharge,
   createContract,
   createPaymentApplication,
   createVariation,
   getContractPosition,
   getNoticeExposure,
   getVariationPosition,
+  listBackCharges,
   listContracts,
   listCorrespondence,
   listPaymentApplications,
@@ -33,6 +37,7 @@ import {
   scheduleRetentionRelease,
   submitApplication,
   summariseRetention,
+  updateBackCharge,
 } from '@aerolith/module-contracts';
 import { ProjectsError, getWbsRollUp, projectsSchema } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
@@ -136,6 +141,25 @@ const variationBody = z.object({
   eotClaimedDays: z.number().int().nullish(),
   percentExecuted: z.number().min(0).max(100).optional(),
 });
+
+const backChargeBody = z.object({
+  reference: z.string().min(1).max(48),
+  description: z.string().min(1),
+  category: z.enum(['damage', 'attendance', 'rectification', 'materials', 'other']).optional(),
+  amount: z.number().positive(),
+  incurredOn: z.string().date(),
+  sourceSnagId: z.string().uuid().nullish(),
+  documentIds: z.array(z.string().uuid()).optional(),
+});
+
+const updateBackChargeBody = backChargeBody
+  .omit({ reference: true })
+  .partial()
+  .extend({
+    status: z.enum(['raised', 'notified', 'agreed', 'disputed', 'recovered', 'written_off']).optional(),
+    notifiedOn: z.string().date().nullish(),
+    agreedAmount: z.number().nonnegative().nullish(),
+  });
 
 const applicationBody = z.object({
   periodTo: z.string().date(),
@@ -272,6 +296,74 @@ export async function contractRoutes(app: FastifyInstance) {
       );
     },
   );
+
+  app.get<{ Querystring: ListQuery & { contractId?: string } }>(
+    '/contracts/back-charges',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'contracts.contract.read');
+
+      const params = parseListParams(request.query, {
+        sortable: BACK_CHARGE_SORTS,
+        defaultSort: 'incurredOn',
+        defaultDirection: 'desc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listBackCharges(tx, params, {
+            contractId: request.query.contractId,
+            status: request.query.status,
+          }),
+        ),
+      );
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/contracts/:id/back-charges', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.back_charge.manage');
+
+    const parsed = backChargeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          createBackCharge(tx, { contractId: request.params.id, ...parsed.data }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof BackChargeError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/contracts/back-charges/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.back_charge.manage');
+
+    const parsed = updateBackChargeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateBackCharge(tx, { backChargeId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof BackChargeError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { updated: true };
+  });
 
   // --- The index ----------------------------------------------------------
 

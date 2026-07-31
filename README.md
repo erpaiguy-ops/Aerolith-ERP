@@ -131,7 +131,20 @@ labelled parts, becomes scanned progress.
   whether procurement actually vetted them, with a mandatory reason before
   suspending — the same shape as blocking a party
   (`GET|POST /api/v1/procurement/suppliers`, `/procurement/suppliers`)
-- **1,075 tests**, including integration suites that prove tenant isolation holds and
+- **Back charges deduct themselves** — the `backCharge` table existed since
+  the first migration; every payment application since had taken
+  `backChargesToDate` as a manually typed number, trusting whoever filled in
+  the form to remember what the register would say. A back charge can now be
+  raised, agreed at a different amount than claimed, disputed or written
+  off, and `createPaymentApplication` defaults `backChargesToDate` straight
+  from the register — everything `agreed` or `recovered`, at the agreed
+  figure — when the caller does not explicitly override it. `disputed` is
+  deliberately excluded from the deduction: unilaterally withholding a
+  contested figure is how a dispute over one line becomes a dispute over the
+  whole certificate
+  (`GET /api/v1/contracts/back-charges`, `POST /api/v1/contracts/:id/back-charges`,
+  `PATCH /api/v1/contracts/back-charges/:id`, `/contracts/:id`)
+- **1,083 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

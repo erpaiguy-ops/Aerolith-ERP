@@ -1890,4 +1890,205 @@ it('lists variations with the notice clock resolved per row', async () => {
       expect(response.statusCode).toBe(403);
     });
   });
+
+  describe('10 — back charges', () => {
+    let doorsChargeId: string;
+    let disputedChargeId: string;
+
+    it('raises a back charge against the contract', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/back-charges`,
+        headers: auth(),
+        payload: {
+          reference: 'BC-01',
+          description: 'Rectifying four doors hung the wrong way round',
+          category: 'rectification',
+          amount: 3_200,
+          incurredOn: '2026-04-05',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      doorsChargeId = response.json().id;
+    });
+
+    it('refuses a second back charge with the same reference on the same contract', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/back-charges`,
+        headers: auth(),
+        payload: {
+          reference: 'BC-01',
+          description: 'Duplicate',
+          amount: 1,
+          incurredOn: '2026-04-06',
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a site engineer who holds no contracts.back_charge.manage permission', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/back-charges`,
+        headers: auth(ENGINEER_TOKEN),
+        payload: { reference: 'BC-02', description: 'Should be refused', amount: 1, incurredOn: '2026-04-06' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('lists back charges for the contract', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/back-charges?contractId=${contractId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rows: { id: string; reference: string; status: string }[] = response.json().rows;
+      expect(rows.some((r) => r.id === doorsChargeId && r.reference === 'BC-01')).toBe(true);
+      expect(rows.every((r) => r.status === 'raised')).toBe(true);
+    });
+
+    it('refuses to mark a back charge agreed with no agreed amount ever recorded', async () => {
+      const raised = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/back-charges`,
+        headers: auth(),
+        payload: {
+          reference: 'BC-03',
+          description: 'Disputed — deliberately never resolved in this suite',
+          amount: 900,
+          incurredOn: '2026-04-07',
+        },
+      });
+      disputedChargeId = raised.json().id;
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/back-charges/${disputedChargeId}`,
+        headers: auth(),
+        payload: { status: 'agreed' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/agreed amount/);
+
+      // Left disputed rather than agreed — sumAgreedBackCharges must not
+      // pick this one up in the test below.
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/back-charges/${disputedChargeId}`,
+        headers: auth(),
+        payload: { status: 'disputed' },
+      });
+    });
+
+    it('agrees a back charge at less than it was raised for', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/back-charges/${doorsChargeId}`,
+        headers: auth(),
+        payload: { status: 'agreed', agreedAmount: 2_800 },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/back-charges?contractId=${contractId}&status=agreed`,
+        headers: auth(),
+      });
+      const row = list.json().rows.find((r: { id: string }) => r.id === doorsChargeId);
+      expect(row.agreedAmount).toBe('2800.00');
+    });
+
+    it('defaults a new payment application\'s back charges from the register, not zero', async () => {
+      // Section 4's "IPC 2" (valued from progress, never submitted or
+      // certified there — that section only checks its numbers) is still
+      // open, and a second open application is refused regardless of back
+      // charges. Close it out first; the point of this test is the default,
+      // not section 4's certification behaviour.
+      const [openApplication] = await getDatabase()
+        .select()
+        .from(contractsSchema.paymentApplication)
+        .where(
+          and(
+            eq(contractsSchema.paymentApplication.contractId, contractId),
+            eq(contractsSchema.paymentApplication.status, 'draft'),
+          ),
+        );
+      if (openApplication) {
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/contracts/applications/${openApplication.id}/submit`,
+          headers: auth(),
+          payload: { submittedOn: '2026-04-06' },
+        });
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/contracts/applications/${openApplication.id}/certify`,
+          headers: auth(),
+          payload: {
+            certifiedNet: Number(openApplication.netThisApplication),
+            certifiedOn: '2026-04-06',
+          },
+        });
+      }
+
+      // The AGREED amount (2,800), not the originally raised one (3,200) —
+      // and the disputed BC-03 (900) must not appear in it at all.
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications`,
+        headers: auth(),
+        payload: {
+          periodTo: '2026-04-30',
+          workDoneToDate: 400_000,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const { applicationId, valuation } = response.json();
+      expect(valuation.backChargesToDate).toBe(2_800);
+
+      // Move it out of 'draft' so the next test's application is not refused
+      // as "still open" — the same rule section 3/4 already cover, not what
+      // this test exists to prove. Certifying at exactly what was applied
+      // avoids also needing a disallowance reason, which is that section's
+      // concern, not this one's.
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/applications/${applicationId}/submit`,
+        headers: auth(),
+        payload: { submittedOn: '2026-05-05' },
+      });
+      const certify = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/applications/${applicationId}/certify`,
+        headers: auth(),
+        payload: { certifiedNet: valuation.netThisCertificate, certifiedOn: '2026-05-20' },
+      });
+      expect(certify.statusCode).toBe(200);
+    });
+
+    it('still honours an explicit override, including an explicit zero', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/applications`,
+        headers: auth(),
+        payload: {
+          periodTo: '2026-05-31',
+          workDoneToDate: 420_000,
+          backChargesToDate: 0,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().valuation.backChargesToDate).toBe(0);
+    });
+  });
 });

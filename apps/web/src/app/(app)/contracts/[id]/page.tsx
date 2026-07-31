@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 
 import { ActionForm, SubmitButton } from '@/components/Action';
 import { Badge, Card, Empty, Money, PageHeader, Stat, Table, Td, Th } from '@/components/ui';
-import { can, runAction, type ActionState } from '@/lib/actions';
+import { can, requiredText, runAction, type ActionState } from '@/lib/actions';
 import { ApiError, apiFetchOptional, pageFetch } from '@/lib/api';
 import { date, money, percent, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
@@ -66,6 +66,89 @@ async function valueFromProgress(
   return state;
 }
 
+const BACK_CHARGE_CATEGORIES = ['damage', 'attendance', 'rectification', 'materials', 'other'] as const;
+
+/**
+ * Raises a back charge against this contract.
+ *
+ * `reference` is chosen by whoever is raising it, not allocated — a back
+ * charge is usually numbered against the subcontractor's own correspondence
+ * ("BC-04"), not the contractor's sequence.
+ */
+async function addBackCharge(contractId: string, _state: ActionState, form: FormData): Promise<ActionState> {
+  'use server';
+
+  const reference = requiredText(form, 'reference');
+  const description = requiredText(form, 'description');
+  const amount = Number(form.get('amount') ?? NaN);
+  const incurredOn = requiredText(form, 'incurredOn');
+
+  if (!reference) return { status: 'error', error: 'Give the back charge a reference.' };
+  if (!description) return { status: 'error', error: 'Describe the back charge.' };
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { status: 'error', error: 'Enter the amount claimed.' };
+  }
+  if (!incurredOn) return { status: 'error', error: 'Choose the date it was incurred.' };
+
+  return runAction(
+    () =>
+      pageFetch(`/contracts/${contractId}/back-charges`, {
+        method: 'POST',
+        body: {
+          reference,
+          description,
+          amount,
+          incurredOn,
+          category: form.get('category') || undefined,
+        },
+      }),
+    { revalidate: [`/contracts/${contractId}`], success: `Back charge ${reference} raised.` },
+  );
+}
+
+/**
+ * Moves a back charge to 'agreed', recording the amount actually accepted —
+ * which is what `sumAgreedBackCharges` deducts from the next application,
+ * and is frequently less than what was originally claimed.
+ */
+async function agreeBackCharge(
+  contractId: string,
+  backChargeId: string,
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  'use server';
+
+  const agreedAmount = Number(form.get('agreedAmount') ?? NaN);
+  if (!Number.isFinite(agreedAmount) || agreedAmount < 0) {
+    return { status: 'error', error: 'Enter the amount agreed.' };
+  }
+
+  return runAction(
+    () =>
+      pageFetch(`/contracts/back-charges/${backChargeId}`, {
+        method: 'PATCH',
+        body: { status: 'agreed', agreedAmount },
+      }),
+    { revalidate: [`/contracts/${contractId}`], success: 'Back charge agreed.' },
+  );
+}
+
+async function setBackChargeStatus(
+  contractId: string,
+  backChargeId: string,
+  status: string,
+  _state: ActionState,
+  _form: FormData,
+): Promise<ActionState> {
+  'use server';
+
+  return runAction(
+    () => pageFetch(`/contracts/back-charges/${backChargeId}`, { method: 'PATCH', body: { status } }),
+    { revalidate: [`/contracts/${contractId}`], success: `Back charge marked ${status.replace(/_/g, ' ')}.` },
+  );
+}
+
 interface Position {
   projectId: string | null;
   number: string | null;
@@ -116,11 +199,34 @@ interface NoticeExposure {
   timeBarredValue: number;
 }
 
+interface BackChargeRow {
+  id: string;
+  reference: string;
+  description: string;
+  category: string;
+  amount: string;
+  incurredOn: string;
+  status: string;
+  agreedAmount: string | null;
+}
+
+const BACK_CHARGE_TERMINAL = new Set(['recovered', 'written_off']);
+
+const BACK_CHARGE_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
+  recovered: 'good',
+  agreed: 'good',
+  disputed: 'bad',
+  written_off: 'neutral',
+  raised: 'neutral',
+  notified: 'neutral',
+};
+
 export default async function ContractPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const me = await getMe();
   const currency = me.tenant.currencyCode;
   const mayApply = can(me.permissions, 'contracts.application.write');
+  const mayManageBackCharges = can(me.permissions, 'contracts.back_charge.manage') || me.user.isOwner;
 
   let position: Position;
   try {
@@ -130,9 +236,12 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
     throw error;
   }
 
-  const [variations, notices] = await Promise.all([
+  const [variations, notices, backCharges] = await Promise.all([
     apiFetchOptional<{ variations: VariationRow[] }>(`/contracts/${id}/variations`),
     apiFetchOptional<NoticeExposure>(`/contracts/${id}/notice-exposure`),
+    apiFetchOptional<{ rows: BackChargeRow[] }>(
+      `/contracts/back-charges?contractId=${id}&pageSize=100`,
+    ),
   ]);
 
   return (
@@ -191,6 +300,12 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
               label="Overdue"
               value={money(position.overdueAmount, currency)}
               tone={position.overdueAmount > 0 ? 'bad' : 'neutral'}
+            />
+            <Stat
+              label="Back charges outstanding"
+              value={money(position.backChargesOutstanding, currency)}
+              tone={position.backChargesOutstanding > 0 ? 'bad' : 'neutral'}
+              hint="raised, notified, agreed or disputed — not yet recovered"
             />
           </div>
         </Card>
@@ -339,6 +454,154 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
             })}
           </Table>
         )}
+      </Card>
+
+      <Card
+        title="Back charges"
+        className="mt-6"
+        footnote="What is deducted from the next application is whatever sits here 'agreed' or 'recovered' — see Back charges outstanding above for the rest."
+      >
+        {!backCharges || backCharges.rows.length === 0 ? (
+          <Empty title="No back charges" detail="Nothing has been raised against this contract." />
+        ) : (
+          <Table
+            head={
+              <tr>
+                <Th>Reference</Th>
+                <Th>Description</Th>
+                <Th>Category</Th>
+                <Th>Status</Th>
+                <Th numeric>Claimed</Th>
+                <Th numeric>Agreed</Th>
+                {mayManageBackCharges ? <Th /> : null}
+              </tr>
+            }
+          >
+            {backCharges.rows.map((bc) => (
+              <tr key={bc.id}>
+                <Td>
+                  <span className="numeric">{bc.reference}</span>
+                  <span className="block text-xs text-(--color-muted)">{date(bc.incurredOn)}</span>
+                </Td>
+                <Td>{bc.description}</Td>
+                <Td>{bc.category.replace(/_/g, ' ')}</Td>
+                <Td>
+                  <Badge tone={BACK_CHARGE_TONE[bc.status] ?? 'neutral'}>
+                    {bc.status.replace(/_/g, ' ')}
+                  </Badge>
+                </Td>
+                <Td numeric>
+                  <Money amount={bc.amount} currency={currency} />
+                </Td>
+                <Td numeric>
+                  <Money amount={bc.agreedAmount} currency={currency} />
+                </Td>
+                {mayManageBackCharges ? (
+                  <Td>
+                    {!BACK_CHARGE_TERMINAL.has(bc.status) ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <ActionForm
+                          action={agreeBackCharge.bind(null, id, bc.id)}
+                          className="flex items-center gap-1"
+                        >
+                          <input
+                            type="number"
+                            name="agreedAmount"
+                            step="0.01"
+                            min={0}
+                            placeholder="Amount"
+                            defaultValue={bc.agreedAmount ?? undefined}
+                            className="w-24 rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-xs outline-none focus:border-(--color-accent)"
+                          />
+                          <SubmitButton pendingLabel="…">Agree</SubmitButton>
+                        </ActionForm>
+                        {bc.status === 'agreed' ? (
+                          <ActionForm action={setBackChargeStatus.bind(null, id, bc.id, 'recovered')}>
+                            <SubmitButton pendingLabel="…">Recovered</SubmitButton>
+                          </ActionForm>
+                        ) : null}
+                        {bc.status !== 'disputed' ? (
+                          <ActionForm action={setBackChargeStatus.bind(null, id, bc.id, 'disputed')}>
+                            <SubmitButton tone="danger" pendingLabel="…">
+                              Dispute
+                            </SubmitButton>
+                          </ActionForm>
+                        ) : null}
+                        <ActionForm action={setBackChargeStatus.bind(null, id, bc.id, 'written_off')}>
+                          <SubmitButton tone="danger" pendingLabel="…">
+                            Write off
+                          </SubmitButton>
+                        </ActionForm>
+                      </div>
+                    ) : null}
+                  </Td>
+                ) : null}
+              </tr>
+            ))}
+          </Table>
+        )}
+
+        {mayManageBackCharges ? (
+          <ActionForm
+            action={addBackCharge.bind(null, id)}
+            className="mt-4 grid gap-3 border-t border-(--color-line) pt-4 sm:grid-cols-5"
+          >
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Reference</span>
+              <input
+                name="reference"
+                dir="auto"
+                placeholder="BC-04"
+                className="w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)"
+              />
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Description</span>
+              <input
+                name="description"
+                dir="auto"
+                placeholder="Rework of Level 3 skirting"
+                className="w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Category</span>
+              <select
+                name="category"
+                defaultValue="other"
+                className="w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)"
+              >
+                {BACK_CHARGE_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Amount</span>
+              <input
+                type="number"
+                name="amount"
+                step="0.01"
+                min={0}
+                className="w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Incurred on</span>
+              <input
+                type="date"
+                name="incurredOn"
+                defaultValue={new Date().toISOString().slice(0, 10)}
+                className="w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)"
+              />
+            </label>
+            <div className="flex items-end">
+              <SubmitButton pendingLabel="Raising…">Raise back charge</SubmitButton>
+            </div>
+          </ActionForm>
+        ) : null}
       </Card>
     </>
   );
