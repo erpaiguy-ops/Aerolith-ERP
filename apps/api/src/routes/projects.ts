@@ -11,8 +11,11 @@ import {
   PROGRESS_SORTS,
   ProjectsError,
   SNAG_SORTS,
+  SnagError,
   approveBudget,
+  closeSnag,
   createBudgetVersion,
+  createSnag,
   createWbs,
   getCostEntries,
   listCostEntries,
@@ -30,6 +33,7 @@ import {
   recordProgress,
   reverseCost,
   setProjectCustomFields,
+  updateSnag,
 } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -112,6 +116,38 @@ const budgetBody = z.object({
     .min(1),
 });
 
+const snagSeveritySchema = z.enum(['minor', 'major', 'critical']);
+
+const createSnagBody = z.object({
+  projectId: z.string().uuid(),
+  wbsNodeId: z.string().uuid().nullish(),
+  location: z.string().nullish(),
+  description: z.string().min(1),
+  severity: snagSeveritySchema.optional(),
+  raisedBy: z.string().uuid().nullish(),
+  raisedOn: z.string().date().optional(),
+  assignedToUserId: z.string().uuid().nullish(),
+  assignedToPartyId: z.string().uuid().nullish(),
+  targetDate: z.string().date().nullish(),
+});
+
+const updateSnagBody = z.object({
+  wbsNodeId: z.string().uuid().nullish(),
+  location: z.string().nullish(),
+  description: z.string().min(1).optional(),
+  severity: snagSeveritySchema.optional(),
+  raisedBy: z.string().uuid().nullish(),
+  raisedOn: z.string().date().optional(),
+  assignedToUserId: z.string().uuid().nullish(),
+  assignedToPartyId: z.string().uuid().nullish(),
+  targetDate: z.string().date().nullish(),
+});
+
+const closeSnagBody = z.object({
+  closedBy: z.string().uuid(),
+  status: z.enum(['closed', 'rejected']),
+});
+
 const progressBody = z.object({
   periodEnd: z.string().date(),
   measurements: z
@@ -190,6 +226,68 @@ export async function projectRoutes(app: FastifyInstance) {
       );
     },
   );
+
+  app.post('/projects/snags', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.snag.write');
+
+    const parsed = createSnagBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () => withTenant((tx) => createSnag(tx, parsed.data)));
+    } catch (error) {
+      if (error instanceof SnagError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/projects/snags/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.snag.write');
+
+    const parsed = updateSnagBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateSnag(tx, { snagId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof SnagError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.post<{ Params: { id: string } }>('/projects/snags/:id/close', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.snag.write');
+
+    const parsed = closeSnagBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => closeSnag(tx, { snagId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof SnagError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { status: parsed.data.status };
+  });
 
   app.get<{ Querystring: ListQuery & { category?: string; kind?: string; hideReversed?: string } }>(
     '/projects/costs',

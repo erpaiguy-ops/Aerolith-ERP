@@ -73,3 +73,13 @@ export {
   type ProgressListRow,
   type SnagListRow,
 } from './service/registers';
+
+export {
+  SnagError,
+  closeSnag,
+  createSnag,
+  updateSnag,
+  type CloseSnagInput,
+  type CreateSnagInput,
+  type UpdateSnagInput,
+} from './service/snags';

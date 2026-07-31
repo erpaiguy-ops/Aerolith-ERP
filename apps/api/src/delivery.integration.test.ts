@@ -91,9 +91,14 @@ suite('Projects and Contract Administration', () => {
       .returning({ id: schema.role.id });
 
     await db.insert(schema.rolePermission).values(
-      ['projects.cost.read', 'projects.project.read', 'projects.progress.record'].map(
-        (permissionKey) => ({ tenantId: TENANT, roleId: role!.id, permissionKey }),
-      ),
+      [
+        'projects.cost.read',
+        'projects.project.read',
+        'projects.progress.record',
+        // Read-only on purpose: proves `projects.snag.write` gates the write
+        // routes and reading the register does not imply raising or closing.
+        'projects.snag.read',
+      ].map((permissionKey) => ({ tenantId: TENANT, roleId: role!.id, permissionKey })),
     );
     await db
       .insert(schema.userRole)
@@ -113,6 +118,7 @@ suite('Projects and Contract Administration', () => {
       { tenantId: TENANT, entityType: 'contracts.contract', code: 'CON', name: 'Contract', pattern: 'CON-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.variation', code: 'VO', name: 'Variation', pattern: 'VO-{YYYY}-{SEQ}' },
       { tenantId: TENANT, entityType: 'contracts.payment_application', code: 'IPC', name: 'Payment Application', pattern: 'IPC-{YYYY}-{SEQ}' },
+      { tenantId: TENANT, entityType: 'projects.snag', code: 'SNG', name: 'Snag', pattern: 'SNG-{YYYY}-{SEQ}' },
     ]);
 
     app = await buildApp();
@@ -1634,6 +1640,144 @@ it('lists variations with the notice clock resolved per row', async () => {
       expect(rows.find((r) => r.reference === 'REG-S-3')?.blocksHandover).toBe(false);
 
       await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.tenantId, TENANT));
+    });
+
+    describe('raising and closing a snag', () => {
+      it('allocates a SNG-prefixed reference on create', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(),
+          payload: {
+            projectId: PROJECT,
+            description: 'Door handle scratched during install',
+            severity: 'major',
+            location: 'Level 3, Unit 12',
+          },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.id).toBeTruthy();
+        expect(body.reference).toMatch(/^SNG-\d{4}-\d+$/);
+
+        const db = getDatabase();
+        await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.id, body.id));
+      });
+
+      it('closes a snag with a status and stamps who closed it', async () => {
+        const db = getDatabase();
+        const created = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(),
+          payload: { projectId: PROJECT, description: 'Skirting gap', severity: 'minor' },
+        });
+        const { id } = created.json();
+
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/projects/snags/${id}/close`,
+          headers: auth(),
+          payload: { closedBy: OWNER, status: 'closed' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().status).toBe('closed');
+
+        const [row] = await db
+          .select({ status: projectsSchema.snag.status, closedBy: projectsSchema.snag.closedBy, closedOn: projectsSchema.snag.closedOn })
+          .from(projectsSchema.snag)
+          .where(eq(projectsSchema.snag.id, id));
+        expect(row?.status).toBe('closed');
+        expect(row?.closedBy).toBe(OWNER);
+        expect(row?.closedOn).toBeTruthy();
+
+        await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.id, id));
+      });
+
+      it('refuses to close a snag that is already closed', async () => {
+        const db = getDatabase();
+        const created = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(),
+          payload: { projectId: PROJECT, description: 'Already fixed', severity: 'minor' },
+        });
+        const { id } = created.json();
+
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/projects/snags/${id}/close`,
+          headers: auth(),
+          payload: { closedBy: OWNER, status: 'closed' },
+        });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/projects/snags/${id}/close`,
+          headers: auth(),
+          payload: { closedBy: OWNER, status: 'rejected' },
+        });
+
+        expect(response.statusCode).toBe(409);
+
+        await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.id, id));
+      });
+
+      it('needs projects.snag.write, not just .read, to raise one', async () => {
+        // The site role holds projects.snag.read (granted above) and reads the
+        // register fine; raising a snag is a different act and needs the write
+        // permission.
+        const readOnly = await app.inject({
+          method: 'GET',
+          url: '/api/v1/projects/snags',
+          headers: auth(ENGINEER_TOKEN),
+        });
+        expect(readOnly.statusCode).toBe(200);
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(ENGINEER_TOKEN),
+          payload: { projectId: PROJECT, description: 'Should be refused', severity: 'minor' },
+        });
+
+        expect(response.statusCode).toBe(403);
+      });
+
+      it('rejects an invalid severity on create', async () => {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(),
+          payload: { projectId: PROJECT, description: 'Bad severity', severity: 'catastrophic' },
+        });
+
+        expect(response.statusCode).toBe(400);
+      });
+
+      it('rejects an invalid status on close', async () => {
+        const db = getDatabase();
+        const created = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects/snags',
+          headers: auth(),
+          payload: { projectId: PROJECT, description: 'Bad close status', severity: 'minor' },
+        });
+        const { id } = created.json();
+
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/projects/snags/${id}/close`,
+          headers: auth(),
+          payload: { closedBy: OWNER, status: 'done' },
+        });
+
+        expect(response.statusCode).toBe(400);
+
+        await db.delete(projectsSchema.snag).where(eq(projectsSchema.snag.id, id));
+      });
     });
 
     it('keeps a reversed cost on the ledger and marks it, rather than hiding it', async () => {

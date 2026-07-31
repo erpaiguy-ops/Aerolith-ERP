@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -10,8 +11,12 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
+import { pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+import { closeSnagAction, createSnagAction } from './actions';
 
 interface SnagRow {
   id: string;
@@ -35,6 +40,12 @@ interface SnagRow {
   blocksHandover: boolean;
 }
 
+interface ProjectOption {
+  id: string;
+  code: string;
+  name: string;
+}
+
 const BASE = '/projects/snags';
 
 const SEVERITIES = [
@@ -50,6 +61,17 @@ const SEVERITY_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
   minor: 'neutral',
 };
 
+/**
+ * `closeSnag` refuses to move a snag out of either terminal state, so `closed`
+ * and `rejected` both drop out of the actionable set — a rejected snag is
+ * still "live" for the handover check, but re-closing it is not this screen's
+ * job.
+ */
+const CLOSABLE_STATUSES = new Set(['open', 'in_progress', 'ready_for_inspection']);
+
+const field =
+  'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)';
+
 export default async function SnagsPage({
   searchParams,
 }: {
@@ -57,9 +79,17 @@ export default async function SnagsPage({
 }) {
   const query = listQuery(await searchParams);
   const me = await getMe();
+  const mayWrite = can(me.permissions, 'projects.snag.write') || me.user.isOwner;
 
   const result = await fetchList<SnagRow>('/projects/snags', query);
   const blocking = result.rows.filter((row) => row.blocksHandover).length;
+
+  // Only fetched for the raise-a-snag form below — a read-only visitor never
+  // needs the project catalogue this screen otherwise has no use for.
+  const projects = mayWrite
+    ? (await pageFetch<{ rows: ProjectOption[] }>('/projects?pageSize=200&sort=code&direction=asc'))
+        .rows
+    : [];
 
   return (
     <>
@@ -118,6 +148,7 @@ export default async function SnagsPage({
                 <SortTh base={BASE} query={query} column="targetDate" current={result.sort} direction={result.direction}>
                   Target
                 </SortTh>
+                {mayWrite ? <Th /> : null}
               </tr>
             }
           >
@@ -197,12 +228,78 @@ export default async function SnagsPage({
                     </span>
                   )}
                 </Td>
+                {mayWrite ? (
+                  <Td>
+                    {CLOSABLE_STATUSES.has(row.status) ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        <ActionForm action={closeSnagAction}>
+                          <input type="hidden" name="snagId" value={row.id} />
+                          <input type="hidden" name="closedBy" value={me.user.id} />
+                          <input type="hidden" name="status" value="closed" />
+                          <SubmitButton pendingLabel="Closing…">Close</SubmitButton>
+                        </ActionForm>
+                        <ActionForm action={closeSnagAction}>
+                          <input type="hidden" name="snagId" value={row.id} />
+                          <input type="hidden" name="closedBy" value={me.user.id} />
+                          <input type="hidden" name="status" value="rejected" />
+                          <SubmitButton tone="danger" pendingLabel="Rejecting…">
+                            Reject
+                          </SubmitButton>
+                        </ActionForm>
+                      </div>
+                    ) : null}
+                  </Td>
+                ) : null}
               </tr>
             ))}
           </Table>
         )}
 
         <Pager base={BASE} query={query} result={result} noun={['snag', 'snags']} />
+
+        {mayWrite ? (
+          <ActionForm
+            action={createSnagAction}
+            className="mt-4 grid gap-3 border-t border-(--color-line) pt-4 sm:grid-cols-4"
+          >
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Project</span>
+              <select name="projectId" defaultValue="" className={field}>
+                <option value="" disabled>
+                  Choose a project…
+                </option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.code} — {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Defect</span>
+              <input name="description" dir="auto" placeholder="Door handle scratched" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Severity</span>
+              <select name="severity" defaultValue="minor" className={field}>
+                <option value="minor">Minor</option>
+                <option value="major">Major</option>
+                <option value="critical">Critical</option>
+              </select>
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Location (optional)</span>
+              <input name="location" dir="auto" placeholder="Level 3, Unit 12" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Target date (optional)</span>
+              <input type="date" name="targetDate" className={field} />
+            </label>
+            <div className="flex items-end">
+              <SubmitButton pendingLabel="Raising…">Add a snag</SubmitButton>
+            </div>
+          </ActionForm>
+        ) : null}
       </Card>
     </>
   );
