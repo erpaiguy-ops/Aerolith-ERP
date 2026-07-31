@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -10,7 +11,12 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
+import { pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
+import { getMe } from '@/lib/session';
+
+import { closeCorrespondenceAction, createCorrespondenceAction, respondCorrespondenceAction } from './actions';
 
 interface CorrespondenceRow {
   id: string;
@@ -32,6 +38,12 @@ interface CorrespondenceRow {
   isAtRisk: boolean;
 }
 
+interface ContractOption {
+  id: string;
+  number: string | null;
+  name: string;
+}
+
 const BASE = '/contracts/correspondence';
 
 const TYPES = [
@@ -43,15 +55,29 @@ const TYPES = [
   { label: 'Instruction', value: 'instruction' },
 ];
 
+const RAISABLE_TYPES = TYPES.slice(1);
+
+const field =
+  'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)';
+
 export default async function CorrespondencePage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = listQuery(await searchParams);
+  const me = await getMe();
+  const mayManage = can(me.permissions, 'contracts.correspondence.manage') || me.user.isOwner;
 
   const result = await fetchList<CorrespondenceRow>('/contracts/correspondence', query);
   const atRisk = result.rows.filter((row) => row.isAtRisk).length;
+
+  // Only fetched for the raise-an-item form below — reading the register
+  // never needs the contract catalogue.
+  const contracts = mayManage
+    ? (await pageFetch<{ rows: ContractOption[] }>('/contracts?pageSize=200&sort=number&direction=asc'))
+        .rows
+    : [];
 
   return (
     <>
@@ -118,6 +144,7 @@ export default async function CorrespondencePage({
                 <SortTh base={BASE} query={query} column="status" current={result.sort} direction={result.direction}>
                   Status
                 </SortTh>
+                {mayManage ? <Th /> : null}
               </tr>
             }
           >
@@ -125,6 +152,7 @@ export default async function CorrespondencePage({
               const waiting = row.respondedOn == null;
               const days = row.daysToResponse;
               const soon = waiting && days != null && days >= 0 && days <= 7;
+              const isClosed = row.status === 'closed';
 
               return (
                 <tr key={row.id} className="hover:bg-(--color-canvas)">
@@ -193,6 +221,28 @@ export default async function CorrespondencePage({
                       <Badge tone={row.isAtRisk ? 'bad' : 'neutral'}>{row.status}</Badge>
                     )}
                   </Td>
+                  {mayManage ? (
+                    <Td>
+                      {waiting && !isClosed ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <ActionForm action={respondCorrespondenceAction} className="flex items-center gap-1">
+                            <input type="hidden" name="correspondenceId" value={row.id} />
+                            <input
+                              type="date"
+                              name="respondedOn"
+                              defaultValue={new Date().toISOString().slice(0, 10)}
+                              className="w-36 rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-xs outline-none focus:border-(--color-accent)"
+                            />
+                            <SubmitButton pendingLabel="…">Respond</SubmitButton>
+                          </ActionForm>
+                          <ActionForm action={closeCorrespondenceAction}>
+                            <input type="hidden" name="correspondenceId" value={row.id} />
+                            <SubmitButton pendingLabel="…">Close</SubmitButton>
+                          </ActionForm>
+                        </div>
+                      ) : null}
+                    </Td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -200,6 +250,65 @@ export default async function CorrespondencePage({
         )}
 
         <Pager base={BASE} query={query} result={result} noun={['item', 'items']} />
+
+        {mayManage ? (
+          <ActionForm
+            action={createCorrespondenceAction}
+            className="mt-4 grid gap-3 border-t border-(--color-line) pt-4 sm:grid-cols-4"
+          >
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Contract</span>
+              <select name="contractId" defaultValue="" className={field}>
+                <option value="" disabled>
+                  Choose a contract…
+                </option>
+                {contracts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.number ?? c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Type</span>
+              <select name="type" defaultValue="rfi" className={field}>
+                {RAISABLE_TYPES.map((t) => (
+                  <option key={t.value} value={t.value ?? undefined}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Reference</span>
+              <input name="reference" placeholder="RFI-042" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Issued on</span>
+              <input
+                type="date"
+                name="issuedOn"
+                defaultValue={new Date().toISOString().slice(0, 10)}
+                className={field}
+              />
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Subject</span>
+              <input name="subject" dir="auto" placeholder="Confirm veneer grain direction" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Response due (optional)</span>
+              <input type="date" name="responseDueOn" className={field} />
+            </label>
+            <label className="flex items-end gap-2 pb-1.5 text-sm">
+              <input type="checkbox" name="isContractual" className="h-4 w-4" />
+              Contractual — missing the deadline loses an entitlement
+            </label>
+            <div className="flex items-end">
+              <SubmitButton pendingLabel="Raising…">Raise item</SubmitButton>
+            </div>
+          </ActionForm>
+        ) : null}
       </Card>
     </>
   );

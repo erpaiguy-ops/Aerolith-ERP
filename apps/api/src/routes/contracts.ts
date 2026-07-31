@@ -13,6 +13,7 @@ import {
   BackChargeError,
   CORRESPONDENCE_SORTS,
   ContractsError,
+  CorrespondenceError,
   RETENTION_SORTS,
   activateContract,
   approveVariation,
@@ -20,6 +21,7 @@ import {
   contractsSchema,
   createBackCharge,
   createContract,
+  createCorrespondence,
   createPaymentApplication,
   createVariation,
   getContractPosition,
@@ -38,6 +40,7 @@ import {
   submitApplication,
   summariseRetention,
   updateBackCharge,
+  updateCorrespondence,
 } from '@aerolith/module-contracts';
 import { ProjectsError, getWbsRollUp, projectsSchema } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
@@ -161,6 +164,25 @@ const updateBackChargeBody = backChargeBody
     agreedAmount: z.number().nonnegative().nullish(),
   });
 
+const correspondenceBody = z.object({
+  type: z.enum(['rfi', 'notice', 'eot_claim', 'ncr', 'instruction', 'letter']),
+  reference: z.string().min(1).max(64),
+  subject: z.string().min(1),
+  direction: z.enum(['incoming', 'outgoing']).optional(),
+  issuedOn: z.string().date(),
+  responseDueOn: z.string().date().nullish(),
+  isContractual: z.boolean().optional(),
+  documentId: z.string().uuid().nullish(),
+});
+
+const updateCorrespondenceBody = z.object({
+  respondedOn: z.string().date().nullish(),
+  status: z.enum(['open', 'responded', 'closed', 'overdue']).optional(),
+  responseDueOn: z.string().date().nullish(),
+  variationId: z.string().uuid().nullish(),
+  documentId: z.string().uuid().nullish(),
+});
+
 const applicationBody = z.object({
   periodTo: z.string().date(),
   periodFrom: z.string().date().nullish(),
@@ -260,6 +282,52 @@ export async function contractRoutes(app: FastifyInstance) {
         }),
       ),
     );
+  });
+
+  app.post<{ Params: { id: string } }>('/contracts/:id/correspondence', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.correspondence.manage');
+
+    const parsed = correspondenceBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          createCorrespondence(tx, { contractId: request.params.id, ...parsed.data }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof CorrespondenceError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/contracts/correspondence/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'contracts.correspondence.manage');
+
+    const parsed = updateCorrespondenceBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          updateCorrespondence(tx, { correspondenceId: request.params.id, ...parsed.data }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof CorrespondenceError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { updated: true };
   });
 
   app.get<{ Querystring: ListQuery & { contractId?: string; state?: string } }>(

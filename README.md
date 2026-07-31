@@ -144,7 +144,18 @@ labelled parts, becomes scanned progress.
   whole certificate
   (`GET /api/v1/contracts/back-charges`, `POST /api/v1/contracts/:id/back-charges`,
   `PATCH /api/v1/contracts/back-charges/:id`, `/contracts/:id`)
-- **1,083 tests**, including integration suites that prove tenant isolation holds and
+- **The notice register can now be written to** — `contracts.correspondence.manage`
+  gated the nav entry, labelled "Manage the notice register" in its own
+  manifest, while the register underneath was a list route and nothing else:
+  no way to raise an RFI, a notice or an EOT claim, record a response, or
+  set the `variationId` the register already displayed ("became
+  VO-2026-00003") on every row without anything ever setting it. All three
+  are wired now — raising validates type and direction, a duplicate
+  reference on the same type and contract is refused, and linking a
+  variation checks it belongs to the same contract before allowing it
+  (`POST /api/v1/contracts/:id/correspondence`,
+  `PATCH /api/v1/contracts/correspondence/:id`, `/contracts/correspondence`)
+- **1,089 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 

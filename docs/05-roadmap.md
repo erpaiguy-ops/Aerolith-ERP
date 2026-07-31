@@ -1635,6 +1635,49 @@ having the new test find and close out any open draft via a direct query
 before asserting on its own, rather than touching the older section's test
 data setup.
 
+### The notice register's write path, the second candidate the same survey found
+
+The back-charges survey ("no service function anywhere touches this
+table") flagged three more permissions declared and gating a nav entry
+with nothing built underneath: `contracts.correspondence.manage`,
+`inventory.stock_count.reconcile`, `inventory.stock_movement.approve`.
+Correspondence was the cleanest of the three to close next — same shape as
+back charges (a register with a manifest permission literally labelled
+"Manage the notice register" and a read-only list route underneath), and
+the schema already carried the field a write path would need to set:
+`variationId`, "set when this became a variation, so the paper trail is
+continuous" — displayed on every row ("became VO-2026-00003") since the
+list route was written, never once set by anything.
+
+`createCorrespondence` follows the back-charge reference precedent: caller
+chosen, not allocated, because an RFI or a notice is numbered by whoever
+issued it — the consultant's "RFI-042", not the contractor's own sequence
+— the same reasoning `SNG-{YYYY}-{SEQ}` explicitly does NOT apply to this
+register. `updateCorrespondence` does three jobs behind one permission,
+matching how `contracts.back_charge.manage` already gated both create and
+every status transition: record a response, close an item that never
+needed one, and link the variation it became — checked against the same
+contract before the link is allowed, since a `variationId` from a
+different contract would make the register's own "became X" trail lie.
+
+Recording a response sets `respondedOn` and moves `status` to `responded`
+in the same write, not two separate calls a caller could get half right:
+an item with a response date but a status still reading `open` would keep
+showing up under "awaiting a reply", the exact case that filter exists to
+answer honestly.
+
+One test bug, not a product bug, worth recording anyway: the first
+"link to a variation" test created a `contract_rates` variation with no
+lines and got a 500, not the 409 expected. `valueVariation` rightly
+refuses to value a rate-basis variation with nothing measured
+(`"A contract_rates variation needs measured lines."`) — but that
+`VariationError` isn't one of the error types the route's catch block
+maps to 409, so it fell through to an uncaught 500. A real gap in that
+route's error handling, surfaced by a test that simply forgot to give the
+variation it created any lines — fixed by giving the test's variation a
+line, since chasing the route's error mapping was not what this slice was
+for.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

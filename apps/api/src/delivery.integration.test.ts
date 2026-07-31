@@ -2091,4 +2091,135 @@ it('lists variations with the notice clock resolved per row', async () => {
       expect(response.json().valuation.backChargesToDate).toBe(0);
     });
   });
+
+  describe('11 — the notice register, made writable', () => {
+    let rfiId: string;
+
+    it('raises an RFI against the contract', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/correspondence`,
+        headers: auth(),
+        payload: {
+          type: 'rfi',
+          reference: 'RFI-041',
+          subject: 'Confirm veneer grain direction on reception desk',
+          issuedOn: '2026-04-01',
+          responseDueOn: '2026-04-15',
+          isContractual: true,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      rfiId = response.json().id;
+    });
+
+    it('refuses a second item of the same type with the same reference on the same contract', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/correspondence`,
+        headers: auth(),
+        payload: {
+          type: 'rfi',
+          reference: 'RFI-041',
+          subject: 'Duplicate',
+          issuedOn: '2026-04-02',
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a site engineer who holds no contracts.correspondence.manage permission', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/correspondence`,
+        headers: auth(ENGINEER_TOKEN),
+        payload: {
+          type: 'rfi',
+          reference: 'RFI-042',
+          subject: 'Should be refused',
+          issuedOn: '2026-04-02',
+        },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('lists the item, open and awaiting a reply', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/correspondence?contractId=${contractId}`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rows: { id: string; reference: string; status: string; respondedOn: string | null }[] =
+        response.json().rows;
+      const row = rows.find((r) => r.id === rfiId);
+      expect(row?.reference).toBe('RFI-041');
+      expect(row?.status).toBe('open');
+      expect(row?.respondedOn).toBeNull();
+    });
+
+    it('records a response, and the status follows without being told separately', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/correspondence/${rfiId}`,
+        headers: auth(),
+        payload: { respondedOn: '2026-04-10' },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/correspondence?contractId=${contractId}&open=true`,
+        headers: auth(),
+      });
+      const rows: { id: string }[] = list.json().rows;
+      // Answered items drop out of "awaiting a reply" — that filter is what
+      // openOnly means, distinct from the closed/open status column.
+      expect(rows.some((r) => r.id === rfiId)).toBe(false);
+    });
+
+    it('links the item to the variation it became, refusing one that is not on this contract', async () => {
+      const variation = await app.inject({
+        method: 'POST',
+        url: `/api/v1/contracts/${contractId}/variations`,
+        headers: auth(),
+        payload: {
+          title: 'Book-matched veneer to reception desk, per RFI-041',
+          basis: 'contract_rates',
+          lines: [{ description: 'Veneer upgrade', quantity: 1, unitRate: 4_500 }],
+        },
+      });
+      expect(variation.statusCode).toBe(200);
+      const variationId = variation.json().variationId;
+
+      const unrelated = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/correspondence/${rfiId}`,
+        headers: auth(),
+        payload: { variationId: '00000000-0000-4000-8000-000000000000' },
+      });
+      expect(unrelated.statusCode).toBe(409);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/contracts/correspondence/${rfiId}`,
+        headers: auth(),
+        payload: { variationId },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/v1/contracts/correspondence?contractId=${contractId}`,
+        headers: auth(),
+      });
+      const row = list.json().rows.find((r: { id: string }) => r.id === rfiId);
+      expect(row.variationId).toBe(variationId);
+    });
+  });
 });

@@ -87,6 +87,14 @@ export {
 } from './service/registers';
 
 export {
+  CorrespondenceError,
+  createCorrespondence,
+  updateCorrespondence,
+  type CreateCorrespondenceInput,
+  type UpdateCorrespondenceInput,
+} from './service/correspondence';
+
+export {
   BACK_CHARGE_SORTS,
   BackChargeError,
   createBackCharge,
