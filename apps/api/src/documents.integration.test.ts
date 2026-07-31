@@ -303,7 +303,7 @@ suite('Documents', () => {
       expect(response.statusCode).toBe(503);
       // Names the missing variable — this is a deployment that has not been
       // configured yet, not a generic failure.
-      expect(response.json().error).toMatch(/R2_ACCOUNT_ID/);
+      expect(response.json().error).toMatch(/S3_ENDPOINT/);
     });
 
     it('confirms an upload — pure metadata, so it works with no R2 configured at all', async () => {

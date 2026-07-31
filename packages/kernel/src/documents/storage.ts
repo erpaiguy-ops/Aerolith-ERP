@@ -32,40 +32,46 @@ export class StorageNotConfiguredError extends Error {
 }
 
 interface R2Config {
-  accountId: string;
+  endpoint: string;
+  region: string;
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
 }
 
 /**
- * Reads the four required env vars, or throws naming whichever is missing.
+ * Reads the required env vars, or throws naming whichever is missing.
+ *
+ * Names match `.env.example`'s existing `S3_*` convention (this project's
+ * own — R2 is only ever referred to as "the S3-compatible store", never
+ * assumed to be the sole provider), not an R2-specific one: `S3_ENDPOINT` is
+ * already the full endpoint URL, not an account id to build one from.
  *
  * Checked every call rather than cached at module load: this file is
  * imported by every kernel consumer whether or not they ever touch a
  * document, so a missing var must not throw at import time — only when a
- * caller actually tries to reach R2.
+ * caller actually tries to reach the store.
  */
 function requireConfig(): R2Config {
-  const accountId = process.env.R2_ACCOUNT_ID;
-  if (!accountId) throw new StorageNotConfiguredError('R2_ACCOUNT_ID is not set.');
+  const endpoint = process.env.S3_ENDPOINT;
+  if (!endpoint) throw new StorageNotConfiguredError('S3_ENDPOINT is not set.');
 
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  if (!accessKeyId) throw new StorageNotConfiguredError('R2_ACCESS_KEY_ID is not set.');
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+  if (!accessKeyId) throw new StorageNotConfiguredError('S3_ACCESS_KEY_ID is not set.');
 
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  if (!secretAccessKey) throw new StorageNotConfiguredError('R2_SECRET_ACCESS_KEY is not set.');
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+  if (!secretAccessKey) throw new StorageNotConfiguredError('S3_SECRET_ACCESS_KEY is not set.');
 
-  const bucket = process.env.R2_BUCKET;
-  if (!bucket) throw new StorageNotConfiguredError('R2_BUCKET is not set.');
+  const bucket = process.env.S3_BUCKET;
+  if (!bucket) throw new StorageNotConfiguredError('S3_BUCKET is not set.');
 
-  return { accountId, accessKeyId, secretAccessKey, bucket };
+  return { endpoint, region: process.env.S3_REGION ?? 'auto', accessKeyId, secretAccessKey, bucket };
 }
 
 function client(config: R2Config): S3Client {
   return new S3Client({
-    region: 'auto',
-    endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+    region: config.region,
+    endpoint: config.endpoint,
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,

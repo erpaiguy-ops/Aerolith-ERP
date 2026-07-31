@@ -17,7 +17,7 @@
  * already checked that record's own permission before it ever calls
  * `listDocuments` with an entity filter.
  */
-import { and, asc, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import { type Transaction } from '../db';
 import { document, documentLink, documentLock, documentVersion, folder } from '../db/schema';
@@ -178,6 +178,30 @@ export async function listDocuments(
 
   const conditions = [eq(document.tenantId, tenantId), isNull(document.deletedAt)];
   if (filters.folderId) conditions.push(eq(document.folderId, filters.folderId));
+  // "Every document linked to this entity" joins through document_link — a
+  // document can be linked to several entities, so this is a genuine
+  // many-to-many, not a column on `document` itself. A subquery (rather than
+  // an inner join + `selectDistinct`) sidesteps Postgres's rule that
+  // `SELECT DISTINCT`'s `ORDER BY` expressions must appear in the select
+  // list — the default sort is `createdAt`, which isn't part of the
+  // narrower `DocumentRow` projection, so the join+distinct form 500s on
+  // every request that doesn't happen to sort by a projected column.
+  if (filters.entityType && filters.entityId) {
+    conditions.push(
+      inArray(
+        document.id,
+        tx
+          .select({ documentId: documentLink.documentId })
+          .from(documentLink)
+          .where(
+            and(
+              eq(documentLink.entityType, filters.entityType),
+              eq(documentLink.entityId, filters.entityId),
+            ),
+          ),
+      ),
+    );
+  }
   if (params.search) {
     conditions.push(
       or(
@@ -207,33 +231,6 @@ export async function listDocuments(
     referenceNumber: document.referenceNumber,
     revision: document.revision,
   };
-
-  // "Every document linked to this entity" joins through document_link —
-  // a document can be linked to several entities, so this is a genuine join,
-  // not a column on `document` itself.
-  if (filters.entityType && filters.entityId) {
-    const linkConditions = and(
-      eq(documentLink.entityType, filters.entityType),
-      eq(documentLink.entityId, filters.entityId),
-    );
-
-    const rows = await tx
-      .selectDistinct(selection)
-      .from(document)
-      .innerJoin(documentLink, eq(documentLink.documentId, document.id))
-      .where(and(where, linkConditions))
-      .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(document.id))
-      .limit(params.pageSize)
-      .offset(params.offset);
-
-    const [counted] = await tx
-      .select({ total: sql<number>`count(distinct ${document.id})::int` })
-      .from(document)
-      .innerJoin(documentLink, eq(documentLink.documentId, document.id))
-      .where(and(where, linkConditions));
-
-    return listResult(rows, counted?.total ?? 0, params);
-  }
 
   const rows = await tx
     .select(selection)

@@ -53,7 +53,7 @@ describe('procurement isolation policies', () => {
     // A table added to the schema without being added to the tenant list gets no
     // policy at all — it would be readable across every tenant in the system,
     // silently, and nothing else in the build would notice.
-    expect(PROCUREMENT_TENANT_TABLES).toHaveLength(13);
+    expect(PROCUREMENT_TENANT_TABLES).toHaveLength(14);
     expect(new Set(PROCUREMENT_TENANT_TABLES).size).toBe(PROCUREMENT_TENANT_TABLES.length);
   });
 });
