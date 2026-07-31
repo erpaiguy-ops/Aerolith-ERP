@@ -197,12 +197,14 @@ suite('API', () => {
 
       const body = response.json();
       expect(body.modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
-      // The kernel approvals, notifications and master-data sections sit
-      // above every module, so the first MODULE entry is the fourth item.
+      // The kernel approvals, notifications, master-data and documents
+      // sections sit above every module, so the first MODULE entry is the
+      // fifth item.
       expect(body.navigation[0].key).toBe('kernel.approvals');
       expect(body.navigation[1].key).toBe('kernel.notifications');
       expect(body.navigation[2].key).toBe('kernel.master_data.parties');
-      expect(body.navigation[3].key).toBe('inventory');
+      expect(body.navigation[3].key).toBe('kernel.documents');
+      expect(body.navigation[4].key).toBe('inventory');
       expect(body.unavailableModules).toEqual([]);
     });
 
