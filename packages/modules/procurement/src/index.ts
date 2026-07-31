@@ -92,3 +92,16 @@ export {
   type RfqLineRow,
   type RfqQuoteRow,
 } from './service/rfq-register';
+
+export {
+  MODULE_KEY as SUPPLIERS_MODULE_KEY,
+  SUPPLIER_QUALIFICATION_SORTS,
+  SupplierQualificationError,
+  listSupplierQualifications,
+  qualifySupplier,
+  updateSupplierQualification,
+  type QualifySupplierInput,
+  type SupplierQualificationListRow,
+  type SupplierQualificationStatus,
+  type UpdateSupplierQualificationInput,
+} from './service/suppliers';

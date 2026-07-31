@@ -49,10 +49,15 @@ import {
   listSupplierInvoices,
   RFQ_SORTS,
   procurementSchema,
+  qualifySupplier,
   receiveGoods,
   recordQuote,
   registerInvoice,
   releaseInvoice,
+  SUPPLIER_QUALIFICATION_SORTS,
+  SupplierQualificationError,
+  updateSupplierQualification,
+  listSupplierQualifications,
 } from '@aerolith/module-procurement';
 import { postCost, recordCommitment, relieveCommitment } from '@aerolith/module-projects';
 import { and, asc, eq } from 'drizzle-orm';
@@ -241,6 +246,21 @@ const invoiceBody = z.object({
       }),
     )
     .min(1),
+});
+
+const qualifySupplierBody = z.object({
+  partyId: z.string().uuid(),
+  status: z.enum(['pending', 'approved', 'suspended']).optional(),
+  reason: z.string().nullish(),
+  categoryId: z.string().uuid().nullish(),
+  reviewDate: z.string().date().nullish(),
+  approvedBy: z.string().uuid().nullish(),
+});
+
+const updateSupplierQualificationBody = z.object({
+  status: z.enum(['pending', 'approved', 'suspended']).optional(),
+  reason: z.string().nullish(),
+  reviewDate: z.string().date().nullish(),
 });
 
 const REQUISITION_SORTS = [
@@ -924,5 +944,81 @@ export async function procurementRoutes(app: FastifyInstance): Promise<void> {
         }),
       ),
     );
+  });
+
+  // --- Approved suppliers ---
+  //
+  // `procurement.supplier.manage` is the only permission this manifest defines
+  // for the resource — unlike requisitions, RFQs and orders it does not split
+  // into a `.read` and a `.write`/`.manage` pair, so reads are gated on the
+  // same permission as writes here rather than inventing a `.read` variant the
+  // rest of the module does not have.
+
+  app.get<{ Querystring: ListQuery & { categoryId?: string } }>(
+    '/procurement/suppliers',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'procurement.supplier.manage');
+
+      const params = parseListParams(request.query, {
+        sortable: SUPPLIER_QUALIFICATION_SORTS,
+        defaultSort: 'createdAt',
+        defaultDirection: 'desc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listSupplierQualifications(tx, params, {
+            status: request.query.status,
+            categoryId: request.query.categoryId,
+          }),
+        ),
+      );
+    },
+  );
+
+  app.post('/procurement/suppliers', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'procurement.supplier.manage');
+
+    const parsed = qualifySupplierBody.safeParse(request.body);
+    if (!parsed.success) return bad(reply, parsed.error.issues);
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => qualifySupplier(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof SupplierQualificationError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch('/procurement/suppliers/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'procurement.supplier.manage');
+
+    const { id } = request.params as { id: string };
+    const parsed = updateSupplierQualificationBody.safeParse(request.body);
+    if (!parsed.success) return bad(reply, parsed.error.issues);
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          updateSupplierQualification(tx, { qualificationId: id, ...parsed.data }),
+        ),
+      );
+      return { updated: true };
+    } catch (error) {
+      if (error instanceof SupplierQualificationError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
   });
 }

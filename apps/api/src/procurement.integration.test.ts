@@ -53,6 +53,7 @@ suite('Procurement', () => {
   let mdfItemId: string;
   let gulfSupplierId: string;
   let italySupplierId: string;
+  let nonSupplierPartyId: string;
   let warehouseId: string;
   let wbsNodeId: string;
 
@@ -161,11 +162,21 @@ suite('Procurement', () => {
           isSupplier: true,
           countryCode: 'IT',
         },
+        // No `isSupplier` — a client, not a source of goods. Exists to prove the
+        // approved supplier list refuses to qualify a party in the wrong role.
+        {
+          tenantId: TENANT,
+          code: 'CUST-PALM',
+          name: 'Palm Villa Owner',
+          isCustomer: true,
+          countryCode: 'AE',
+        },
       ])
       .returning({ id: schema.party.id, code: schema.party.code });
 
     gulfSupplierId = suppliers.find((s) => s.code === 'SUP-GULF')!.id;
     italySupplierId = suppliers.find((s) => s.code === 'SUP-IT')!.id;
+    nonSupplierPartyId = suppliers.find((s) => s.code === 'CUST-PALM')!.id;
 
     await db.insert(schema.numberSeries).values([
       { tenantId: TENANT, entityType: 'procurement.requisition', code: 'PR', name: 'Requisition', pattern: 'PR-{YYYY}-{SEQ}' },
@@ -224,6 +235,7 @@ suite('Procurement', () => {
     const inv = inventorySchema;
     const pj = projectsSchema;
 
+    await db.delete(pr.supplierQualification).where(eq(pr.supplierQualification.tenantId, TENANT));
     await db.delete(pr.matchException).where(eq(pr.matchException.tenantId, TENANT));
     await db.delete(pr.supplierInvoiceLine).where(eq(pr.supplierInvoiceLine.tenantId, TENANT));
     await db.delete(pr.supplierInvoice).where(eq(pr.supplierInvoice.tenantId, TENANT));
@@ -1543,6 +1555,146 @@ suite('Procurement', () => {
         headers: auth(STOREMAN_TOKEN),
       });
       expect(invoices.statusCode).toBe(403);
+    });
+  });
+
+  describe('10 — the approved supplier list', () => {
+    let gulfQualificationId: string;
+
+    it('qualifies a supplier', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(),
+        payload: { partyId: gulfSupplierId, status: 'approved', approvedBy: BUYER },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.qualificationId).toBeTruthy();
+      gulfQualificationId = body.qualificationId;
+
+      const db = getDatabase();
+      const [row] = await db
+        .select()
+        .from(procurementSchema.supplierQualification)
+        .where(eq(procurementSchema.supplierQualification.id, gulfQualificationId));
+      expect(row!.status).toBe('approved');
+      expect(row!.approvedAt).not.toBeNull();
+    });
+
+    it('refuses a party that is not marked as a supplier', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(),
+        payload: { partyId: nonSupplierPartyId },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/not marked as a supplier/);
+    });
+
+    it('refuses a party id that does not exist', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(),
+        payload: { partyId: 'bbbb3333-9999-4999-8999-999999999999' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/not found/i);
+    });
+
+    it('refuses suspending a supplier with no reason on file', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/procurement/suppliers/${gulfQualificationId}`,
+        headers: auth(),
+        payload: { status: 'suspended' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/reason/);
+
+      const db = getDatabase();
+      const [row] = await db
+        .select()
+        .from(procurementSchema.supplierQualification)
+        .where(eq(procurementSchema.supplierQualification.id, gulfQualificationId));
+      // Refused before anything was written.
+      expect(row!.status).toBe('approved');
+    });
+
+    it('suspends a supplier once a reason is given', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/procurement/suppliers/${gulfQualificationId}`,
+        headers: auth(),
+        payload: { status: 'suspended', reason: 'Two missed deliveries in a row.' },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const db = getDatabase();
+      const [row] = await db
+        .select()
+        .from(procurementSchema.supplierQualification)
+        .where(eq(procurementSchema.supplierQualification.id, gulfQualificationId));
+      expect(row!.status).toBe('suspended');
+      expect(row!.reason).toBe('Two missed deliveries in a row.');
+    });
+
+    it('qualifies a second supplier as pending, and lists filtered by status', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(),
+        payload: { partyId: italySupplierId },
+      });
+      expect(created.statusCode).toBe(200);
+      expect(created.json().qualificationId).toBeTruthy();
+
+      const suspended = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/suppliers?status=suspended',
+        headers: auth(),
+      });
+      const suspendedBody = suspended.json();
+      expect(suspendedBody.total).toBe(1);
+      expect(suspendedBody.rows[0].partyId).toBe(gulfSupplierId);
+      expect(suspendedBody.rows[0].partyCode).toBe('SUP-GULF');
+
+      const pending = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/suppliers?status=pending',
+        headers: auth(),
+      });
+      const pendingBody = pending.json();
+      expect(pendingBody.total).toBe(1);
+      expect(pendingBody.rows[0].partyId).toBe(italySupplierId);
+    });
+
+    it('requires procurement.supplier.manage to qualify a supplier — the storeman does not have it', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(STOREMAN_TOKEN),
+        payload: { partyId: gulfSupplierId },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('requires procurement.supplier.manage to read the list too — this manifest does not split read from manage', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/procurement/suppliers',
+        headers: auth(STOREMAN_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
     });
   });
 
