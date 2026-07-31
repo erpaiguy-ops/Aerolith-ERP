@@ -133,6 +133,24 @@ export function signed(
   return value < 0 ? `−${formatted}` : `+${formatted}`;
 }
 
+/**
+ * A byte count as a human size — `sizeBytes` from the documents register is
+ * the only caller, so this stays binary (KiB/MiB) rather than chasing SI vs.
+ * binary convention for a general-purpose figure nobody else needs yet.
+ */
+export function fileSize(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes)) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 export function date(value: string | Date | null | undefined, locale = currentLocale()): string {
   if (!value) return '—';
   const d = value instanceof Date ? value : new Date(value);

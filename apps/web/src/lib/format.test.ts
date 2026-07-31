@@ -4,6 +4,7 @@ import {
   date,
   directionFor,
   dimensions,
+  fileSize,
   integer,
   money,
   percent,
@@ -112,6 +113,22 @@ describe('date', () => {
   it('handles absent and invalid values', () => {
     expect(date(null)).toBe('—');
     expect(date('not a date')).toBe('—');
+  });
+});
+
+describe('fileSize', () => {
+  it('stays in bytes below a KB', () => {
+    expect(fileSize(512)).toBe('512 B');
+  });
+
+  it('picks the largest unit that keeps the number readable', () => {
+    expect(fileSize(2048)).toBe('2.0 KB');
+    expect(fileSize(4_500_000)).toBe('4.3 MB');
+  });
+
+  it('handles absent values', () => {
+    expect(fileSize(null)).toBe('—');
+    expect(fileSize(undefined)).toBe('—');
   });
 });
 

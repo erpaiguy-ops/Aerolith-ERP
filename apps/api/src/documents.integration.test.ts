@@ -425,6 +425,19 @@ suite('Documents', () => {
       expect(lock!.lockedBy).toBe(ALICE);
     });
 
+    it('surfaces the lock holder on the register, so a second person sees it is taken before trying', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/documents',
+        headers: auth(BOB_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = response.json().rows.find((r: { id: string }) => r.id === documentId);
+      expect(row.lockedBy).toBe(ALICE);
+      expect(row.lockedByName).toBe('Alice');
+    });
+
     it('refuses to let a second person check the same document out', async () => {
       const response = await app.inject({
         method: 'POST',
@@ -488,6 +501,62 @@ suite('Documents', () => {
           and(eq(schema.documentLock.documentId, documentId), eq(schema.documentLock.lockedBy, BOB)),
         );
       expect(lock).toBeDefined();
+    });
+  });
+
+  describe('version history', () => {
+    let documentId: string;
+
+    beforeAll(async () => {
+      const db = getDatabase();
+      const [doc] = await db
+        .insert(schema.document)
+        .values({ tenantId: TENANT, name: 'Revised Elevation.dwg', status: 'available', versionCount: 2 })
+        .returning({ id: schema.document.id });
+      documentId = doc!.id;
+      await db.insert(schema.documentVersion).values([
+        {
+          tenantId: TENANT,
+          documentId,
+          version: 1,
+          storageKey: `${TENANT}/${documentId}/v1/elevation.dwg`,
+          fileName: 'elevation.dwg',
+          mimeType: 'application/octet-stream',
+          sizeBytes: 4096,
+          checksum: 'a'.repeat(64),
+          uploadedBy: ALICE,
+        },
+        {
+          tenantId: TENANT,
+          documentId,
+          version: 2,
+          storageKey: `${TENANT}/${documentId}/v2/elevation-r2.dwg`,
+          fileName: 'elevation-r2.dwg',
+          mimeType: 'application/octet-stream',
+          sizeBytes: 4200,
+          checksum: 'b'.repeat(64),
+          uploadedBy: BOB,
+          changeNote: 'Revised the door schedule.',
+        },
+      ]);
+    });
+
+    it('lists both versions, newest first, with the uploader resolved to a name', async () => {
+      const listResponse = await app.inject({
+        method: 'GET',
+        url: `/api/v1/documents/${documentId}/versions`,
+        headers: auth(ALICE_TOKEN),
+      });
+
+      expect(listResponse.statusCode).toBe(200);
+      const { rows } = listResponse.json();
+      expect(rows).toHaveLength(2);
+      expect(rows[0].version).toBe(2);
+      expect(rows[0].fileName).toBe('elevation-r2.dwg');
+      expect(rows[0].uploadedByName).toBe('Bob');
+      expect(rows[0].changeNote).toBe('Revised the door schedule.');
+      expect(rows[1].version).toBe(1);
+      expect(rows[1].uploadedByName).toBe('Alice');
     });
   });
 });

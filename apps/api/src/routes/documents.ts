@@ -18,6 +18,7 @@ import {
   getDocumentDownloadUrl,
   initiateDocumentUpload,
   linkDocument,
+  listDocumentVersions,
   listDocuments,
   listFolders,
   lockDocument,
@@ -235,6 +236,16 @@ export async function documentRoutes(app: FastifyInstance) {
     } catch (error) {
       return handleError(error, reply);
     }
+  });
+
+  app.get<{ Params: { id: string } }>('/documents/:id/versions', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.document.read');
+
+    const rows = await withPrincipal(principal, () =>
+      withTenant((tx) => listDocumentVersions(tx, request.params.id)),
+    );
+    return { rows };
   });
 
   app.get<{ Params: { id: string }; Querystring: { versionId?: string } }>(

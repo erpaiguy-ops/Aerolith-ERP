@@ -9,7 +9,8 @@ import { ApiError, apiFetchOptional, pageFetch } from '@/lib/api';
 import { date, money, percent, toneForIndex, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
-import { saveCustomFieldsAction } from './actions';
+import { approveBudgetAction, saveCustomFieldsAction } from './actions';
+import { BudgetLinesForm } from './BudgetLinesForm';
 
 interface CustomFieldOption {
   value: string;
@@ -132,6 +133,19 @@ function CustomFieldInput({ def, value }: { def: CustomFieldDefinition; value: u
   );
 }
 
+interface BudgetListRow {
+  id: string;
+  version: number;
+  status: string;
+  source: string;
+  totalCost: string;
+  totalValue: string;
+  contingencyAmount: string;
+  note: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+}
+
 interface WbsNode {
   id: string;
   code: string;
@@ -213,6 +227,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
 
   const { project } = detail;
   const mayEdit = can(me.permissions, 'projects.project.write') || me.user.isOwner;
+  const mayReadBudget = can(me.permissions, 'projects.budget.read') || me.user.isOwner;
+  const mayApproveBudget = can(me.permissions, 'projects.budget.approve') || me.user.isOwner;
+
+  const budgets = mayReadBudget
+    ? (await pageFetch<{ rows: BudgetListRow[] }>(`/projects/${id}/budgets`)).rows
+    : [];
 
   return (
     <>
@@ -386,6 +406,89 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
             </div>
           </Card>
         </div>
+      ) : null}
+
+      {mayReadBudget ? (
+        <Card
+          title="Budgets"
+          className="mb-6"
+          footnote="Never edited in place — a revision is a new version, and only one version is ever approved at a time."
+        >
+          {budgets.length === 0 ? (
+            <Empty
+              title="No budget yet"
+              detail="Nothing in the work breakdown or cost report can be measured against a target until one is raised."
+            />
+          ) : (
+            <Table
+              head={
+                <tr>
+                  <Th>Version</Th>
+                  <Th>Status</Th>
+                  <Th>Source</Th>
+                  <Th numeric>Cost</Th>
+                  <Th numeric>Value</Th>
+                  <Th numeric>Contingency</Th>
+                  {mayApproveBudget ? <Th /> : null}
+                </tr>
+              }
+            >
+              {budgets.map((b) => (
+                <tr key={b.id}>
+                  <Td>
+                    <span className="numeric">v{b.version}</span>
+                    {b.note ? <span className="block text-xs text-(--color-muted)">{b.note}</span> : null}
+                  </Td>
+                  <Td>
+                    <Badge
+                      tone={
+                        b.status === 'approved'
+                          ? 'good'
+                          : b.status === 'superseded'
+                            ? 'neutral'
+                            : 'neutral'
+                      }
+                    >
+                      {b.status}
+                    </Badge>
+                  </Td>
+                  <Td>
+                    <span className="text-xs text-(--color-muted)">{b.source.replace(/_/g, ' ')}</span>
+                  </Td>
+                  <Td numeric>
+                    <Money amount={b.totalCost} currency={currency} />
+                  </Td>
+                  <Td numeric>
+                    <Money amount={b.totalValue} currency={currency} />
+                  </Td>
+                  <Td numeric>
+                    <Money amount={b.contingencyAmount} currency={currency} />
+                  </Td>
+                  {mayApproveBudget ? (
+                    <Td>
+                      {b.status === 'draft' ? (
+                        <ActionForm action={approveBudgetAction}>
+                          <input type="hidden" name="budgetId" value={b.id} />
+                          <input type="hidden" name="projectId" value={id} />
+                          <SubmitButton pendingLabel="…">Approve</SubmitButton>
+                        </ActionForm>
+                      ) : null}
+                    </Td>
+                  ) : null}
+                </tr>
+              ))}
+            </Table>
+          )}
+
+          {mayEdit ? (
+            <details className="mt-4 border-t border-(--color-line) pt-4">
+              <summary className="cursor-pointer text-sm font-medium">Create a budget version</summary>
+              <div className="mt-3">
+                <BudgetLinesForm projectId={id} wbsCodes={wbs.nodes.map((n) => n.code)} />
+              </div>
+            </details>
+          ) : null}
+        </Card>
       ) : null}
 
       <Card title="Work breakdown">

@@ -291,6 +291,47 @@ suite('Projects and Contract Administration', () => {
       expect(Number(doors!.budgetCost)).toBe(480_000);
     });
 
+    it('lists budget versions and reads one back with its lines resolved to WBS codes', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/budgets`,
+        headers: auth(),
+      });
+      expect(list.statusCode).toBe(200);
+
+      const rows: { id: string; version: number; status: string; totalCost: string }[] =
+        list.json().rows;
+      const approved = rows.find((r) => r.version === 1);
+      expect(approved?.status).toBe('approved');
+      expect(Number(approved!.totalCost)).toBe(800_000);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/budgets/${approved!.id}`,
+        headers: auth(),
+      });
+      expect(detail.statusCode).toBe(200);
+      const lines: { wbsCode: string | null; description: string }[] = detail.json().lines;
+      expect(lines).toHaveLength(4);
+      expect(lines.every((l) => l.wbsCode === 'J-DOORS' || l.wbsCode === 'J-WARD')).toBe(true);
+
+      const missing = await app.inject({
+        method: 'GET',
+        url: '/api/v1/projects/budgets/00000000-0000-4000-8000-000000000000',
+        headers: auth(),
+      });
+      expect(missing.statusCode).toBe(404);
+    });
+
+    it('refuses a site engineer who holds no projects.budget.read permission', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/projects/${PROJECT}/budgets`,
+        headers: auth(ENGINEER_TOKEN),
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
     it('refuses a budget line pointing at a WBS code that does not exist', async () => {
       const response = await app.inject({
         method: 'POST',

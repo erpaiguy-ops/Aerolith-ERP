@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -9,9 +10,25 @@ import {
   fetchList,
   listQuery,
 } from '@/components/List';
-import { Badge, Card, Money, PageHeader, Table, Td } from '@/components/ui';
+import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
+import { pageFetch } from '@/lib/api';
 import { date, toneForVariance } from '@/lib/format';
 import { getMe } from '@/lib/session';
+
+import { activateContractAction, createContractAction } from './actions';
+
+interface PartyOption {
+  id: string;
+  code: string;
+  name: string;
+}
+
+interface ProjectOption {
+  id: string;
+  code: string;
+  name: string;
+}
 
 interface ContractRow {
   id: string;
@@ -47,12 +64,125 @@ export default async function ContractsPage({
 }) {
   const query = listQuery(await searchParams);
   const me = await getMe();
+  const mayWrite = can(me.permissions, 'contracts.contract.write') || me.user.isOwner;
+  const mayActivate = can(me.permissions, 'contracts.contract.execute') || me.user.isOwner;
 
   const result = await fetchList<ContractRow>('/contracts', query);
+
+  // Only fetched for the create form below — reading the register never
+  // needs the party and project catalogues.
+  const [parties, projects] = mayWrite
+    ? await Promise.all([
+        pageFetch<{ rows: PartyOption[] }>('/master-data/parties?pageSize=200&sort=name&direction=asc'),
+        pageFetch<{ rows: ProjectOption[] }>('/projects?pageSize=200&sort=code&direction=asc'),
+      ])
+    : [null, null];
+
+  const field =
+    'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-3 py-1.5 text-sm outline-none focus:border-(--color-accent)';
 
   return (
     <>
       <PageHeader title="Contracts" subtitle="Variations, payment applications and retention." />
+
+      {mayWrite ? (
+        <Card className="mb-4">
+          <details>
+            <summary className="cursor-pointer text-sm font-medium">Create a contract</summary>
+            <ActionForm action={createContractAction} className="mt-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="lg:col-span-2">
+                  <label htmlFor="name" className="mb-1 block text-xs text-(--color-muted)">
+                    Name
+                  </label>
+                  <input id="name" name="name" dir="auto" className={field} />
+                </div>
+                <div>
+                  <label htmlFor="side" className="mb-1 block text-xs text-(--color-muted)">
+                    Side
+                  </label>
+                  <select id="side" name="side" defaultValue="receivable" className={field}>
+                    <option value="receivable">Receivable (client)</option>
+                    <option value="payable">Payable (subcontract)</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="countryCode" className="mb-1 block text-xs text-(--color-muted)">
+                    Country (terms)
+                  </label>
+                  <input
+                    id="countryCode"
+                    name="countryCode"
+                    defaultValue={me.tenant.countryCode ?? ''}
+                    maxLength={2}
+                    placeholder="AE"
+                    className={field}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="counterpartyId" className="mb-1 block text-xs text-(--color-muted)">
+                    Counterparty
+                  </label>
+                  <select id="counterpartyId" name="counterpartyId" defaultValue="" className={field}>
+                    <option value="">—</option>
+                    {(parties?.rows ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {`${p.code} — ${p.name}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="projectId" className="mb-1 block text-xs text-(--color-muted)">
+                    Project (optional)
+                  </label>
+                  <select id="projectId" name="projectId" defaultValue="" className={field}>
+                    <option value="">—</option>
+                    {(projects?.rows ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {`${p.code} — ${p.name}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="originalSum" className="mb-1 block text-xs text-(--color-muted)">
+                    Original sum
+                  </label>
+                  <input
+                    id="originalSum"
+                    name="originalSum"
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    className={field}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="externalReference" className="mb-1 block text-xs text-(--color-muted)">
+                    Client reference (optional)
+                  </label>
+                  <input id="externalReference" name="externalReference" className={field} />
+                </div>
+                <div>
+                  <label htmlFor="awardedOn" className="mb-1 block text-xs text-(--color-muted)">
+                    Awarded on (optional)
+                  </label>
+                  <input id="awardedOn" name="awardedOn" type="date" className={field} />
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-(--color-muted)">
+                Retention, payment terms and the defects liability period are not typed in — they
+                come from the country&apos;s own rules, the same way an activated contract already
+                shows them.
+              </p>
+              <div className="mt-3">
+                <SubmitButton pendingLabel="Creating…">Create contract</SubmitButton>
+              </div>
+            </ActionForm>
+          </details>
+        </Card>
+      ) : null}
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <FilterChips base={BASE} query={query} param="side" options={SIDES} />
@@ -88,6 +218,7 @@ export default async function ContractsPage({
                 <SortTh base={BASE} query={query} column="contractCompletionDate" current={result.sort} direction={result.direction}>
                   Completion
                 </SortTh>
+                {mayActivate ? <Th /> : null}
               </tr>
             }
           >
@@ -142,6 +273,16 @@ export default async function ContractsPage({
                   )}
                 </Td>
                 <Td>{date(row.contractCompletionDate)}</Td>
+                {mayActivate ? (
+                  <Td>
+                    {row.status === 'draft' ? (
+                      <ActionForm action={activateContractAction} className="flex items-center gap-1.5">
+                        <input type="hidden" name="contractId" value={row.id} />
+                        <SubmitButton pendingLabel="…">Activate</SubmitButton>
+                      </ActionForm>
+                    ) : null}
+                  </Td>
+                ) : null}
               </tr>
             ))}
           </Table>

@@ -368,6 +368,114 @@ export async function approveBudget(
   return { projectId: target.projectId, version: target.version };
 }
 
+export interface BudgetListRow {
+  id: string;
+  version: number;
+  status: string;
+  source: string;
+  totalCost: string;
+  totalValue: string;
+  contingencyAmount: string;
+  note: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+}
+
+/** Every version raised against a project, newest first — a budget is never edited in place, only superseded. */
+export async function listBudgets(
+  tx: Transaction,
+  input: { projectId: string },
+): Promise<BudgetListRow[]> {
+  const { tenantId } = requireTenantContext();
+
+  return tx
+    .select({
+      id: budget.id,
+      version: budget.version,
+      status: budget.status,
+      source: budget.source,
+      totalCost: budget.totalCost,
+      totalValue: budget.totalValue,
+      contingencyAmount: budget.contingencyAmount,
+      note: budget.note,
+      approvedAt: sql<string | null>`${budget.approvedAt}`,
+      createdAt: sql<string>`${budget.createdAt}`,
+    })
+    .from(budget)
+    .where(and(eq(budget.tenantId, tenantId), eq(budget.projectId, input.projectId)))
+    .orderBy(desc(budget.version));
+}
+
+export interface BudgetLineRow {
+  id: string;
+  wbsNodeId: string | null;
+  wbsCode: string | null;
+  category: string;
+  description: string;
+  quantity: string;
+  uomCode: string | null;
+  unitCost: string;
+  lineCost: string;
+  lineValue: string;
+}
+
+export interface BudgetDetail {
+  id: string;
+  projectId: string;
+  version: number;
+  status: string;
+  source: string;
+  totalCost: string;
+  totalValue: string;
+  contingencyAmount: string;
+  note: string | null;
+  lines: BudgetLineRow[];
+}
+
+/** One budget version, with every line resolved to the WBS code it targets. */
+export async function getBudgetDetail(
+  tx: Transaction,
+  budgetId: string,
+): Promise<BudgetDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [header] = await tx
+    .select()
+    .from(budget)
+    .where(and(eq(budget.tenantId, tenantId), eq(budget.id, budgetId)));
+  if (!header) return null;
+
+  const lines = await tx
+    .select({
+      id: budgetLine.id,
+      wbsNodeId: budgetLine.wbsNodeId,
+      wbsCode: wbsNode.code,
+      category: budgetLine.category,
+      description: budgetLine.description,
+      quantity: budgetLine.quantity,
+      uomCode: budgetLine.uomCode,
+      unitCost: budgetLine.unitCost,
+      lineCost: budgetLine.lineCost,
+      lineValue: budgetLine.lineValue,
+    })
+    .from(budgetLine)
+    .leftJoin(wbsNode, eq(wbsNode.id, budgetLine.wbsNodeId))
+    .where(and(eq(budgetLine.tenantId, tenantId), eq(budgetLine.budgetId, budgetId)));
+
+  return {
+    id: header.id,
+    projectId: header.projectId,
+    version: header.version,
+    status: header.status,
+    source: header.source,
+    totalCost: header.totalCost,
+    totalValue: header.totalValue,
+    contingencyAmount: header.contingencyAmount,
+    note: header.note,
+    lines,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Progress
 // ---------------------------------------------------------------------------

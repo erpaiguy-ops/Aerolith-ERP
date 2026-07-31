@@ -5,9 +5,16 @@ import { EmptyList, Pager, fetchList, listQuery } from '@/components/List';
 import { Badge, Card, Empty, PageHeader, Table, Td, Th } from '@/components/ui';
 import { can } from '@/lib/actions';
 import { pageFetch } from '@/lib/api';
+import { date, fileSize } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
-import { createFolderAction, downloadDocumentAction, linkDocumentAction } from './actions';
+import {
+  createFolderAction,
+  downloadDocumentAction,
+  linkDocumentAction,
+  lockDocumentAction,
+  unlockDocumentAction,
+} from './actions';
 import { UploadButton } from './UploadButton';
 
 interface FolderRow {
@@ -31,6 +38,21 @@ interface DocumentRow {
   versionCount: number;
   referenceNumber: string | null;
   revision: string | null;
+  lockedBy: string | null;
+  lockedByName: string | null;
+  lockedAt: string | null;
+  lockExpiresAt: string | null;
+}
+
+interface DocumentVersionRow {
+  id: string;
+  version: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedByName: string | null;
+  changeNote: string | null;
+  createdAt: string;
 }
 
 const BASE = '/documents';
@@ -62,18 +84,30 @@ export default async function DocumentsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const query = listQuery(await searchParams);
+  const params = await searchParams;
+  const query = listQuery(params);
   const currentFolderId = query.folderId;
+  const versionsFor = typeof params.versions === 'string' ? params.versions : undefined;
 
   const me = await getMe();
   const mayManage = can(me.permissions, 'kernel.document.manage') || me.user.isOwner;
 
-  const [folders, documents] = await Promise.all([
+  const [folders, documents, versions] = await Promise.all([
     pageFetch<{ rows: FolderRow[] }>(
       `/documents/folders?parentId=${currentFolderId ?? 'root'}&pageSize=200&sort=name&direction=asc`,
     ),
     fetchList<DocumentRow>('/documents', query),
+    versionsFor
+      ? pageFetch<{ rows: DocumentVersionRow[] }>(`/documents/${versionsFor}/versions`)
+      : Promise.resolve(null),
   ]);
+
+  const versionsQueryString = (documentId: string) => {
+    const next = new URLSearchParams();
+    if (currentFolderId) next.set('folderId', currentFolderId);
+    next.set('versions', documentId);
+    return `${BASE}?${next.toString()}`;
+  };
 
   return (
     <>
@@ -165,6 +199,7 @@ export default async function DocumentsPage({
                 <Th>Status</Th>
                 <Th>Reference</Th>
                 <Th>Versions</Th>
+                <Th>Checked out</Th>
                 <Th />
               </tr>
             }
@@ -186,7 +221,23 @@ export default async function DocumentsPage({
                     {row.referenceNumber ? `${row.referenceNumber}${row.revision ? ` rev ${row.revision}` : ''}` : '—'}
                   </span>
                 </Td>
-                <Td numeric>{row.versionCount}</Td>
+                <Td numeric>
+                  <Link
+                    href={versionsQueryString(row.id)}
+                    className="text-(--color-accent) hover:underline"
+                  >
+                    {row.versionCount}
+                  </Link>
+                </Td>
+                <Td>
+                  {row.lockedBy ? (
+                    <Badge tone={row.lockedBy === me.user.id ? 'good' : 'neutral'}>
+                      {row.lockedByName ?? 'Someone'}
+                    </Badge>
+                  ) : (
+                    '—'
+                  )}
+                </Td>
                 <Td>
                   <div className="flex flex-wrap items-center gap-2">
                     {row.status === 'available' ? (
@@ -200,6 +251,18 @@ export default async function DocumentsPage({
                         </button>
                       </form>
                     ) : null}
+                    {mayManage && !row.lockedBy ? (
+                      <ActionForm action={lockDocumentAction}>
+                        <input type="hidden" name="documentId" value={row.id} />
+                        <SubmitButton pendingLabel="Checking out…">Check out</SubmitButton>
+                      </ActionForm>
+                    ) : null}
+                    {mayManage && row.lockedBy === me.user.id ? (
+                      <ActionForm action={unlockDocumentAction}>
+                        <input type="hidden" name="documentId" value={row.id} />
+                        <SubmitButton pendingLabel="Checking in…">Check in</SubmitButton>
+                      </ActionForm>
+                    ) : null}
                     {mayManage ? <LinkToRecordForm documentId={row.id} /> : null}
                   </div>
                 </Td>
@@ -210,6 +273,38 @@ export default async function DocumentsPage({
 
         <Pager base={BASE} query={query} result={documents} noun={['document', 'documents']} />
       </Card>
+
+      {versionsFor ? (
+        <Card title="Version history" className="mt-6">
+          {!versions || versions.rows.length === 0 ? (
+            <Empty title="No versions found" detail="This document has no recorded versions." />
+          ) : (
+            <Table
+              head={
+                <tr>
+                  <Th>Version</Th>
+                  <Th>File</Th>
+                  <Th>Size</Th>
+                  <Th>Uploaded by</Th>
+                  <Th>Note</Th>
+                  <Th>Uploaded</Th>
+                </tr>
+              }
+            >
+              {versions.rows.map((row) => (
+                <tr key={row.id}>
+                  <Td numeric>{row.version}</Td>
+                  <Td>{row.fileName}</Td>
+                  <Td>{fileSize(row.sizeBytes)}</Td>
+                  <Td>{row.uploadedByName ?? '—'}</Td>
+                  <Td>{row.changeNote ?? '—'}</Td>
+                  <Td>{date(row.createdAt)}</Td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+      ) : null}
     </>
   );
 }

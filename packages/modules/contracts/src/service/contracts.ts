@@ -1103,6 +1103,9 @@ export interface ContractPosition {
   overdueAmount: number;
   /** Current sum plus unapproved exposure. The realistic final account. */
   anticipatedFinalValue: number;
+  status: string;
+  practicalCompletionOn: string | null;
+  defectsLiabilityEndsOn: string | null;
 }
 
 /**
@@ -1202,6 +1205,9 @@ export async function getContractPosition(
     backChargesOutstanding: num(charges?.total),
     overdueAmount,
     anticipatedFinalValue: variations.anticipatedFinalValue,
+    status: head.status,
+    practicalCompletionOn: head.practicalCompletionOn,
+    defectsLiabilityEndsOn: head.defectsLiabilityEndsOn,
   };
 }
 

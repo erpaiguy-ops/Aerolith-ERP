@@ -69,6 +69,36 @@ export async function unlinkDocumentAction(_state: ActionState, form: FormData):
   );
 }
 
+/**
+ * Checks a document out so nobody else edits it underneath the caller —
+ * `lockedBy` is set server-side from the session, never trusted from the
+ * form. `minutes` is optional: the API defaults the expiry when omitted.
+ */
+export async function lockDocumentAction(_state: ActionState, form: FormData): Promise<ActionState> {
+  const documentId = form.get('documentId');
+  if (typeof documentId !== 'string') {
+    return { status: 'error', error: 'That document could not be read. Reload and try again.' };
+  }
+
+  const note = requiredText(form, 'note');
+  return runAction(
+    () => apiFetch(`/documents/${documentId}/lock`, { method: 'POST', body: { note } }),
+    { revalidate: ['/documents'], success: 'Checked out. Nobody else can lock it until you release it.' },
+  );
+}
+
+export async function unlockDocumentAction(_state: ActionState, form: FormData): Promise<ActionState> {
+  const documentId = form.get('documentId');
+  if (typeof documentId !== 'string') {
+    return { status: 'error', error: 'That document could not be read. Reload and try again.' };
+  }
+
+  return runAction(
+    () => apiFetch(`/documents/${documentId}/unlock`, { method: 'POST' }),
+    { revalidate: ['/documents'], success: 'Checked back in.' },
+  );
+}
+
 export interface UploadIntent {
   documentId: string;
   versionId: string;

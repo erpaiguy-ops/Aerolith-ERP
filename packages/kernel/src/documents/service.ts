@@ -20,7 +20,7 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import { type Transaction } from '../db';
-import { document, documentLink, documentLock, documentVersion, folder } from '../db/schema';
+import { appUser, document, documentLink, documentLock, documentVersion, folder } from '../db/schema';
 import { recordAudit } from '../audit/service';
 import { listResult, searchPattern, type ListParams, type ListResult } from '../db/list';
 import { requireTenantContext } from '../tenancy/context';
@@ -164,6 +164,10 @@ export interface DocumentRow {
   versionCount: number;
   referenceNumber: string | null;
   revision: string | null;
+  lockedBy: string | null;
+  lockedByName: string | null;
+  lockedAt: string | null;
+  lockExpiresAt: string | null;
 }
 
 export const DOCUMENT_SORTS = ['name', 'createdAt', 'referenceNumber'] as const;
@@ -230,11 +234,17 @@ export async function listDocuments(
     versionCount: document.versionCount,
     referenceNumber: document.referenceNumber,
     revision: document.revision,
+    lockedBy: documentLock.lockedBy,
+    lockedByName: appUser.name,
+    lockedAt: sql<string | null>`${documentLock.lockedAt}`,
+    lockExpiresAt: sql<string | null>`${documentLock.expiresAt}`,
   };
 
   const rows = await tx
     .select(selection)
     .from(document)
+    .leftJoin(documentLock, eq(documentLock.documentId, document.id))
+    .leftJoin(appUser, eq(appUser.id, documentLock.lockedBy))
     .where(where)
     .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(document.id))
     .limit(params.pageSize)
@@ -451,6 +461,45 @@ export async function addDocumentVersion(
   });
 
   return { documentId: input.documentId, versionId, uploadUrl };
+}
+
+export interface DocumentVersionRow {
+  id: string;
+  version: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum: string;
+  uploadedBy: string | null;
+  uploadedByName: string | null;
+  changeNote: string | null;
+  createdAt: string;
+}
+
+/** Every version ever uploaded for a document, newest first — nothing is ever overwritten in place. */
+export async function listDocumentVersions(
+  tx: Transaction,
+  documentId: string,
+): Promise<DocumentVersionRow[]> {
+  const { tenantId } = requireTenantContext();
+
+  return tx
+    .select({
+      id: documentVersion.id,
+      version: documentVersion.version,
+      fileName: documentVersion.fileName,
+      mimeType: documentVersion.mimeType,
+      sizeBytes: documentVersion.sizeBytes,
+      checksum: documentVersion.checksum,
+      uploadedBy: documentVersion.uploadedBy,
+      uploadedByName: appUser.name,
+      changeNote: documentVersion.changeNote,
+      createdAt: sql<string>`${documentVersion.createdAt}`,
+    })
+    .from(documentVersion)
+    .leftJoin(appUser, eq(appUser.id, documentVersion.uploadedBy))
+    .where(and(eq(documentVersion.tenantId, tenantId), eq(documentVersion.documentId, documentId)))
+    .orderBy(desc(documentVersion.version));
 }
 
 export interface GetDocumentDownloadUrlInput {

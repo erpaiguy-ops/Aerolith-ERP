@@ -17,6 +17,7 @@ import {
   createBudgetVersion,
   createSnag,
   createWbs,
+  getBudgetDetail,
   getCostEntries,
   listCostEntries,
   listProgress,
@@ -26,6 +27,7 @@ import {
   getProjectDetail,
   getProjectPosition,
   getWbsRollUp,
+  listBudgets,
   listProjects,
   postCost,
   projectsSchema,
@@ -506,6 +508,30 @@ export async function projectRoutes(app: FastifyInstance) {
       if (error instanceof ProjectsError) return reply.code(409).send({ error: error.message });
       throw error;
     }
+  });
+
+  app.get<{ Params: { id: string } }>('/projects/:id/budgets', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.budget.read');
+
+    const rows = await withPrincipal(principal, () =>
+      withTenant((tx) => listBudgets(tx, { projectId: request.params.id })),
+    );
+    return { rows };
+  });
+
+  app.get<{ Params: { id: string } }>('/projects/budgets/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'projects.budget.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getBudgetDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Budget not found.' });
+    return detail;
   });
 
   app.post<{ Params: { id: string } }>('/projects/budgets/:id/approve', async (request, reply) => {

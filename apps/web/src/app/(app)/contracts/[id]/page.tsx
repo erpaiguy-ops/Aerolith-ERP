@@ -66,6 +66,52 @@ async function valueFromProgress(
   return state;
 }
 
+/** Starts the defects liability period. Retention cannot become releasable before this is recorded. */
+async function recordPracticalCompletion(
+  contractId: string,
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  'use server';
+
+  const practicalCompletionOn = requiredText(form, 'practicalCompletionOn');
+  if (!practicalCompletionOn) {
+    return { status: 'error', error: 'Choose the date practical completion was achieved.' };
+  }
+
+  return runAction(
+    () =>
+      pageFetch(`/contracts/${contractId}/practical-completion`, {
+        method: 'POST',
+        body: { practicalCompletionOn },
+      }),
+    {
+      revalidate: [`/contracts/${contractId}`],
+      success: 'Recorded. The defects liability period is now running.',
+    },
+  );
+}
+
+/**
+ * Checks whether anything has become releasable since practical completion
+ * or the end of the defects liability period, and raises it onto the
+ * retention register if so. Nothing calls this on its own — a release is
+ * scheduled by someone asking, the same reasoning the register's own
+ * empty state already states.
+ */
+async function scheduleRetentionRelease(
+  contractId: string,
+  _state: ActionState,
+  _form: FormData,
+): Promise<ActionState> {
+  'use server';
+
+  return runAction(
+    () => pageFetch(`/contracts/${contractId}/retention/schedule`, { method: 'POST' }),
+    { revalidate: [`/contracts/${contractId}`, '/contracts/retention'], success: 'Checked.' },
+  );
+}
+
 const BACK_CHARGE_CATEGORIES = ['damage', 'attendance', 'rectification', 'materials', 'other'] as const;
 
 /**
@@ -163,6 +209,9 @@ interface Position {
   backChargesOutstanding: number;
   overdueAmount: number;
   anticipatedFinalValue: number;
+  status: string;
+  practicalCompletionOn: string | null;
+  defectsLiabilityEndsOn: string | null;
   variations: {
     approvedValue: number;
     exposureValue: number;
@@ -227,6 +276,8 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
   const currency = me.tenant.currencyCode;
   const mayApply = can(me.permissions, 'contracts.application.write');
   const mayManageBackCharges = can(me.permissions, 'contracts.back_charge.manage') || me.user.isOwner;
+  const mayRecordCompletion = can(me.permissions, 'contracts.contract.execute') || me.user.isOwner;
+  const mayReleaseRetention = can(me.permissions, 'contracts.retention.release') || me.user.isOwner;
 
   let position: Position;
   try {
@@ -387,6 +438,56 @@ export default async function ContractPage({ params }: { params: Promise<{ id: s
               <SubmitButton pendingLabel="Valuing…">Draft application</SubmitButton>
             </div>
           </ActionForm>
+        </Card>
+      ) : null}
+
+      {(mayRecordCompletion || mayReleaseRetention) &&
+      (position.status === 'active' || position.status === 'defects_liability') ? (
+        <Card
+          title="Completion & retention"
+          className="mb-6"
+          footnote="Practical completion starts the defects liability period. Retention is not released automatically — checking is how a due amount reaches the retention register."
+        >
+          <div className="flex flex-wrap items-start gap-6">
+            {mayRecordCompletion && !position.practicalCompletionOn ? (
+              <ActionForm action={recordPracticalCompletion.bind(null, id)}>
+                <div className="flex items-end gap-2">
+                  <div>
+                    <label
+                      htmlFor="practicalCompletionOn"
+                      className="mb-1 block text-xs text-(--color-muted)"
+                    >
+                      Practical completion date
+                    </label>
+                    <input
+                      id="practicalCompletionOn"
+                      name="practicalCompletionOn"
+                      type="date"
+                      required
+                      className="rounded-md border border-(--color-line) bg-(--color-surface) px-3 py-1.5 text-sm outline-none focus:border-(--color-accent)"
+                    />
+                  </div>
+                  <SubmitButton pendingLabel="Recording…">Record practical completion</SubmitButton>
+                </div>
+              </ActionForm>
+            ) : position.practicalCompletionOn ? (
+              <div className="text-sm">
+                <span className="block text-xs text-(--color-muted)">Practical completion</span>
+                {date(position.practicalCompletionOn)}
+                {position.defectsLiabilityEndsOn ? (
+                  <span className="block text-xs text-(--color-muted)">
+                    Defects liability ends {date(position.defectsLiabilityEndsOn)}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {mayReleaseRetention && position.practicalCompletionOn ? (
+              <ActionForm action={scheduleRetentionRelease.bind(null, id)}>
+                <SubmitButton pendingLabel="Checking…">Check for a retention release</SubmitButton>
+              </ActionForm>
+            ) : null}
+          </div>
         </Card>
       ) : null}
 

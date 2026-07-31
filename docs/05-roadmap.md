@@ -1825,6 +1825,86 @@ build session is a platform gap worth someone eventually closing at the
 root — module enablement still does not provision what a module's own
 manifest declares.
 
+### Four routes with a screen missing, not a permission gating nothing
+
+A second survey, after the back-charges/correspondence/stock-counts/stock-
+movement pass above closed every permission that gated nothing. This time
+the question was different: cross-reference every `POST`/`PATCH`/`PUT`/
+`DELETE` route in `apps/api/src/routes/*.ts` against whether anything under
+`apps/web/src` actually calls it. A crude substring grep on route paths
+throws up mostly false positives — `/notice`, `/link`, `/confirm`, RFQ
+award, order receipts and rate components all matched something and were
+all already wired — so every candidate was opened and read, not trusted
+from the grep. Four were real: contract create and activate, project
+budget create/approve with no way to even list a project's budgets first,
+retention release scheduling, and document check-in/check-out with no
+version history route at all. Built in that order.
+
+**Contracts: create and activate.** No web screen existed for either verb —
+the whole register was read-only from the browser, populated only by the
+demo seed. Country code is typed once, at creation, because it decides the
+retention schedule, payment terms and defects-liability period the country
+pack snapshots onto the contract the moment it activates; nothing about
+those terms is asked for again. Activating only stamps `commencedOn`.
+
+**Projects: budgets, and the read route that had to be built first.** The
+manifest declared `projects.budget.read` with a label — "View budgets" —
+and the permission had zero usages anywhere in the codebase; only create
+and approve existed, and neither had a screen. Building an "approve a
+budget" UI with no way to list what there was to approve would have been
+building the wrong half first, so `listBudgets` and `getBudgetDetail` (with
+lines resolved to their WBS codes) were added before any web code at all.
+Reading `createBudgetVersion` settled a real design question: a budget
+version is supplied whole, in one call, with a `.min(1)` line array and no
+"add a line to an existing version" function — versions are never edited in
+place, only superseded — so the new-budget screen had to be a repeating-row
+grid built and reviewed before submission, not a single-line form. That is
+the same shape of client component `estimating/rates/[id]/BuildUpGrid.tsx`
+already established for the identical problem (a variable-length priced
+list a plain `FormData` post cannot capture), reused rather than
+reinvented. Approving supersedes whichever version was previously approved
+and rebuilds the work breakdown's cached `budgetCost`/`budgetValue` from
+the new lines — a rebuild, never an increment, so nothing can drift.
+
+**Contracts: practical completion and retention release scheduling.**
+Retention has nothing to release until practical completion is recorded, so
+recording practical completion was pulled into the same slice rather than
+building a release-scheduling button with nothing yet for it to act on.
+`recordPracticalCompletion` also does something the first draft of the
+screen did not account for: it moves the contract's status from `active`
+straight to `defects_liability`. The card's visibility was first written
+gated on `position.status === 'active'`, which meant the retention-check
+button — the entire point of recording completion — vanished from the
+screen the instant practical completion was actually recorded. Caught by
+the live Playwright pass against a real contract, not by any test: typecheck,
+lint and the existing test suites all had no way to know the card had
+disappeared, because nothing asserted the card was there to begin with.
+Fixed by gating on either status. The lesson generalises: a status-derived
+visibility condition needs to be checked against every status the action
+being gated can itself produce, not just the status the page happened to
+be in before the action ran.
+
+**Documents: check-in/check-out and version history.** The lock and unlock
+routes already existed and worked — `kernel.document_lock` is a separate
+table (documentId primary key, lockedBy, expiresAt) from `document` itself,
+requiring an explicit join to surface anywhere — but no screen showed who
+held a lock, offered to release one, or listed a document's prior versions;
+the version-listing route did not exist at all and was added alongside the
+web work. The register now joins the lock through and shows the holder's
+name on every row; Check out/Check in are gated on `kernel.document.manage`
+and, separately, on actually holding the lock — the service enforces the
+same rule (`unlockDocument` refuses anyone but the lock holder, no manager
+override), so the UI's gating and the service's gating agree rather than
+one being stricter than the other by accident. Version history is a plain
+`?versions=<id>`-driven server-rendered section, no client JavaScript,
+matching every other register on the platform.
+
+Seven new integration tests across the two slices that needed them
+(budgets: list, detail, and a permission refusal; documents: the lock
+holder surfacing on the register, and the version list resolving uploader
+names in order) plus three new unit tests for the `fileSize` formatter the
+document register needed and none of the platform had yet.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

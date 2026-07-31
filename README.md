@@ -181,7 +181,46 @@ labelled parts, becomes scanned progress.
   them already, and post exactly as before
   (`POST /api/v1/inventory/movements/:id/approve`,
   `POST /api/v1/inventory/movements/:id/reject`, `/inventory/movements`)
-- **1,104 tests**, including integration suites that prove tenant isolation holds and
+- **A contract can now be created and activated from the web** — the routes
+  existed with no screen behind them at all. Country and payment terms are
+  typed once, at creation, and never again: activating just stamps
+  `commencedOn` and reads the retention/DLP/payment-terms rules the country
+  pack already snapshotted onto the contract, the same as an activated
+  contract already displayed them
+  (`POST /api/v1/contracts`, `POST /api/v1/contracts/:id/activate`, `/contracts`)
+- **A project can now list, create and approve budget versions from the
+  web** — `projects.budget.read` was declared in the manifest with a label
+  and never referenced anywhere, and there was no route to list a project's
+  budgets at all, only to create and approve one blind. A budget version is
+  create-once-immutable (every line supplied together, `.min(1)`, no "add a
+  line later"), so the new screen is a repeating-line grid, not a form;
+  approving supersedes whichever version was previously approved and
+  rebuilds the work breakdown's cached budget figures from the new lines
+  (`GET /api/v1/projects/:id/budgets`, `GET /api/v1/projects/budgets/:id`,
+  `POST /api/v1/projects/:id/budgets`, `POST /api/v1/projects/budgets/:id/approve`,
+  `/projects/:id`)
+- **Practical completion and retention release scheduling, from the web** —
+  recording practical completion (which starts the defects liability period)
+  and checking for a releasable retention amount both had working routes and
+  no screen. The two are coupled: retention has nothing to release until
+  practical completion is recorded, so the same card offers both, gated on
+  contract status rather than only on "active" — a contract in its defects
+  liability period still needs the retention check available, which the
+  first pass of this screen missed and Playwright verification against a
+  live contract caught
+  (`POST /api/v1/contracts/:id/practical-completion`,
+  `POST /api/v1/contracts/:id/retention/schedule`, `/contracts/:id`)
+- **Document check-in/check-out and version history, from the web** — lock
+  and unlock routes worked with no way to see who held a lock or release
+  one, and there was no route to list a document's version history at all.
+  The register now surfaces the lock holder's name on every row, offers
+  Check out/Check in gated on `kernel.document.manage` and on actually
+  holding the lock (the service enforces this too — only the lock holder
+  can check a document back in, no manager override), and a version count
+  links to a server-rendered history of every version with its uploader,
+  size and change note
+  (`GET /api/v1/documents/:id/versions`, `/documents`)
+- **1,111 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
