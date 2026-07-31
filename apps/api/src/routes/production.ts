@@ -22,11 +22,18 @@ import {
   FINISHING_SORTS,
   ROUTING_SORTS,
   WORK_ORDER_SORTS,
+  FinishingError,
+  RoutingError,
   WorkOrderError,
+  addRoutingOperation,
+  createFinishingBatch,
+  createRouting,
+  createWorkCentre,
   createWorkOrder,
   cuttingPlanOffcutIds,
   estimateCompletion,
   getCuttingPlan,
+  getRoutingDetail,
   getWorkOrderProgress,
   listCuttingPlans,
   listFinishingBatches,
@@ -35,7 +42,12 @@ import {
   productionSchema,
   recordScan,
   releaseWorkOrder,
+  removeRoutingOperation,
   saveCuttingPlan,
+  updateFinishingBatchStatus,
+  updateRouting,
+  updateRoutingOperation,
+  updateWorkCentre,
 } from '@aerolith/module-production';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -110,6 +122,85 @@ const cutlistBody = z.object({
   kerfMm: z.number().min(0).max(20).optional(),
   edgeTrimMm: z.number().min(0).max(100).optional(),
   includeDrawings: z.boolean().optional(),
+});
+
+const WORK_CENTRE_TYPES = [
+  'beam_saw',
+  'cnc',
+  'edgebander',
+  'drilling',
+  'sanding',
+  'spray_booth',
+  'assembly',
+  'quality',
+  'packing',
+  'other',
+] as const;
+
+const createWorkCentreBody = z.object({
+  code: z.string().min(1).max(16),
+  name: z.string().min(1),
+  type: z.enum(WORK_CENTRE_TYPES),
+  assetId: z.string().uuid().nullish(),
+  capacityUnits: z.number().int().positive().optional(),
+  setupMinutes: z.number().min(0).optional(),
+  runMinutesPerUnit: z.number().min(0).optional(),
+  costPerHour: z.number().min(0).nullish(),
+  workingMinutesPerDay: z.number().int().positive().optional(),
+  isBatchProcess: z.boolean().optional(),
+  batchCapacityUnits: z.number().int().positive().nullish(),
+  isActive: z.boolean().optional(),
+});
+
+const updateWorkCentreBody = createWorkCentreBody.omit({ code: true }).partial();
+
+const createRoutingBody = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(1),
+  itemId: z.string().uuid().nullish(),
+  description: z.string().nullish(),
+  isDefault: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+});
+
+const updateRoutingBody = createRoutingBody.omit({ code: true }).partial();
+
+const addOperationBody = z.object({
+  sequence: z.number().int().positive(),
+  name: z.string().min(1),
+  workCentreId: z.string().uuid(),
+  setupMinutes: z.number().min(0).nullish(),
+  runMinutesPerUnit: z.number().min(0).nullish(),
+  cureMinutes: z.number().int().min(0).optional(),
+  isQualityGate: z.boolean().optional(),
+  instructions: z.string().nullish(),
+});
+
+const updateOperationBody = addOperationBody.partial();
+
+const createFinishingBatchBody = z.object({
+  workCentreId: z.string().uuid(),
+  colourCode: z.string().max(32).nullish(),
+  sheenCode: z.string().max(32).nullish(),
+  coatNumber: z.number().int().positive().optional(),
+  totalCoats: z.number().int().positive().optional(),
+  cureMinutes: z.number().int().min(0).optional(),
+  notes: z.string().nullish(),
+  parts: z
+    .array(
+      z.object({
+        partId: z.string().uuid(),
+        quantity: z.number().int().positive(),
+        isRework: z.boolean().optional(),
+      }),
+    )
+    .min(1),
+});
+
+const updateFinishingStatusBody = z.object({
+  status: z.enum(['queued', 'spraying', 'curing', 'completed', 'rejected']),
+  holdReason: z.string().nullish(),
+  notes: z.string().nullish(),
 });
 
 export async function productionRoutes(app: FastifyInstance) {
@@ -432,6 +523,271 @@ export async function productionRoutes(app: FastifyInstance) {
           listRoutings(tx, params, { includeInactive: request.query.inactive === 'true' }),
         ),
       );
+    },
+  );
+
+  // --- Work centres --------------------------------------------------------
+  //
+  // Reference data used throughout the module (the board groups by it, a
+  // routing's operations run at it), so reading the list is open to anyone
+  // who can read production at all. Creating and editing a station is what
+  // `production.routing.manage` — "Manage routings AND work centres" — is for.
+
+  app.get('/production/work-centres', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.work_order.read');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(productionSchema.workCentre)
+          .where(eq(productionSchema.workCentre.tenantId, principal.context.tenantId))
+          .orderBy(asc(productionSchema.workCentre.code));
+        return { workCentres: rows };
+      }),
+    );
+  });
+
+  app.post('/production/work-centres', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.routing.manage');
+
+    const parsed = createWorkCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createWorkCentre(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof RoutingError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/production/work-centres/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.routing.manage');
+
+    const parsed = updateWorkCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateWorkCentre(tx, { workCentreId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof RoutingError) {
+        return reply.code(error.message === 'Work centre not found.' ? 404 : 409).send({
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  // --- Routings and their operations ---------------------------------------
+
+  app.post('/production/routings', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.routing.manage');
+
+    const parsed = createRoutingBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () => withTenant((tx) => createRouting(tx, parsed.data)));
+    } catch (error) {
+      if (error instanceof RoutingError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  /** One routing, with its steps resolved to the work centres that run them. */
+  app.get<{ Params: { id: string } }>('/production/routings/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.work_order.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getRoutingDetail(tx, request.params.id)),
+    );
+    if (!detail) return reply.code(404).send({ error: 'Routing not found.' });
+    return detail;
+  });
+
+  app.patch<{ Params: { id: string } }>('/production/routings/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.routing.manage');
+
+    const parsed = updateRoutingBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateRouting(tx, { routingId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof RoutingError) {
+        return reply.code(error.message === 'Routing not found.' ? 404 : 409).send({
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/production/routings/:id/operations',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.routing.manage');
+
+      const parsed = addOperationBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            addRoutingOperation(tx, { routingId: request.params.id, ...parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof RoutingError) {
+          return reply.code(error.message === 'Routing not found.' ? 404 : 409).send({
+            error: error.message,
+          });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.patch<{ Params: { id: string; operationId: string } }>(
+    '/production/routings/:id/operations/:operationId',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.routing.manage');
+
+      const parsed = updateOperationBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            updateRoutingOperation(tx, { operationId: request.params.operationId, ...parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof RoutingError) {
+          return reply.code(error.message === 'Routing operation not found.' ? 404 : 409).send({
+            error: error.message,
+          });
+        }
+        throw error;
+      }
+
+      return { updated: true };
+    },
+  );
+
+  /**
+   * Removes a step from a routing. `POST .../remove` rather than `DELETE`,
+   * matching how master data's contact removal is exposed — the same
+   * "removal is an action, not a REST noun" convention across this API.
+   */
+  app.post<{ Params: { id: string; operationId: string } }>(
+    '/production/routings/:id/operations/:operationId/remove',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.routing.manage');
+
+      try {
+        await withPrincipal(principal, () =>
+          withTenant((tx) => removeRoutingOperation(tx, { operationId: request.params.operationId })),
+        );
+      } catch (error) {
+        if (error instanceof RoutingError) return reply.code(404).send({ error: error.message });
+        throw error;
+      }
+
+      return { removed: true };
+    },
+  );
+
+  // --- Finishing -------------------------------------------------------------
+
+  app.post('/production/finishing', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'production.finishing.manage');
+
+    const parsed = createFinishingBatchBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createFinishingBatch(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof FinishingError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/production/finishing/:id/status',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      if (!(await requireModule(principal, reply))) return reply;
+      requirePermission(principal, 'production.finishing.manage');
+
+      const parsed = updateFinishingStatusBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            updateFinishingBatchStatus(tx, { batchId: request.params.id, ...parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof FinishingError) {
+          return reply.code(error.message === 'Finishing batch not found.' ? 404 : 409).send({
+            error: error.message,
+          });
+        }
+        throw error;
+      }
     },
   );
 

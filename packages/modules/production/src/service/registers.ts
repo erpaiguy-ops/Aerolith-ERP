@@ -686,3 +686,65 @@ export async function listRoutings(
 
   return listResult(rows, counted?.total ?? 0, params);
 }
+
+export interface RoutingOperationDetail {
+  id: string;
+  sequence: number;
+  name: string;
+  workCentreId: string;
+  workCentreCode: string;
+  workCentreName: string;
+  setupMinutes: string | null;
+  runMinutesPerUnit: string | null;
+  cureMinutes: number;
+  isQualityGate: boolean;
+  instructions: string | null;
+}
+
+export interface RoutingDetail {
+  routing: typeof routing.$inferSelect;
+  operations: RoutingOperationDetail[];
+}
+
+/** One routing, with its steps resolved to the work centres that run them. */
+export async function getRoutingDetail(
+  tx: Transaction,
+  routingId: string,
+): Promise<RoutingDetail | null> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select()
+    .from(routing)
+    .where(and(eq(routing.tenantId, tenantId), eq(routing.id, routingId)))
+    .limit(1);
+  if (!row) return null;
+
+  const operations = await tx
+    .select({
+      operation: routingOperation,
+      workCentreCode: workCentre.code,
+      workCentreName: workCentre.name,
+    })
+    .from(routingOperation)
+    .innerJoin(workCentre, eq(workCentre.id, routingOperation.workCentreId))
+    .where(and(eq(routingOperation.tenantId, tenantId), eq(routingOperation.routingId, routingId)))
+    .orderBy(asc(routingOperation.sequence));
+
+  return {
+    routing: row,
+    operations: operations.map(({ operation, workCentreCode, workCentreName }) => ({
+      id: operation.id,
+      sequence: operation.sequence,
+      name: operation.name,
+      workCentreId: operation.workCentreId,
+      workCentreCode,
+      workCentreName,
+      setupMinutes: operation.setupMinutes,
+      runMinutesPerUnit: operation.runMinutesPerUnit,
+      cureMinutes: operation.cureMinutes,
+      isQualityGate: operation.isQualityGate,
+      instructions: operation.instructions,
+    })),
+  };
+}

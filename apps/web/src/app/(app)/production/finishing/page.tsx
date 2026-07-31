@@ -1,3 +1,4 @@
+import { ActionForm, SubmitButton } from '@/components/Action';
 import {
   EmptyList,
   FilterChips,
@@ -8,7 +9,40 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
+import { pageFetch } from '@/lib/api';
 import { date, integer } from '@/lib/format';
+import { getMe } from '@/lib/session';
+
+import { createFinishingBatchAction, setFinishingBatchStatusAction } from './actions';
+
+/** What a batch is allowed to move to next — mirrors the service's own map,
+ * so the buttons offered here never provoke the 409 it would refuse. */
+const NEXT_STATUSES: Record<string, { label: string; status: string }[]> = {
+  queued: [
+    { label: 'Start spraying', status: 'spraying' },
+    { label: 'Reject', status: 'rejected' },
+  ],
+  spraying: [
+    { label: 'Move to curing', status: 'curing' },
+    { label: 'Mark complete', status: 'completed' },
+    { label: 'Reject', status: 'rejected' },
+  ],
+  curing: [
+    { label: 'Mark complete', status: 'completed' },
+    { label: 'Reject', status: 'rejected' },
+  ],
+  completed: [],
+  rejected: [],
+};
+
+interface WorkCentreRow {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  isActive: boolean;
+}
 
 interface FinishingRow {
   id: string;
@@ -58,14 +92,25 @@ function duration(minutes: number): string {
   return rest === 0 ? `${integer(hours)}h` : `${integer(hours)}h ${integer(rest)}m`;
 }
 
+const field =
+  'w-full rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-sm outline-none focus:border-(--color-accent)';
+
 export default async function FinishingPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = listQuery(await searchParams);
+  const me = await getMe();
+  const mayManage = can(me.permissions, 'production.finishing.manage') || me.user.isOwner;
 
-  const result = await fetchList<FinishingRow>('/production/finishing', query);
+  const [result, workCentres] = await Promise.all([
+    fetchList<FinishingRow>('/production/finishing', query),
+    mayManage
+      ? pageFetch<{ workCentres: WorkCentreRow[] }>('/production/work-centres')
+      : Promise.resolve({ workCentres: [] as WorkCentreRow[] }),
+  ]);
+  const booths = workCentres.workCentres.filter((c) => c.isActive && c.type === 'spray_booth');
 
   return (
     <>
@@ -110,6 +155,7 @@ export default async function FinishingPage({
                 <SortTh base={BASE} query={query} column="cureCompletesAt" current={result.sort} direction={result.direction}>
                   Out of the booth
                 </SortTh>
+                {mayManage ? <Th /> : null}
               </tr>
             }
           >
@@ -118,6 +164,7 @@ export default async function FinishingPage({
               // Negative means the cure finished and nobody moved the load —
               // which is a booth standing idle, the most expensive thing here.
               const overdue = row.status === 'curing' && remaining != null && remaining < 0;
+              const nextSteps = NEXT_STATUSES[row.status] ?? [];
 
               return (
                 <tr key={row.id} className="hover:bg-(--color-canvas)">
@@ -194,6 +241,19 @@ export default async function FinishingPage({
                       </span>
                     )}
                   </Td>
+                  {mayManage ? (
+                    <Td>
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {nextSteps.map((step) => (
+                          <ActionForm key={step.status} action={setFinishingBatchStatusAction}>
+                            <input type="hidden" name="batchId" value={row.id} />
+                            <input type="hidden" name="status" value={step.status} />
+                            <SubmitButton pendingLabel="Saving…">{step.label}</SubmitButton>
+                          </ActionForm>
+                        ))}
+                      </div>
+                    </Td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -202,6 +262,64 @@ export default async function FinishingPage({
 
         <Pager base={BASE} query={query} result={result} noun={['spray load', 'spray loads']} />
       </Card>
+
+      {mayManage ? (
+        <Card
+          title="Load a spray booth"
+          footnote="One part per load here — a real load usually carries several; add the rest from the work order's parts once this batch exists, or repeat this form. Everything in a load must share one finish."
+        >
+          <ActionForm action={createFinishingBatchAction} className="grid gap-3 sm:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Booth</span>
+              <select name="workCentreId" defaultValue="" className={field}>
+                <option value="" disabled>
+                  — Choose —
+                </option>
+                {booths.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Colour</span>
+              <input name="colourCode" placeholder="RAL9010" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Sheen</span>
+              <input name="sheenCode" placeholder="MATT-20" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Cure (min)</span>
+              <input type="number" step="1" name="cureMinutes" className={`${field} numeric`} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Coat</span>
+              <input type="number" step="1" name="coatNumber" defaultValue={1} className={`${field} numeric`} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Total coats</span>
+              <input type="number" step="1" name="totalCoats" defaultValue={1} className={`${field} numeric`} />
+            </label>
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-xs text-(--color-muted)">Part id</span>
+              <input name="partId" dir="auto" placeholder="From the work order's parts list" className={field} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-(--color-muted)">Quantity</span>
+              <input type="number" step="1" name="quantity" className={`${field} numeric`} />
+            </label>
+            <label className="flex items-end gap-1.5 pb-1.5 text-sm">
+              <input type="checkbox" name="isRework" value="true" className="accent-current" />
+              Rework
+            </label>
+            <div className="flex items-end sm:col-span-4">
+              <SubmitButton pendingLabel="Queuing…">Queue load</SubmitButton>
+            </div>
+          </ActionForm>
+        </Card>
+      ) : null}
     </>
   );
 }

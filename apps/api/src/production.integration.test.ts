@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { closeDatabase, createDatabase, getDatabase, schema } from '@aerolith/kernel';
 import { inventorySchema } from '@aerolith/module-inventory';
 import { productionSchema } from '@aerolith/module-production';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -24,6 +24,8 @@ const suite = url ? describe : describe.skip;
 const TENANT = '99999999-9999-4999-8999-999999999999';
 const USER = 'eeeeeeee-0000-4000-8000-000000000001';
 const TOKEN = 'production-token-for-tests';
+const READER = 'eeeeeeee-0000-4000-8000-000000000002';
+const READER_TOKEN = 'production-reader-token-for-tests';
 
 const hash = (t: string) => createHash('sha256').update(t).digest('hex');
 
@@ -34,8 +36,13 @@ suite('Production', () => {
   let routingId: string;
   let sawId: string;
   let boothId: string;
+  let readerRoleId: string;
 
   const auth = () => ({ authorization: `Bearer ${TOKEN}` });
+  // Holds only `production.work_order.read` — everything this file's
+  // ".manage" tests refuse must refuse this token with a 403, not a 404 (the
+  // module IS entitled) and not a 200.
+  const readerAuth = () => ({ authorization: `Bearer ${READER_TOKEN}` });
 
   beforeAll(async () => {
     createDatabase({ connectionString: url! });
@@ -50,21 +57,46 @@ suite('Production', () => {
       primaryCountryCode: 'AE',
       baseCurrencyCode: 'AED',
     });
-    await db.insert(schema.appUser).values({ id: USER, email: 'foreman@prod.test', name: 'Foreman' });
-    await db
-      .insert(schema.membership)
-      .values({ tenantId: TENANT, userId: USER, status: 'active', isOwner: true });
-    await db.insert(schema.session).values({
-      userId: USER,
-      tenantId: TENANT,
-      tokenHash: hash(TOKEN),
-      expiresAt: new Date(Date.now() + 3_600_000),
-    });
+    await db.insert(schema.appUser).values([
+      { id: USER, email: 'foreman@prod.test', name: 'Foreman' },
+      { id: READER, email: 'viewer@prod.test', name: 'Shop Floor Viewer' },
+    ]);
+    await db.insert(schema.membership).values([
+      { tenantId: TENANT, userId: USER, status: 'active', isOwner: true },
+      { tenantId: TENANT, userId: READER, status: 'active', isOwner: false },
+    ]);
+    await db.insert(schema.session).values([
+      {
+        userId: USER,
+        tenantId: TENANT,
+        tokenHash: hash(TOKEN),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+      {
+        userId: READER,
+        tenantId: TENANT,
+        tokenHash: hash(READER_TOKEN),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    ]);
     await db.insert(schema.tenantModule).values([
       { tenantId: TENANT, moduleKey: 'production', status: 'enabled' },
       { tenantId: TENANT, moduleKey: 'inventory', status: 'enabled' },
     ]);
     invalidateTenantModules();
+
+    // A role that can see the shop floor but cannot manage routings, work
+    // centres or finishing — the read/manage split this file exists to prove.
+    const [reader] = await db
+      .insert(schema.role)
+      .values({ tenantId: TENANT, code: 'shop-viewer', name: 'Shop Floor Viewer' })
+      .returning({ id: schema.role.id });
+    readerRoleId = reader!.id;
+
+    await db
+      .insert(schema.rolePermission)
+      .values({ tenantId: TENANT, roleId: readerRoleId, permissionKey: 'production.work_order.read' });
+    await db.insert(schema.userRole).values({ tenantId: TENANT, userId: READER, roleId: readerRoleId });
 
     const [mdf] = await db
       .insert(schema.item)
@@ -88,6 +120,13 @@ suite('Production', () => {
         code: 'WO',
         name: 'Work Order',
         pattern: 'WO-{YYYY}-{SEQ}',
+      },
+      {
+        tenantId: TENANT,
+        entityType: 'production.finishing_batch',
+        code: 'FIN',
+        name: 'Finishing Batch',
+        pattern: 'FIN-{YYYY}-{SEQ}',
       },
     ]);
 
@@ -185,6 +224,8 @@ suite('Production', () => {
     await db.delete(productionSchema.workOrderOperation).where(eq(productionSchema.workOrderOperation.tenantId, TENANT));
     await db.delete(productionSchema.workOrderPart).where(eq(productionSchema.workOrderPart.tenantId, TENANT));
     await db.delete(productionSchema.workOrder).where(eq(productionSchema.workOrder.tenantId, TENANT));
+    await db.delete(productionSchema.finishingBatchPart).where(eq(productionSchema.finishingBatchPart.tenantId, TENANT));
+    await db.delete(productionSchema.finishingBatch).where(eq(productionSchema.finishingBatch.tenantId, TENANT));
     await db.delete(productionSchema.routingOperation).where(eq(productionSchema.routingOperation.tenantId, TENANT));
     await db.delete(productionSchema.routing).where(eq(productionSchema.routing.tenantId, TENANT));
     await db.delete(productionSchema.workCentre).where(eq(productionSchema.workCentre.tenantId, TENANT));
@@ -196,9 +237,12 @@ suite('Production', () => {
     await db.delete(schema.numberSeries).where(eq(schema.numberSeries.tenantId, TENANT));
     await db.delete(schema.item).where(eq(schema.item.tenantId, TENANT));
     await db.delete(schema.tenantModule).where(eq(schema.tenantModule.tenantId, TENANT));
-    await db.delete(schema.session).where(eq(schema.session.userId, USER));
+    await db.delete(schema.userRole).where(eq(schema.userRole.tenantId, TENANT));
+    await db.delete(schema.rolePermission).where(eq(schema.rolePermission.tenantId, TENANT));
+    await db.delete(schema.role).where(eq(schema.role.tenantId, TENANT));
+    await db.delete(schema.session).where(inArray(schema.session.userId, [USER, READER]));
     await db.delete(schema.membership).where(eq(schema.membership.tenantId, TENANT));
-    await db.delete(schema.appUser).where(eq(schema.appUser.id, USER));
+    await db.delete(schema.appUser).where(inArray(schema.appUser.id, [USER, READER]));
     await db.delete(schema.tenant).where(eq(schema.tenant.id, TENANT));
     await app.close();
     await closeDatabase();
@@ -962,6 +1006,367 @@ suite('Production', () => {
         expect(row).toHaveProperty('netYieldPercent');
         expect(row.offcutsConsumed).toBeGreaterThanOrEqual(0);
       }
+    });
+  });
+
+  describe('routings and work centres — production.routing.manage', () => {
+    it('creates a work centre', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/work-centres',
+        headers: auth(),
+        payload: { code: 'DRILL', name: 'CNC Drill', type: 'drilling', setupMinutes: 5, runMinutesPerUnit: 0.5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().id).toBeTruthy();
+    });
+
+    it('refuses a duplicate work centre code', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/work-centres',
+        headers: auth(),
+        payload: { code: 'SAW', name: 'A second saw', type: 'beam_saw' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('updates a work centre', async () => {
+      const created = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/production/work-centres',
+          headers: auth(),
+          payload: { code: 'SAND', name: 'Sander', type: 'sanding' },
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/production/work-centres/${created.id}`,
+        headers: auth(),
+        payload: { name: 'Orbital Sander', isActive: false },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const [row] = await getDatabase()
+        .select()
+        .from(productionSchema.workCentre)
+        .where(eq(productionSchema.workCentre.id, created.id));
+      expect(row!.name).toBe('Orbital Sander');
+      expect(row!.isActive).toBe(false);
+    });
+
+    it('creates a routing and adds operations in sequence', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/routings',
+        headers: auth(),
+        payload: { code: 'STD-SHELF', name: 'Standard shelf' },
+      });
+      expect(created.statusCode).toBe(200);
+      const newRoutingId = created.json().id;
+
+      const first = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/routings/${newRoutingId}/operations`,
+        headers: auth(),
+        payload: { sequence: 1, name: 'Cut', workCentreId: sawId },
+      });
+      expect(first.statusCode).toBe(200);
+
+      const second = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/routings/${newRoutingId}/operations`,
+        headers: auth(),
+        payload: { sequence: 2, name: 'Spray', workCentreId: boothId, cureMinutes: 180 },
+      });
+      expect(second.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/production/routings/${newRoutingId}`,
+        headers: auth(),
+      });
+      const body = detail.json();
+      expect(body.operations).toHaveLength(2);
+      expect(body.operations[0].workCentreCode).toBe('SAW');
+      expect(body.operations[1].cureMinutes).toBe(180);
+    });
+
+    it('refuses a duplicate sequence number within a routing — 409', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/routings',
+        headers: auth(),
+        payload: { code: 'STD-PANEL', name: 'Standard panel' },
+      });
+      const newRoutingId = created.json().id;
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/routings/${newRoutingId}/operations`,
+        headers: auth(),
+        payload: { sequence: 1, name: 'Cut', workCentreId: sawId },
+      });
+
+      const duplicate = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/routings/${newRoutingId}/operations`,
+        headers: auth(),
+        payload: { sequence: 1, name: 'Also cut', workCentreId: sawId },
+      });
+
+      expect(duplicate.statusCode).toBe(409);
+      expect(duplicate.json().error).toMatch(/already used/i);
+    });
+
+    it('edits an operation (reordering its sequence) and removes another', async () => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/routings',
+        headers: auth(),
+        payload: { code: 'STD-DRAWER', name: 'Standard drawer' },
+      });
+      const newRoutingId = created.json().id;
+
+      const opA = (
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/production/routings/${newRoutingId}/operations`,
+          headers: auth(),
+          payload: { sequence: 1, name: 'Cut', workCentreId: sawId },
+        })
+      ).json();
+
+      const opB = (
+        await app.inject({
+          method: 'POST',
+          url: `/api/v1/production/routings/${newRoutingId}/operations`,
+          headers: auth(),
+          payload: { sequence: 2, name: 'Spray', workCentreId: boothId },
+        })
+      ).json();
+
+      const reordered = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/production/routings/${newRoutingId}/operations/${opB.id}`,
+        headers: auth(),
+        payload: { sequence: 3, name: 'Final spray' },
+      });
+      expect(reordered.statusCode).toBe(200);
+
+      const removed = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/routings/${newRoutingId}/operations/${opA.id}/remove`,
+        headers: auth(),
+      });
+      expect(removed.statusCode).toBe(200);
+      expect(removed.json().removed).toBe(true);
+
+      const detail = (
+        await app.inject({
+          method: 'GET',
+          url: `/api/v1/production/routings/${newRoutingId}`,
+          headers: auth(),
+        })
+      ).json();
+      expect(detail.operations).toHaveLength(1);
+      expect(detail.operations[0].name).toBe('Final spray');
+      expect(detail.operations[0].sequence).toBe(3);
+    });
+
+    it('requires .manage, not just .read, to create a routing — 403', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/routings',
+        headers: readerAuth(),
+        payload: { code: 'READER-BLOCKED', name: 'Should not be created' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('requires .manage, not just .read, to create a work centre — 403', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/work-centres',
+        headers: readerAuth(),
+        payload: { code: 'READER-WC', name: 'Should not be created', type: 'other' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('still lets the read-only role see routings and work centres', async () => {
+      const routings = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/routings',
+        headers: readerAuth(),
+      });
+      expect(routings.statusCode).toBe(200);
+
+      const centres = await app.inject({
+        method: 'GET',
+        url: '/api/v1/production/work-centres',
+        headers: readerAuth(),
+      });
+      expect(centres.statusCode).toBe(200);
+    });
+  });
+
+  describe('finishing batches — production.finishing.manage', () => {
+    async function firstPartOf(workOrderId: string): Promise<string> {
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/production/work-orders/${workOrderId}`,
+        headers: auth(),
+      });
+      return detail.json().parts[0].id;
+    }
+
+    it('loads a spray booth and takes the batch through spraying, curing and completion', async () => {
+      const order = (await createOrder()).json();
+      const partId = await firstPartOf(order.workOrderId);
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/finishing',
+        headers: auth(),
+        payload: {
+          workCentreId: boothId,
+          colourCode: 'RAL9010',
+          sheenCode: 'MATT-20',
+          cureMinutes: 120,
+          parts: [{ partId, quantity: 4 }],
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      const body = created.json();
+      expect(body.number).toMatch(/^FIN-\d{4}-\d{5}$/);
+
+      const spraying = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${body.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'spraying' },
+      });
+      expect(spraying.statusCode).toBe(200);
+
+      const curing = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${body.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'curing' },
+      });
+      expect(curing.statusCode).toBe(200);
+
+      const [afterCuring] = await getDatabase()
+        .select()
+        .from(productionSchema.finishingBatch)
+        .where(eq(productionSchema.finishingBatch.id, body.batchId));
+      expect(afterCuring!.sprayedAt).not.toBeNull();
+      expect(afterCuring!.cureCompletesAt).not.toBeNull();
+      // The cure clock is derived — sprayedAt + cureMinutes — not carried as a
+      // separate field a caller could set inconsistently.
+      const deltaMinutes =
+        (afterCuring!.cureCompletesAt!.getTime() - afterCuring!.sprayedAt!.getTime()) / 60_000;
+      expect(deltaMinutes).toBeCloseTo(120, 0);
+
+      const completed = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${body.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'completed' },
+      });
+      expect(completed.statusCode).toBe(200);
+    });
+
+    it('refuses a completed batch from moving back to queued — 409', async () => {
+      const order = (await createOrder()).json();
+      const partId = await firstPartOf(order.workOrderId);
+
+      const created = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/production/finishing',
+          headers: auth(),
+          payload: { workCentreId: boothId, parts: [{ partId, quantity: 2 }] },
+        })
+      ).json();
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${created.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'spraying' },
+      });
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${created.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'completed' },
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${created.batchId}/status`,
+        headers: auth(),
+        payload: { status: 'queued' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/cannot move/i);
+    });
+
+    it('refuses an empty load', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/finishing',
+        headers: auth(),
+        payload: { workCentreId: boothId, parts: [] },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('requires .manage, not just .read, to create a finishing batch — 403', async () => {
+      const order = (await createOrder()).json();
+      const partId = await firstPartOf(order.workOrderId);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/production/finishing',
+        headers: readerAuth(),
+        payload: { workCentreId: boothId, parts: [{ partId, quantity: 1 }] },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('requires .manage, not just .read, to change a batch\'s status — 403', async () => {
+      const order = (await createOrder()).json();
+      const partId = await firstPartOf(order.workOrderId);
+
+      const created = (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/production/finishing',
+          headers: auth(),
+          payload: { workCentreId: boothId, parts: [{ partId, quantity: 1 }] },
+        })
+      ).json();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/production/finishing/${created.batchId}/status`,
+        headers: readerAuth(),
+        payload: { status: 'spraying' },
+      });
+
+      expect(response.statusCode).toBe(403);
     });
   });
 });
