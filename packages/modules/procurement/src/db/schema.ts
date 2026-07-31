@@ -731,6 +731,57 @@ export const matchException = procurement.table(
 );
 
 // ---------------------------------------------------------------------------
+// Supplier qualification — the approved supplier list
+// ---------------------------------------------------------------------------
+
+export const supplierQualificationStatus = procurement.enum('supplier_qualification_status', [
+  'pending',
+  'approved',
+  'suspended',
+]);
+
+/**
+ * Whether a party we could buy from is one we are ALLOWED to buy from.
+ *
+ * `kernel.party.isSupplier` only says a company can act as a supplier — anyone
+ * can be given that role flag while setting up a record. This is the separate,
+ * narrower fact: has the business actually vetted them, and are they currently
+ * cleared to receive orders. The two are kept apart deliberately, the same way
+ * `kernel.party.isBlocked` is kept apart from the party record itself — a
+ * supplier can be suspended without editing anything about who they are.
+ *
+ * `category_id` (kernel.item_category, left as a plain uuid like every other
+ * cross-schema reference in this file) lets a supplier be qualified for one
+ * category and not another. `category_id` null is a global qualification.
+ * Postgres unique indexes treat NULL as distinct, so the unique constraint
+ * below allows exactly one global row per (tenant, party) alongside as many
+ * per-category rows as are needed, with no partial index required.
+ */
+export const supplierQualification = procurement.table(
+  'supplier_qualification',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: tenantColumn(),
+    /** kernel.party — must carry isSupplier: true. Checked in the service. */
+    partyId: uuid('party_id').notNull(),
+    status: supplierQualificationStatus('status').notNull().default('pending'),
+    /** Why the status is what it is. Required when suspending. */
+    reason: text('reason'),
+    /** kernel.item_category. Null qualifies the supplier for everything. */
+    categoryId: uuid('category_id'),
+    reviewDate: date('review_date'),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (t) => [
+    unique('supplier_qualification_uq').on(t.tenantId, t.partyId, t.categoryId),
+    index('supplier_qualification_status_idx').on(t.tenantId, t.status),
+    index('supplier_qualification_party_idx').on(t.tenantId, t.partyId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Security
 // ---------------------------------------------------------------------------
 
@@ -748,6 +799,7 @@ export const PROCUREMENT_TENANT_TABLES = [
   'supplier_invoice',
   'supplier_invoice_line',
   'match_exception',
+  'supplier_qualification',
 ] as const;
 
 /**

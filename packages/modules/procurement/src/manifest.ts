@@ -105,6 +105,7 @@ export const procurementModule = defineModule({
         { key: 'procurement.receipts', label: 'Goods Receipts', path: '/procurement/receipts', permission: 'procurement.receipt.read', order: 40 },
         { key: 'procurement.invoices', label: 'Supplier Invoices', path: '/procurement/invoices', permission: 'procurement.invoice.read', order: 50 },
         { key: 'procurement.exceptions', label: 'Match Exceptions', path: '/procurement/exceptions', permission: 'procurement.invoice.read', order: 60 },
+        { key: 'procurement.suppliers', label: 'Approved Suppliers', path: '/procurement/suppliers', permission: 'procurement.supplier.manage', order: 70 },
       ],
     },
   ],
