@@ -52,7 +52,7 @@ labelled parts, becomes scanned progress.
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area, **including a detail screen for every register**
   — a work order followed from routing to the floor, with its cutting plan one
-  click away. **Every** navigation destination is built — 39 of 39 — and a
+  click away. **Every** navigation destination is built — 41 of 41 — and a
   workspace can adopt its country, edit its own rules, add its own people and
   invent its own roles without a developer. Right-to-left aware and formatted
   in the user's own locale
@@ -98,14 +98,55 @@ labelled parts, becomes scanned progress.
   nested under a parent — kernel-owned like parties, since no module owns
   either (`GET|POST /api/v1/master-data/cost-codes`,
   `GET|POST /api/v1/master-data/cost-centres`, `/settings/cost-codes`)
-- **1,028 tests**, including integration suites that prove tenant isolation holds and
+- **Snags can now be raised and closed** — `projects.snag.write` gated
+  nothing; the register was read-only. Raising allocates a reference from
+  the `SNG-{YYYY}-{SEQ}` series already declared for it; closing refuses to
+  re-close or un-reject a snag already in a terminal state, and a critical
+  snag still open still blocks handover on the same screen
+  (`POST /api/v1/projects/snags`, `POST /api/v1/projects/snags/:id/close`)
+- **Production routings, work centres and finishing batches, made
+  editable** — `production.routing.manage` and `production.finishing.manage`
+  drove navigation and gated nothing else; the registers were read-only.
+  Routings now get operations added in sequence (a duplicate sequence number
+  is refused, not silently overwritten), and finishing batches move through
+  an explicit queued → spraying → curing → completed/rejected transition map
+  rather than a free-form status field
+  (`POST /api/v1/production/routings/:id/operations`,
+  `POST /api/v1/production/finishing/:id/status`, `/production/routings/:id`)
+- **Document management, from zero to a working upload** — `folder`,
+  `document`, `documentVersion`, `documentLink` and `documentLock` existed
+  since the first migration with no service, route or screen anywhere. Bytes
+  never touch the API process: the browser uploads and downloads directly
+  against the S3-compatible object store (Cloudflare R2 in production)
+  through a short-lived presigned URL the API mints, per
+  `docs/04-infrastructure.md`'s own design. Every other operation — creating
+  a folder, listing the register, linking a document to another module's
+  record, checking one in and out — works with zero storage configured, which
+  is what lets it run in this environment at all
+  (`POST /api/v1/documents/upload`, `GET /api/v1/documents/:id/download-url`,
+  `/documents`)
+- **An approved supplier list, distinct from "this party trades with us"** —
+  `procurement.supplier.manage` had no backing table at all. A party's
+  `isSupplier` flag means it CAN be a supplier; qualifying one records
+  whether procurement actually vetted them, with a mandatory reason before
+  suspending — the same shape as blocking a party
+  (`GET|POST /api/v1/procurement/suppliers`, `/procurement/suppliers`)
+- **1,075 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Not built yet** — Arabic translations of the interface, and the deployment
-artefacts described in [`docs/04-infrastructure.md`](docs/04-infrastructure.md):
-there is a development `docker-compose.yml` and no Dockerfile, production compose
-or backup job. See [`docs/05-roadmap.md`](docs/05-roadmap.md).
+**Deployment artefacts** — `apps/api/Dockerfile` and `apps/web/Dockerfile`
+(multi-stage, `turbo prune`-based), `docker-compose.prod.yml` (Postgres +
+migrate/seed + api + web + Cloudflare Tunnel, no port opened publicly),
+`scripts/backup.sh` (hourly `pg_dump` to R2, 7 daily / 4 weekly / 12 monthly
+retention) and `.github/workflows/backup-verify.yml` (the monthly
+restore-into-a-throwaway-container-and-assert row counts). Not build-tested
+end to end — no Docker daemon in the environment that built them — but the
+web image's `output: 'standalone'` layout was checked against a real `next
+build`, not assumed. See [`docs/04-infrastructure.md`](docs/04-infrastructure.md).
+
+**Not built yet** — Arabic translations of the interface. See
+[`docs/05-roadmap.md`](docs/05-roadmap.md).
 
 ### Estimation
 
@@ -290,6 +331,15 @@ pnpm --filter @aerolith/api dev
 | `PATCH /api/v1/master-data/cost-codes/:id` | Edit or retire a cost code |
 | `GET|POST /api/v1/master-data/cost-centres` | The cost centre catalogue; create one |
 | `PATCH /api/v1/master-data/cost-centres/:id` | Edit or retire a cost centre |
+| `POST /api/v1/projects/snags` | Raise a snag — allocates its SNG-{YYYY}-{SEQ} reference |
+| `POST /api/v1/projects/snags/:id/close` | Close or reject a snag (refuses to re-close a terminal one) |
+| `POST /api/v1/documents/upload` | Start an upload — creates the document row and mints a presigned R2 PUT URL |
+| `GET /api/v1/documents/:id/download-url` | Mints a presigned, expiring R2 GET URL |
+| `POST /api/v1/documents/:id/lock` \| `/unlock` | Check a document out for editing, or back in |
+| `GET|POST /api/v1/procurement/suppliers` | The approved supplier list; qualify a supplier |
+| `PATCH /api/v1/procurement/suppliers/:id` | Approve or suspend (a reason is required to suspend) |
+| `POST /api/v1/production/routings/:id/operations` | Add a step to a routing — refuses a duplicate sequence |
+| `POST /api/v1/production/finishing/:id/status` | Move a spray load through queued → spraying → curing → completed |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |

@@ -1527,6 +1527,75 @@ the ad-hoc way this was caught argues for a shared constants file per
 prefix range if a third collision ever turns up, but two data points is a
 coincidence, not yet a pattern worth a new abstraction.
 
+### Four gaps at once, and what running four agents in parallel actually costs
+
+Asked to close every remaining unwired-permission gap in Phase 2 at once —
+snags, production routing/finishing management, kernel document management,
+and an approved-supplier list for procurement — rather than one at a time,
+the four were genuinely independent: different modules, no shared files
+except the ones each brief explicitly carved out (one nav entry in
+`apps/api/src/routes/modules.ts` for Documents, since it was the only one of
+the four with no existing nav item to reuse). Four agents, four isolated git
+worktrees, four self-contained briefs specifying exact file paths, existing
+conventions to mirror, and — learned from the cost-code and notifications
+incidents above — an explicit instruction to check every other test file's
+hardcoded tenant/user uuids before picking new ones, and not to touch
+migrations, live databases, or `pnpm verify` themselves, since four worktrees
+sharing one Postgres instance concurrently is exactly the kind of thing that
+produced the earlier collision.
+
+**What that bought:** roughly four times the wall-clock throughput of doing
+it serially — each agent independently explored its own corner of the
+codebase, wrote its own service/route/tests/UI, and self-verified with
+typecheck and lint before reporting back, all at the same time.
+
+**What it cost, found merging the four back in one at a time:**
+
+- **A real bug the scoped verification couldn't have caught.** The documents
+  agent's `listDocuments` entity-filter used `selectDistinct(...).orderBy
+  (document.createdAt)`, but `createdAt` wasn't part of the narrower
+  projection passed to `selectDistinct` — Postgres requires every `ORDER BY`
+  expression in a `SELECT DISTINCT` to appear in the select list, so every
+  entity-filtered list 500'd. Typecheck and lint both pass on a query that is
+  syntactically fine and semantically broken; only a live database call
+  surfaces it, and the brief had explicitly told this agent not to run one.
+  Fixed with a subquery (`inArray(document.id, <select over document_link>)`)
+  folded into the existing query instead of a second join+distinct branch —
+  simpler than the original, not just a patch over it.
+- **A naming collision the agent had no way to detect.** The documents brief
+  specified `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/
+  `R2_BUCKET`, written without first checking `.env.example`, which already
+  established `S3_ENDPOINT`/`S3_REGION`/`S3_BUCKET`/`S3_ACCESS_KEY_ID`/
+  `S3_SECRET_ACCESS_KEY` (S3_ENDPOINT already a full URL, not an account id
+  to build one from). The agent followed its brief correctly; the brief was
+  wrong. A pre-existing-conventions check belongs in the brief-writing step,
+  not left for the agent to discover — it had no reason to suspect its own
+  instructions.
+- **A test a change didn't re-run against itself.** The procurement agent
+  correctly added `supplierQualification` to `PROCUREMENT_TENANT_TABLES` (the
+  RLS-coverage list — leaving a table out of it means no policy at all, silent
+  cross-tenant visibility) but left `security.test.ts`'s
+  `toHaveLength(13)` unchanged at 14. Its own six-command verification list
+  didn't include this file specifically; a broader "run the whole package's
+  tests" would have caught it, and did — a few minutes later, in CI, on the
+  head this omission was pushed on.
+- **The navigation array, a fourth time.** Documents added the fourth
+  unconditional kernel nav item this log has needed one for (after
+  approvals, notifications, parties), and the exact-index assertions in
+  `api.integration.test.ts` needed their now-familiar update. Worth writing
+  down explicitly since it hasn't stopped being true: this is the argument
+  for asserting navigation by `.find()` on key rather than by array index,
+  made three times now and still not acted on.
+
+None of these are failures of the parallel approach itself — every one was
+caught by the same gate a serial change goes through (typecheck, lint, a live
+test run, CI) before merging to the branch this PR tracks. What parallelism
+removes is the chance for a later agent to have seen an earlier one's output
+and not repeated its mistake; four briefs written from the same up-front
+research instead of four rounds of "here's what the last one got wrong."
+The fix is writing better briefs — check existing conventions before handing
+them out, not just describe the target shape — not abandoning the approach.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything
