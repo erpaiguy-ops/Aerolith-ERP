@@ -277,6 +277,43 @@ export {
   updateCostCode,
 } from './masterdata/service';
 
+// Documents
+export {
+  StorageNotConfiguredError,
+  deleteObject,
+  presignDownloadUrl,
+  presignUploadUrl,
+} from './documents/storage';
+export {
+  type AddDocumentVersionInput,
+  type ConfirmDocumentUploadInput,
+  type CreateFolderInput,
+  type DocumentRow,
+  type DocumentSort,
+  type FolderRow,
+  type FolderSort,
+  type GetDocumentDownloadUrlInput,
+  type InitiateDocumentUploadInput,
+  type InitiateDocumentUploadResult,
+  type LinkDocumentInput,
+  type LockDocumentInput,
+  DOCUMENT_SORTS,
+  DocumentError,
+  FOLDER_SORTS,
+  addDocumentVersion,
+  confirmDocumentUpload,
+  createFolder,
+  deleteDocumentObject,
+  getDocumentDownloadUrl,
+  initiateDocumentUpload,
+  linkDocument,
+  listDocuments,
+  listFolders,
+  lockDocument,
+  unlinkDocument,
+  unlockDocument,
+} from './documents/service';
+
 // Authentication
 export {
   type ParsedHash,
