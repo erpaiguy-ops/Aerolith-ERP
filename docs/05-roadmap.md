@@ -1478,6 +1478,55 @@ shown up any other way:
   entity's value editor by copying the last one before this pattern was
   established. All four now carry `step="any"`.
 
+### Cost codes and cost centres: the id everything already pointed at
+
+A short survey of the codebase for the next gap — grepping every module's
+manifest for a permission nothing calls, every foreign key with no create
+path behind it — turned up `costCodeId` on a stock movement and
+`costCentreId` on a requisition and an order, both plain nullable uuid
+columns with real callers, and both pointing at kernel tables
+(`kernel.cost_code`, `kernel.cost_centre`) that had existed since the
+initial migration with no service function, no route, and not even a row
+in the demo seed. A tenant could reference an id it had no way to mint —
+the same shape of gap party and item closed, one level plainer: neither
+carries custom fields or a detail page's worth of secondary data, so the
+whole slice is a flat, retirable catalogue, the same UI pattern as the
+custom fields page rather than the party/item detail-screen one.
+
+`createCostCode`/`updateCostCode`/`listCostCodes` and their cost-centre
+equivalents live in the kernel's own `masterdata/service.ts`, next to
+party's, for the same reason: every module that books a cost needs both,
+and neither has a single natural owning module. Cost codes may nest under
+a parent (`MAT-JOINERY-HW` under `MAT-JOINERY`); the only validation beyond
+"the parent exists" is refusing a code being made its own parent — deeper
+cycle detection was left out deliberately, the same scope trim as the rate
+grid's unlinked material rows and the custom field catalogue's unpickable
+relational types: real work that belongs in a screen once something
+actually needs it, not built speculatively against a hypothetical.
+
+Verifying this against the full test suite surfaced a second bug, unrelated
+to cost codes themselves but found because of them: `pnpm verify` had been
+green through this entire log's worth of work, but a `DROP DATABASE` and
+fresh `db:migrate` (needed to clear state left over from an earlier
+Postgres restart mid-test-run) exposed that `inventory.integration.test.ts`
+and `notifications.integration.test.ts` hardcode the *identical* tenant and
+user uuids. Both files had independently picked the same
+`66666666-.../cccccccc-0000-...` placeholder pattern, presumably copied
+from a common template without checking what else used it. Running either
+file alone was — and always had been — reliably green; running the full
+suite together was a coin flip on which file's `beforeAll` won the insert
+race, with the loser crashing on a duplicate primary key and, worse, a
+"winning" run leaving the other file's session lookups pointed at a
+half-foreign tenant, which surfaces as arbitrary 401s and empty rows with
+no connection to either file's actual logic. This is very likely the real
+explanation for more than one "routine check-in, CI failed, re-run was
+green" moment earlier in this log that got shrugged off as ordinary CI
+noise rather than investigated. Fixed by giving `notifications.integration.test.ts`
+its own uuids, checked against every other test file's fixtures first —
+the ad-hoc way this was caught argues for a shared constants file per
+prefix range if a third collision ever turns up, but two data points is a
+coincidence, not yet a pattern worth a new abstraction.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

@@ -13,7 +13,7 @@
 import { and, asc, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 
 import { type Transaction } from '../db';
-import { party, partyContact } from '../db/schema';
+import { costCentre, costCode, party, partyContact } from '../db/schema';
 import { recordAudit } from '../audit/service';
 import { listCustomFieldDefinitions, validateCustomFieldValues } from '../customfields/service';
 import { listResult, searchPattern, type ListParams, type ListResult } from '../db/list';
@@ -401,4 +401,333 @@ export async function setPartyCustomFields(
   });
 
   return { values };
+}
+
+/**
+ * Cost codes and cost centres — the breakdown structure every cost booking
+ * across every module resolves to (`costCodeId` on a stock movement,
+ * `costCentreId` on a requisition and an order), with no route or screen
+ * anywhere that could create one. A tenant could reference an id but never
+ * mint one — the same shape of gap party and item closed, one level deeper:
+ * neither carries custom fields, so there is no value-editor half to this.
+ *
+ * Kernel-owned for the same reason party is: every module that books a cost
+ * needs both, and neither has a natural single owning module.
+ */
+export const COST_CODE_TYPES = [
+  'material',
+  'labour',
+  'machine',
+  'subcontract',
+  'overhead',
+  'other',
+] as const;
+export type CostCodeType = (typeof COST_CODE_TYPES)[number];
+
+export interface CostCodeRow {
+  id: string;
+  code: string;
+  name: string;
+  costType: string;
+  parentId: string | null;
+  isActive: boolean;
+}
+
+export const COST_CODE_SORTS = ['code', 'name', 'createdAt'] as const;
+export type CostCodeSort = (typeof COST_CODE_SORTS)[number];
+
+export async function listCostCodes(
+  tx: Transaction,
+  params: ListParams<CostCodeSort>,
+  filters: { costType?: string; includeInactive?: boolean } = {},
+): Promise<ListResult<CostCodeRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(costCode.tenantId, tenantId)];
+  if (!filters.includeInactive) conditions.push(eq(costCode.isActive, true));
+  if (filters.costType) conditions.push(eq(costCode.costType, filters.costType));
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(or(ilike(costCode.code, pattern), ilike(costCode.name, pattern))!);
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = { code: costCode.code, name: costCode.name, createdAt: costCode.createdAt }[
+    params.sort
+  ] ?? costCode.code;
+
+  const rows = await tx
+    .select({
+      id: costCode.id,
+      code: costCode.code,
+      name: costCode.name,
+      costType: costCode.costType,
+      parentId: costCode.parentId,
+      isActive: costCode.isActive,
+    })
+    .from(costCode)
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(costCode.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx.select({ total: sql<number>`count(*)::int` }).from(costCode).where(where);
+
+  return listResult(rows, counted?.total ?? 0, params);
+}
+
+export interface CreateCostCodeInput {
+  code: string;
+  name: string;
+  costType: CostCodeType;
+  parentId?: string | null;
+}
+
+export async function createCostCode(
+  tx: Transaction,
+  input: CreateCostCodeInput,
+): Promise<{ id: string }> {
+  const { tenantId } = requireTenantContext();
+
+  if (input.parentId) {
+    const [parent] = await tx
+      .select({ id: costCode.id })
+      .from(costCode)
+      .where(and(eq(costCode.tenantId, tenantId), eq(costCode.id, input.parentId)));
+    if (!parent) throw new MasterDataError('Parent cost code not found.');
+  }
+
+  const [row] = await tx
+    .insert(costCode)
+    .values({
+      tenantId,
+      code: input.code,
+      name: input.name,
+      costType: input.costType,
+      parentId: input.parentId,
+    })
+    .onConflictDoNothing({ target: [costCode.tenantId, costCode.code] })
+    .returning({ id: costCode.id });
+
+  if (!row) throw new MasterDataError(`"${input.code}" is already in use.`);
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'kernel.cost_code',
+    entityId: row.id,
+    entityLabel: `${input.code} — ${input.name}`,
+    action: 'create',
+  });
+
+  return { id: row.id };
+}
+
+export interface UpdateCostCodeInput {
+  name?: string;
+  costType?: CostCodeType;
+  parentId?: string | null;
+  isActive?: boolean;
+}
+
+export async function updateCostCode(
+  tx: Transaction,
+  input: { costCodeId: string } & UpdateCostCodeInput,
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [existing] = await tx
+    .select()
+    .from(costCode)
+    .where(and(eq(costCode.tenantId, tenantId), eq(costCode.id, input.costCodeId)));
+  if (!existing) throw new MasterDataError('Cost code not found.');
+
+  if (input.parentId !== undefined && input.parentId !== null) {
+    if (input.parentId === input.costCodeId) {
+      throw new MasterDataError('A cost code cannot be its own parent.');
+    }
+    const [parent] = await tx
+      .select({ id: costCode.id })
+      .from(costCode)
+      .where(and(eq(costCode.tenantId, tenantId), eq(costCode.id, input.parentId)));
+    if (!parent) throw new MasterDataError('Parent cost code not found.');
+  }
+
+  await tx
+    .update(costCode)
+    .set({
+      name: input.name ?? existing.name,
+      costType: input.costType ?? existing.costType,
+      parentId: input.parentId !== undefined ? input.parentId : existing.parentId,
+      isActive: input.isActive ?? existing.isActive,
+      updatedAt: new Date(),
+    })
+    .where(eq(costCode.id, input.costCodeId));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'kernel.cost_code',
+    entityId: input.costCodeId,
+    entityLabel: `${existing.code} — ${existing.name}`,
+    action: 'update',
+  });
+}
+
+export interface CostCentreRow {
+  id: string;
+  code: string;
+  name: string;
+  legalEntityId: string | null;
+  parentId: string | null;
+  ownerId: string | null;
+  isActive: boolean;
+}
+
+export const COST_CENTRE_SORTS = ['code', 'name', 'createdAt'] as const;
+export type CostCentreSort = (typeof COST_CENTRE_SORTS)[number];
+
+export async function listCostCentres(
+  tx: Transaction,
+  params: ListParams<CostCentreSort>,
+  filters: { includeInactive?: boolean } = {},
+): Promise<ListResult<CostCentreRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(costCentre.tenantId, tenantId)];
+  if (!filters.includeInactive) conditions.push(eq(costCentre.isActive, true));
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(or(ilike(costCentre.code, pattern), ilike(costCentre.name, pattern))!);
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    code: costCentre.code,
+    name: costCentre.name,
+    createdAt: costCentre.createdAt,
+  }[params.sort] ?? costCentre.code;
+
+  const rows = await tx
+    .select({
+      id: costCentre.id,
+      code: costCentre.code,
+      name: costCentre.name,
+      legalEntityId: costCentre.legalEntityId,
+      parentId: costCentre.parentId,
+      ownerId: costCentre.ownerId,
+      isActive: costCentre.isActive,
+    })
+    .from(costCentre)
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(costCentre.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(costCentre)
+    .where(where);
+
+  return listResult(rows, counted?.total ?? 0, params);
+}
+
+export interface CreateCostCentreInput {
+  code: string;
+  name: string;
+  legalEntityId?: string | null;
+  parentId?: string | null;
+  ownerId?: string | null;
+}
+
+export async function createCostCentre(
+  tx: Transaction,
+  input: CreateCostCentreInput,
+): Promise<{ id: string }> {
+  const { tenantId } = requireTenantContext();
+
+  if (input.parentId) {
+    const [parent] = await tx
+      .select({ id: costCentre.id })
+      .from(costCentre)
+      .where(and(eq(costCentre.tenantId, tenantId), eq(costCentre.id, input.parentId)));
+    if (!parent) throw new MasterDataError('Parent cost centre not found.');
+  }
+
+  const [row] = await tx
+    .insert(costCentre)
+    .values({
+      tenantId,
+      code: input.code,
+      name: input.name,
+      legalEntityId: input.legalEntityId,
+      parentId: input.parentId,
+      ownerId: input.ownerId,
+    })
+    .onConflictDoNothing({ target: [costCentre.tenantId, costCentre.code] })
+    .returning({ id: costCentre.id });
+
+  if (!row) throw new MasterDataError(`"${input.code}" is already in use.`);
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'kernel.cost_centre',
+    entityId: row.id,
+    entityLabel: `${input.code} — ${input.name}`,
+    action: 'create',
+  });
+
+  return { id: row.id };
+}
+
+export interface UpdateCostCentreInput {
+  name?: string;
+  legalEntityId?: string | null;
+  parentId?: string | null;
+  ownerId?: string | null;
+  isActive?: boolean;
+}
+
+export async function updateCostCentre(
+  tx: Transaction,
+  input: { costCentreId: string } & UpdateCostCentreInput,
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [existing] = await tx
+    .select()
+    .from(costCentre)
+    .where(and(eq(costCentre.tenantId, tenantId), eq(costCentre.id, input.costCentreId)));
+  if (!existing) throw new MasterDataError('Cost centre not found.');
+
+  if (input.parentId !== undefined && input.parentId !== null) {
+    if (input.parentId === input.costCentreId) {
+      throw new MasterDataError('A cost centre cannot be its own parent.');
+    }
+    const [parent] = await tx
+      .select({ id: costCentre.id })
+      .from(costCentre)
+      .where(and(eq(costCentre.tenantId, tenantId), eq(costCentre.id, input.parentId)));
+    if (!parent) throw new MasterDataError('Parent cost centre not found.');
+  }
+
+  await tx
+    .update(costCentre)
+    .set({
+      name: input.name ?? existing.name,
+      legalEntityId: input.legalEntityId !== undefined ? input.legalEntityId : existing.legalEntityId,
+      parentId: input.parentId !== undefined ? input.parentId : existing.parentId,
+      ownerId: input.ownerId !== undefined ? input.ownerId : existing.ownerId,
+      isActive: input.isActive ?? existing.isActive,
+      updatedAt: new Date(),
+    })
+    .where(eq(costCentre.id, input.costCentreId));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'kernel.cost_centre',
+    entityId: input.costCentreId,
+    entityLabel: `${existing.code} — ${existing.name}`,
+    action: 'update',
+  });
 }

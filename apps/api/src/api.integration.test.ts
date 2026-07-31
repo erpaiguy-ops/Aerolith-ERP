@@ -93,6 +93,8 @@ suite('API', () => {
     const tenants = [TENANT_FULL, TENANT_SOLO];
     await db.delete(schema.partyContact).where(inArray(schema.partyContact.tenantId, tenants));
     await db.delete(schema.party).where(inArray(schema.party.tenantId, tenants));
+    await db.delete(schema.costCode).where(inArray(schema.costCode.tenantId, tenants));
+    await db.delete(schema.costCentre).where(inArray(schema.costCentre.tenantId, tenants));
     await db.delete(schema.tenantRequirement).where(inArray(schema.tenantRequirement.tenantId, tenants));
     await db.delete(schema.tenantTaxCode).where(inArray(schema.tenantTaxCode.tenantId, tenants));
     await db.delete(schema.tenantHoliday).where(inArray(schema.tenantHoliday.tenantId, tenants));
@@ -1018,6 +1020,212 @@ suite('API', () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/v1/master-data/parties',
+        headers: auth(STAFF_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+  });
+
+  describe('cost codes and cost centres', () => {
+    let materialCodeId: string;
+    let siteCentreId: string;
+
+    it('creates a cost code', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'MAT-JOINERY', name: 'Joinery materials', costType: 'material' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      materialCodeId = response.json().id;
+    });
+
+    it('refuses a cost code with an unknown cost type', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'BAD-TYPE', name: 'Bad type', costType: 'nonsense' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('refuses a cost code whose code is already in use', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'MAT-JOINERY', name: 'Duplicate', costType: 'material' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('lists cost codes, searchable and filterable by type', async () => {
+      const all = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(all.json().rows.some((r: { code: string }) => r.code === 'MAT-JOINERY')).toBe(true);
+
+      const searched = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes?q=mat-joinery',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(searched.json().total).toBe(1);
+
+      const wrongType = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes?costType=labour&q=mat-joinery',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(wrongType.json().total).toBe(0);
+    });
+
+    it('nests a cost code under a parent', async () => {
+      const child = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          code: 'MAT-JOINERY-HW',
+          name: 'Joinery hardware',
+          costType: 'material',
+          parentId: materialCodeId,
+        },
+      });
+      expect(child.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes?q=MAT-JOINERY-HW',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(list.json().rows[0].parentId).toBe(materialCodeId);
+    });
+
+    it('refuses a cost code parented to a parent that does not exist', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-codes',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'ORPHAN', name: 'Orphan', costType: 'material', parentId: randomUUID() },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a cost code being made its own parent', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/cost-codes/${materialCodeId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { parentId: materialCodeId },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('retires a cost code, and it drops out of the default listing', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/cost-codes/${materialCodeId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isActive: false },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const active = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes?q=MAT-JOINERY',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(active.json().rows.some((r: { id: string }) => r.id === materialCodeId)).toBe(false);
+
+      const withInactive = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes?q=MAT-JOINERY&includeInactive=true',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(withInactive.json().rows.some((r: { id: string }) => r.id === materialCodeId)).toBe(true);
+
+      // Reactivate — later tests in this block assume it is active.
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/cost-codes/${materialCodeId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isActive: true },
+      });
+    });
+
+    it('creates a cost centre', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-centres',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'SITE-DXB01', name: 'Downtown Villa Site' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      siteCentreId = response.json().id;
+    });
+
+    it('refuses a duplicate cost centre code', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/cost-centres',
+        headers: auth(OWNER_TOKEN),
+        payload: { code: 'SITE-DXB01', name: 'Duplicate' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('lists and updates a cost centre', async () => {
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-centres?q=SITE-DXB01',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(list.json().rows[0].id).toBe(siteCentreId);
+
+      const update = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/cost-centres/${siteCentreId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Downtown Villa Site — Phase 1' },
+      });
+      expect(update.statusCode).toBe(200);
+
+      const after = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-centres?q=SITE-DXB01',
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(after.json().rows[0].name).toBe('Downtown Villa Site — Phase 1');
+    });
+
+    it('refuses an update to a cost centre that does not exist', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/master-data/cost-centres/${randomUUID()}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Nope' },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a non-owner with no master-data permission', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/master-data/cost-codes',
         headers: auth(STAFF_TOKEN),
       });
 

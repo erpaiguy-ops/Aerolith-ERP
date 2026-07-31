@@ -16,9 +16,14 @@ import { invalidateTenantModules } from './bootstrap';
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
 
-const TENANT = '66666666-6666-4666-8666-666666666666';
-const ALICE = 'cccccccc-0000-4000-8000-000000000001';
-const BOB = 'cccccccc-0000-4000-8000-000000000002';
+// Deliberately distinct from every other integration test file's fixture
+// ids — inventory.integration.test.ts used to hardcode this exact tenant and
+// user id too, and running both files in the same `vitest run` raced on the
+// `tenant`/`app_user` primary keys, surfacing as flaky 401s and duplicate-key
+// crashes with no connection to either file's actual logic.
+const TENANT = '22222222-2222-4222-8222-222222222222';
+const ALICE = '33333333-0000-4000-8000-000000000001';
+const BOB = '33333333-0000-4000-8000-000000000002';
 const ALICE_TOKEN = 'alice-token-for-notification-tests';
 const BOB_TOKEN = 'bob-token-for-notification-tests';
 

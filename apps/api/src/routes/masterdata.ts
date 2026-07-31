@@ -6,15 +6,24 @@
  * supplier needs it regardless of which modules a tenant has bought.
  */
 import {
+  COST_CENTRE_SORTS,
+  COST_CODE_SORTS,
+  COST_CODE_TYPES,
   MasterDataError,
   PARTY_SORTS,
   addPartyContact,
+  createCostCentre,
+  createCostCode,
   createParty,
   getPartyDetail,
+  listCostCentres,
+  listCostCodes,
   listParties,
   parseListParams,
   removePartyContact,
   setPartyCustomFields,
+  updateCostCentre,
+  updateCostCode,
   updateParty,
   withTenant,
   type PartyRole,
@@ -54,6 +63,31 @@ const updateBody = createBody
     isBlocked: z.boolean().optional(),
     blockReason: z.string().nullish(),
   });
+
+const createCostCodeBody = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(1),
+  costType: z.enum(COST_CODE_TYPES),
+  parentId: z.string().uuid().nullish(),
+});
+
+const updateCostCodeBody = createCostCodeBody
+  .omit({ code: true })
+  .partial()
+  .extend({ isActive: z.boolean().optional() });
+
+const createCostCentreBody = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(1),
+  legalEntityId: z.string().uuid().nullish(),
+  parentId: z.string().uuid().nullish(),
+  ownerId: z.string().uuid().nullish(),
+});
+
+const updateCostCentreBody = createCostCentreBody
+  .omit({ code: true })
+  .partial()
+  .extend({ isActive: z.boolean().optional() });
 
 const contactBody = z.object({
   name: z.string().min(1),
@@ -233,4 +267,137 @@ export async function masterDataRoutes(app: FastifyInstance) {
       return { removed: true };
     },
   );
+
+  // --- Cost codes and cost centres ----------------------------------------
+  //
+  // Same permissions as parties: kernel master data with no owning module,
+  // read open to whoever can see the workspace's master data, write gated on
+  // the same admin-ish authority that can block a party.
+
+  app.get<{
+    Querystring: { page?: string; pageSize?: string; sort?: string; direction?: string; q?: string; costType?: string; includeInactive?: string };
+  }>('/master-data/cost-codes', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.read');
+
+    const params = parseListParams(request.query, {
+      sortable: COST_CODE_SORTS,
+      defaultSort: 'code',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listCostCodes(tx, params, {
+          costType: request.query.costType,
+          includeInactive: request.query.includeInactive === 'true',
+        }),
+      ),
+    );
+  });
+
+  app.post('/master-data/cost-codes', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = createCostCodeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () => withTenant((tx) => createCostCode(tx, parsed.data)));
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/master-data/cost-codes/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = updateCostCodeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateCostCode(tx, { costCodeId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.get<{
+    Querystring: { page?: string; pageSize?: string; sort?: string; direction?: string; q?: string; includeInactive?: string };
+  }>('/master-data/cost-centres', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.read');
+
+    const params = parseListParams(request.query, {
+      sortable: COST_CENTRE_SORTS,
+      defaultSort: 'code',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listCostCentres(tx, params, { includeInactive: request.query.includeInactive === 'true' }),
+      ),
+    );
+  });
+
+  app.post('/master-data/cost-centres', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = createCostCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createCostCentre(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/master-data/cost-centres/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = updateCostCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateCostCentre(tx, { costCentreId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
 }

@@ -164,6 +164,20 @@ export async function moduleRoutes(app: FastifyInstance) {
                   },
                 ]
               : []),
+            // Same authority as blocking a party: kernel master data with no
+            // owning module, gated on the manage half of that permission
+            // rather than a new one, since deciding what a cost code IS is
+            // the same kind of act.
+            ...(may('kernel.master_data.manage')
+              ? [
+                  {
+                    key: 'kernel.settings.cost_structure',
+                    label: 'Cost Codes',
+                    path: '/settings/cost-codes',
+                    order: 70,
+                  },
+                ]
+              : []),
           ];
 
           return children.length > 0

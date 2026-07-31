@@ -52,7 +52,7 @@ labelled parts, becomes scanned progress.
   Contracts, Procurement, Inventory, Estimating and Production, plus the approval
   inbox and the settings area, **including a detail screen for every register**
   — a work order followed from routing to the floor, with its cutting plan one
-  click away. **Every** navigation destination is built — 38 of 38 — and a
+  click away. **Every** navigation destination is built — 39 of 39 — and a
   workspace can adopt its country, edit its own rules, add its own people and
   invent its own roles without a developer. Right-to-left aware and formatted
   in the user's own locale
@@ -91,7 +91,14 @@ labelled parts, becomes scanned progress.
   a zero balance, the same trap the register already avoided
   (`GET|POST /api/v1/inventory/items`, `GET|PATCH /api/v1/inventory/items/:id`,
   `/inventory/items/:id`)
-- **1,015 tests**, including integration suites that prove tenant isolation holds and
+- **Cost codes and cost centres** — the breakdown structure every cost booking
+  resolves to (`costCodeId` on a stock movement, `costCentreId` on a
+  requisition and an order) had the foreign keys and no way to create the row
+  on the other end. A flat, retirable catalogue — cost codes optionally
+  nested under a parent — kernel-owned like parties, since no module owns
+  either (`GET|POST /api/v1/master-data/cost-codes`,
+  `GET|POST /api/v1/master-data/cost-centres`, `/settings/cost-codes`)
+- **1,028 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
@@ -279,6 +286,10 @@ pnpm --filter @aerolith/api dev
 | `PATCH /api/v1/master-data/parties/:id` | Edit a party, or block it (a reason is required) |
 | `POST /api/v1/master-data/parties/:id/contacts` | Add a contact — a second primary demotes the first |
 | `PATCH /api/v1/master-data/parties/:id/custom-fields` | Set a party's custom field values |
+| `GET|POST /api/v1/master-data/cost-codes` | The cost code catalogue; create one, optionally nested under a parent |
+| `PATCH /api/v1/master-data/cost-codes/:id` | Edit or retire a cost code |
+| `GET|POST /api/v1/master-data/cost-centres` | The cost centre catalogue; create one |
+| `PATCH /api/v1/master-data/cost-centres/:id` | Edit or retire a cost centre |
 | `POST /api/v1/inventory/movements` | Post a receipt, issue, transfer or adjustment |
 | `POST /api/v1/inventory/offcuts/match` | Find the best offcut for a required part |
 | `POST /api/v1/production/work-orders` | Create a work order with parts and a routing |
