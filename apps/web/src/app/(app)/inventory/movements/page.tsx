@@ -14,7 +14,7 @@ import { pageFetch } from '@/lib/api';
 import { date, integer, quantity } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
-import { recordMovementAction } from './actions';
+import { approveMovementAction, recordMovementAction, rejectMovementAction } from './actions';
 import { MOVEMENT_TYPES } from './types';
 
 interface MovementRow {
@@ -96,6 +96,7 @@ export default async function MovementsPage({
   const query = listQuery(await searchParams);
   const me = await getMe();
   const mayRecord = can(me.permissions, 'inventory.stock_movement.create');
+  const mayApprove = can(me.permissions, 'inventory.stock_movement.approve') || me.user.isOwner;
 
   // The pickers are only fetched for a user who can actually post, so a
   // read-only user's page is one request lighter and never loads a catalogue it
@@ -323,10 +324,14 @@ export default async function MovementsPage({
                 <SortTh base={BASE} query={query} column="postedAt" current={result.sort} direction={result.direction}>
                   Posted by
                 </SortTh>
+                {mayApprove ? <Th /> : null}
               </tr>
             }
           >
-            {result.rows.map((row) => (
+            {result.rows.map((row) => {
+              const pending = row.status === 'pending_approval';
+
+              return (
               <tr key={row.id} className="hover:bg-(--color-canvas)">
                 <Td>
                   <span className="numeric block">{row.number ?? '—'}</span>
@@ -346,6 +351,16 @@ export default async function MovementsPage({
                   ) : null}
                   {row.reversesMovementId ? (
                     <span className="mt-0.5 block text-xs text-(--color-muted)">reversal</span>
+                  ) : null}
+                  {/* A transfer or a scrap has no generating document vouching
+                      for it, so these are the only types that ever show up
+                      here rather than posted immediately. */}
+                  {row.status !== 'posted' ? (
+                    <span className="mt-0.5 block">
+                      <Badge tone={row.status === 'cancelled' ? 'bad' : 'neutral'}>
+                        {row.status.replace(/_/g, ' ')}
+                      </Badge>
+                    </span>
                   ) : null}
                 </Td>
                 <Td>{date(row.movementDate)}</Td>
@@ -367,13 +382,39 @@ export default async function MovementsPage({
                   {/* Who, not which module. `sourceModule` is shown underneath
                       because a movement raised by Production and one keyed by
                       hand are different facts about how the stock came to move. */}
-                  <span className="block">{row.postedByName ?? '—'}</span>
+                  <span className="block">{row.postedByName ?? (pending ? 'awaiting approval' : '—')}</span>
                   <span className="block text-xs text-(--color-muted)">
                     {row.sourceModule ? `via ${row.sourceModule}` : 'keyed'}
                   </span>
                 </Td>
+                {mayApprove ? (
+                  <Td>
+                    {pending ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <ActionForm action={approveMovementAction}>
+                          <input type="hidden" name="movementId" value={row.id} />
+                          <SubmitButton pendingLabel="…">Approve</SubmitButton>
+                        </ActionForm>
+                        <ActionForm action={rejectMovementAction} className="flex items-center gap-1">
+                          <input type="hidden" name="movementId" value={row.id} />
+                          <input
+                            type="text"
+                            name="reason"
+                            dir="auto"
+                            placeholder="Reason"
+                            className="w-32 rounded-md border border-(--color-line) bg-(--color-surface) px-2 py-1 text-xs outline-none focus:border-(--color-accent)"
+                          />
+                          <SubmitButton tone="danger" pendingLabel="…">
+                            Reject
+                          </SubmitButton>
+                        </ActionForm>
+                      </div>
+                    ) : null}
+                  </Td>
+                ) : null}
               </tr>
-            ))}
+              );
+            })}
           </Table>
         )}
 

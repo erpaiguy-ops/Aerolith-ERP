@@ -86,9 +86,52 @@ export async function recordMovementAction(
       // old figure on `/inventory/stock` has been told the system did nothing.
       revalidate: ['/inventory/movements', '/inventory/stock', '/inventory/items'],
       success:
-        type === 'adjustment'
-          ? 'Adjusted. Stock now reads the counted quantity.'
-          : 'Posted. Stock has moved.',
+        type === 'transfer' || type === 'scrap'
+          ? 'Staged, awaiting approval. Stock has not moved yet.'
+          : type === 'adjustment'
+            ? 'Adjusted. Stock now reads the counted quantity.'
+            : 'Posted. Stock has moved.',
     },
+  );
+}
+
+/**
+ * A transfer or a scrap has no generating document vouching for it, so
+ * `inventory.stock_movement.approve` is the sign-off that actually moves the
+ * stock — everything up to here was only a proposal.
+ */
+export async function approveMovementAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const movementId = form.get('movementId');
+  if (typeof movementId !== 'string') {
+    return { status: 'error', error: 'That movement could not be read. Reload and try again.' };
+  }
+
+  return runAction(
+    () => apiFetch(`/inventory/movements/${movementId}/approve`, { method: 'POST' }),
+    {
+      revalidate: ['/inventory/movements', '/inventory/stock', '/inventory/items'],
+      success: 'Approved. Stock has moved.',
+    },
+  );
+}
+
+export async function rejectMovementAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const movementId = form.get('movementId');
+  const reason = requiredText(form, 'reason');
+
+  if (typeof movementId !== 'string') {
+    return { status: 'error', error: 'That movement could not be read. Reload and try again.' };
+  }
+  if (!reason) return { status: 'error', error: 'Say why this is being refused.' };
+
+  return runAction(
+    () => apiFetch(`/inventory/movements/${movementId}/reject`, { method: 'POST', body: { reason } }),
+    { revalidate: ['/inventory/movements'], success: 'Rejected. Stock was never touched.' },
   );
 }

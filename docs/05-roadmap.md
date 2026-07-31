@@ -1742,6 +1742,89 @@ web UI — recording the last line, watching the status move itself to
 `pending_approval`, reconciling — closed a loose thread the demo had been
 carrying since before this feature existed, rather than adding a new one.
 
+### Stock movement approval: the one gap that needed a design decision, not just a route
+
+The last of the survey's four candidates, and the only one that wasn't a
+pure addition. Back charges, correspondence and stock counts were each a
+permission gating a register with nothing built underneath — new files,
+zero risk to anything already working. `inventory.stock_movement.approve`
+gated nothing at all, and `postMovement` — the single most heavily used
+function in the module, called by Procurement's goods-receipt flow and by
+this session's own new stock-count reconciliation — posted every movement
+type immediately, unconditionally. Making the permission mean something
+required changing what that function does, not adding beside it.
+
+**The scoping question this needed, resolved by checking how the rest of
+the platform actually works rather than assuming:** the schema's
+`approvalInstanceId` column, on both `stock_movement` and `stock_count`,
+points at `kernel.approval_instance` — the generic engine behind "My
+Inbox" / "I Requested". It would have been reasonable to assume that
+engine was the intended integration point. It is not used by a single
+module service anywhere in the codebase. `approveRequisition`
+(procurement) — the closest real precedent, also declared in its module's
+`approvableEntities` — is a direct permission-gated status flip with no
+engine involved. The one place the engine actually gets called with
+`inventory.stock_write_off` is `seed-demo.ts`, faking a plausible-looking
+inbox entry (`entityId: PROJECT`, a project id — not a real movement,
+correlating to nothing) purely so the approvals screen has something to
+show. Building real engine integration would have meant inventing a
+callback from "approved in the generic engine" back to "now apply this
+movement's stock effect" — a mechanism that exists nowhere else in the
+platform. Following `approveRequisition`'s actual, working pattern instead
+of the schema's aspirational one was the right call, and the fake seeded
+approval-inbox row is left as-is: decorative, pre-existing, and out of
+scope for a slice about the real gate.
+
+**Which movement types actually needed the gate:** `approvableEntities`
+names exactly two — `stock_transfer` and `stock_write_off` — and checking
+every caller of `postMovement` confirmed why: a receipt or an issue always
+has something upstream vouching for it (a purchase order, a picking
+list), an adjustment now always comes from a reconciled count, but a
+transfer or a scrap can be hand-typed into the ledger with nothing behind
+it at all. Only those two now stage as `pending_approval`; the other five
+post exactly as they did before, and the existing 55 inventory tests
+proved that unchanged by passing without modification once the two gated
+types were pulled out.
+
+**The refactor:** `postMovement`'s stock-mutation loop — lock the level,
+apply the domain rule, write it back — was extracted into
+`applyLineStockEffect`, shared by the immediate path (unchanged, for the
+five types) and by the new `approveMovement` (for the two gated ones).
+`approveMovement` re-reads current stock and re-checks the warehouse
+rather than trusting anything recorded at proposal time — deliberately:
+stock can move between proposal and approval, and that possibility is the
+entire reason a gate exists rather than a rubber stamp. Cost is deferred
+the same way: an issue-shaped movement is valued at whatever the stock is
+carrying, which by definition cannot be known until the movement actually
+runs, so a staged line's `unitCost` is `null` until approval resolves it.
+`rejectMovement` is the symmetric close: nothing to undo, since nothing
+was ever applied.
+
+**A second real bug, found writing the tests, distinct from the one
+`recordCountLine` needed for stock counts:** `postMovement` rejected any
+line with `quantity <= 0` — correct for five of the seven types, wrong for
+an adjustment setting an absolute quantity to zero, and that one was
+already fixed in the stock-counts slice above. This slice needed the same
+category of fix again for a different reason: staging a movement for
+approval must accept a quantity that will later be refused for
+insufficient stock — the whole point of "checked at approval time, not
+proposal time" — and the first version of the scrap test conflated the
+two, asserting a 200 where a 409 was actually correct. Fixed by writing
+the test to expect the refusal at approval, not at proposal, which is the
+behaviour the feature exists to produce.
+
+**The third occurrence of the number-series gap this session already
+knew about:** `inventory.scrap` had never been posted anywhere in this
+codebase before — not in a test, not in the demo seed — so no number
+series existed for it in either the test database's fixtures or the demo
+tenant, exactly the same shape of gap `inventory.stock_count` hit two
+slices ago. Fixed the same way: added to the test file's `beforeAll`, to
+`seed-demo.ts`, and backfilled directly into the running demo database.
+Recorded a third time because a pattern that recurs three times in one
+build session is a platform gap worth someone eventually closing at the
+root — module enablement still does not provision what a module's own
+manifest declares.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

@@ -16,6 +16,7 @@ import {
   OFFCUT_SORTS,
   STOCK_SORTS,
   StockCountError,
+  approveMovement,
   createItem,
   createStockCount,
   generateCountSheet,
@@ -30,6 +31,7 @@ import {
   postMovement,
   recordCountLine,
   reconcileStockCount,
+  rejectMovement,
   selectBestOffcut,
   setItemCustomFields,
   stockOnHand,
@@ -99,6 +101,10 @@ const movementBody = z.object({
   reference: z.string().nullish(),
   notes: z.string().nullish(),
   lines: z.array(movementLine).min(1),
+});
+
+const rejectMovementBody = z.object({
+  reason: z.string().min(1),
 });
 
 const ITEM_TYPES = [
@@ -580,6 +586,45 @@ export async function inventoryRoutes(app: FastifyInstance) {
       }
       throw error;
     }
+  });
+
+  app.post<{ Params: { id: string } }>('/inventory/movements/:id/approve', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock_movement.approve');
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => approveMovement(tx, { movementId: request.params.id })),
+      );
+    } catch (error) {
+      if (error instanceof InvalidMovementError || (error as Error).name === 'NegativeStockError') {
+        return reply.code(409).send({ error: (error as Error).message });
+      }
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/inventory/movements/:id/reject', async (request, reply) => {
+    const principal = await authenticate(request);
+    if (!(await requireModule(principal, reply))) return reply;
+    requirePermission(principal, 'inventory.stock_movement.approve');
+
+    const parsed = rejectMovementBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => rejectMovement(tx, { movementId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof InvalidMovementError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { rejected: true };
   });
 
   app.get<{ Querystring: ListQuery & { type?: string; projectId?: string } }>(

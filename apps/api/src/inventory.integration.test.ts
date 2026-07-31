@@ -137,6 +137,13 @@ suite('Inventory', () => {
         name: 'Stock Count',
         pattern: 'CNT-{YYYY}-{SEQ}',
       },
+      {
+        tenantId: TENANT,
+        entityType: 'inventory.scrap',
+        code: 'SCR',
+        name: 'Scrap',
+        pattern: 'SCR-{YYYY}-{SEQ}',
+      },
     ]);
 
     app = await buildApp();
@@ -335,7 +342,55 @@ suite('Inventory', () => {
   });
 
   describe('transfers', () => {
-    it('moves stock between warehouses, conserving quantity and cost', async () => {
+    const NO_APPROVE_USER = 'cccccccc-0000-4000-8000-000000000003';
+    const NO_APPROVE_TOKEN = 'no-approve-token';
+    let noApproveRoleId: string;
+
+    beforeAll(async () => {
+      const db = getDatabase();
+
+      // Can propose a movement, cannot sign one off — the same separation
+      // `stock.read` vs `stock_count.reconcile` proved for counts.
+      const [role] = await db
+        .insert(schema.role)
+        .values({ tenantId: TENANT, code: 'movement-proposer', name: 'Can propose, not approve' })
+        .returning({ id: schema.role.id });
+      noApproveRoleId = role!.id;
+      await db.insert(schema.rolePermission).values([
+        { tenantId: TENANT, roleId: noApproveRoleId, permissionKey: 'inventory.stock.read' },
+        { tenantId: TENANT, roleId: noApproveRoleId, permissionKey: 'inventory.stock_movement.create' },
+      ]);
+
+      await db.insert(schema.appUser).values({
+        id: NO_APPROVE_USER,
+        email: 'proposer@inv.test',
+        name: 'Movement Proposer',
+      });
+      await db
+        .insert(schema.membership)
+        .values({ tenantId: TENANT, userId: NO_APPROVE_USER, status: 'active', isOwner: false });
+      await db
+        .insert(schema.userRole)
+        .values({ tenantId: TENANT, userId: NO_APPROVE_USER, roleId: noApproveRoleId });
+      await db.insert(schema.session).values({
+        userId: NO_APPROVE_USER,
+        tenantId: TENANT,
+        tokenHash: hash(NO_APPROVE_TOKEN),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+    });
+
+    afterAll(async () => {
+      const db = getDatabase();
+      await db.delete(schema.userRole).where(eq(schema.userRole.roleId, noApproveRoleId));
+      await db.delete(schema.rolePermission).where(eq(schema.rolePermission.roleId, noApproveRoleId));
+      await db.delete(schema.role).where(eq(schema.role.id, noApproveRoleId));
+      await db.delete(schema.session).where(eq(schema.session.userId, NO_APPROVE_USER));
+      await db.delete(schema.membership).where(eq(schema.membership.userId, NO_APPROVE_USER));
+      await db.delete(schema.appUser).where(eq(schema.appUser.id, NO_APPROVE_USER));
+    });
+
+    it('stages a transfer awaiting approval, and stock does not move until it is', async () => {
       const response = await post({
         type: 'transfer',
         lines: [
@@ -349,6 +404,23 @@ suite('Inventory', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      const movementId = response.json().movementId;
+
+      const beforeApproval = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${mdfItemId}&warehouseId=${siteId}`,
+        headers: auth(),
+      });
+      // A transfer has no generating document vouching for it — nothing moves
+      // on the strength of the proposal alone.
+      expect(beforeApproval.json().quantity).toBe(0);
+
+      const approve = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/approve`,
+        headers: auth(),
+      });
+      expect(approve.statusCode).toBe(200);
 
       const factory = await app.inject({
         method: 'GET',
@@ -382,6 +454,186 @@ suite('Inventory', () => {
 
       expect(response.statusCode).toBe(409);
       expect(response.json().error).toMatch(/same/i);
+    });
+
+    it('refuses a storekeeper who holds only inventory.stock_movement.create to approve', async () => {
+      const proposed = await post({
+        type: 'transfer',
+        lines: [
+          { itemId: hardwareItemId, quantity: 5, fromWarehouseId: factoryId, toWarehouseId: siteId },
+        ],
+      });
+      const movementId = proposed.json().movementId;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/approve`,
+        headers: auth(NO_APPROVE_TOKEN),
+      });
+      expect(response.statusCode).toBe(403);
+
+      // Left pending — the refused attempt must not have moved anything.
+      const cleanup = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/reject`,
+        headers: auth(),
+        payload: { reason: 'Test cleanup — never actually needed' },
+      });
+      expect(cleanup.statusCode).toBe(200);
+    });
+
+    it('rejects a pending transfer, leaving stock untouched, and refuses to reject it twice', async () => {
+      const proposed = await post({
+        type: 'transfer',
+        lines: [
+          { itemId: hardwareItemId, quantity: 5, fromWarehouseId: factoryId, toWarehouseId: siteId },
+        ],
+      });
+      const movementId = proposed.json().movementId;
+
+      const before = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${hardwareItemId}&warehouseId=${factoryId}`,
+        headers: auth(),
+      });
+
+      const rejected = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/reject`,
+        headers: auth(),
+        payload: { reason: 'Wrong site — material is staying put' },
+      });
+      expect(rejected.statusCode).toBe(200);
+
+      const after = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${hardwareItemId}&warehouseId=${factoryId}`,
+        headers: auth(),
+      });
+      expect(after.json().quantity).toBe(before.json().quantity);
+
+      const again = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/reject`,
+        headers: auth(),
+        payload: { reason: 'Second attempt' },
+      });
+      expect(again.statusCode).toBe(409);
+    });
+
+    it('refuses to approve a transfer against a warehouse closed for issues in the meantime', async () => {
+      const proposed = await post({
+        type: 'transfer',
+        lines: [
+          { itemId: hardwareItemId, quantity: 5, fromWarehouseId: factoryId, toWarehouseId: siteId },
+        ],
+      });
+      const movementId = proposed.json().movementId;
+
+      const db = getDatabase();
+      await db
+        .update(inventorySchema.warehouse)
+        .set({ isIssueBlocked: true })
+        .where(eq(inventorySchema.warehouse.id, factoryId));
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/approve`,
+        headers: auth(),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/closed for issues/i);
+
+      await db
+        .update(inventorySchema.warehouse)
+        .set({ isIssueBlocked: false })
+        .where(eq(inventorySchema.warehouse.id, factoryId));
+
+      // Left pending rather than posted or cancelled — reject it so it does
+      // not linger as an open item this suite never resolves.
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${movementId}/reject`,
+        headers: auth(),
+        payload: { reason: 'Warehouse was closed at approval time' },
+      });
+    });
+  });
+
+  describe('scrap', () => {
+    it('stages a write-off awaiting approval, refusing insufficient stock only at approval time', async () => {
+      // Its own item, isolated from anything another test's ledger already
+      // moved — the point of this test is the approval gate, not a shared
+      // balance every other section is also free to touch.
+      const [scrapItem] = await getDatabase()
+        .insert(schema.item)
+        .values({ tenantId: TENANT, code: 'SCRAP-TEST', name: 'Scrap test hardware', type: 'hardware' })
+        .returning({ id: schema.item.id });
+      const scrapItemId = scrapItem!.id;
+
+      const receipt = await post({
+        type: 'receipt',
+        lines: [{ itemId: scrapItemId, quantity: 10, toWarehouseId: factoryId, unitCost: 4 }],
+      });
+      expect(receipt.statusCode).toBe(200);
+
+      const before = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${scrapItemId}&warehouseId=${factoryId}`,
+        headers: auth(),
+      });
+      const onHand = before.json().quantity;
+
+      // Proposed against more than is actually on hand — a scrap has no stock
+      // to check yet, so this is accepted as a proposal and only refused when
+      // someone tries to sign off on it.
+      const proposed = await post({
+        type: 'scrap',
+        lines: [{ itemId: scrapItemId, quantity: onHand + 1000, fromWarehouseId: factoryId }],
+      });
+      expect(proposed.statusCode).toBe(200);
+
+      const overApprove = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${proposed.json().movementId}/approve`,
+        headers: auth(),
+      });
+      expect(overApprove.statusCode).toBe(409);
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${proposed.json().movementId}/reject`,
+        headers: auth(),
+        payload: { reason: 'More than is actually on hand' },
+      });
+
+      // A reasonable write-off, approved.
+      const reasonable = await post({
+        type: 'scrap',
+        lines: [{ itemId: scrapItemId, quantity: 2, fromWarehouseId: factoryId }],
+      });
+      expect(reasonable.statusCode).toBe(200);
+
+      const stillOnHand = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${scrapItemId}&warehouseId=${factoryId}`,
+        headers: auth(),
+      });
+      expect(stillOnHand.json().quantity).toBe(onHand);
+
+      const approved = await app.inject({
+        method: 'POST',
+        url: `/api/v1/inventory/movements/${reasonable.json().movementId}/approve`,
+        headers: auth(),
+      });
+      expect(approved.statusCode).toBe(200);
+
+      const after = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?itemId=${scrapItemId}&warehouseId=${factoryId}`,
+        headers: auth(),
+      });
+      expect(after.json().quantity).toBe(onHand - 2);
     });
   });
 
@@ -593,7 +845,12 @@ suite('Inventory', () => {
         );
 
       expect(entries.length).toBeGreaterThan(0);
-      expect(entries.every((e) => e.action === 'post')).toBe(true);
+      // A transfer or a scrap now leaves 'submit', 'approve' or 'reject' behind
+      // instead of 'post' — the whole point of staging it rather than posting
+      // it outright.
+      expect(entries.every((e) => ['post', 'submit', 'approve', 'reject'].includes(e.action))).toBe(
+        true,
+      );
       expect(entries.every((e) => e.actorId === USER)).toBe(true);
     });
 

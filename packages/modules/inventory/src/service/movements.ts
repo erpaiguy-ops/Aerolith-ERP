@@ -15,7 +15,7 @@ import {
   requireTenantContext,
   type Transaction,
 } from '@aerolith/kernel';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 
 import {
   applyAdjustment,
@@ -113,6 +113,17 @@ const DIRECTION: Record<
   production_output: { takesFrom: false, putsTo: true, isCostSource: true },
 };
 
+/**
+ * A transfer or a scrap has no generating document vouching for it — no
+ * purchase order, no work order, nobody upstream who already agreed this
+ * should happen. Everything else here is either bringing in value that is
+ * checked elsewhere (a receipt against a PO) or is Inventory's own read of
+ * what a count found (an adjustment). These two are hand-keyed and moved
+ * straight to the ledger, which is exactly what `inventory.stock_movement.approve`
+ * exists to stop.
+ */
+const APPROVAL_REQUIRED_TYPES = new Set<CreateMovementInput['type']>(['transfer', 'scrap']);
+
 export async function postMovement(
   tx: Transaction,
   input: CreateMovementInput,
@@ -120,13 +131,22 @@ export async function postMovement(
 ): Promise<PostMovementResult> {
   const { tenantId, userId } = requireTenantContext();
   const direction = DIRECTION[input.type];
+  const requiresApproval = APPROVAL_REQUIRED_TYPES.has(input.type);
 
   if (input.lines.length === 0) {
     throw new InvalidMovementError('A movement must have at least one line.');
   }
+  if (requiresApproval && input.lines.some((line) => line.offcutsProduced?.length)) {
+    // Producing a remnant means a sheet was just cut, which is not a thing a
+    // transfer or a scrap does — and the line staged here has nowhere to
+    // remember it until approval applies the movement anyway.
+    throw new InvalidMovementError(
+      `A ${input.type} awaiting approval cannot register offcuts produced.`,
+    );
+  }
 
   validateLines(input, direction);
-  await assertWarehousesUsable(tx, tenantId, input, direction);
+  await assertWarehousesUsable(tx, tenantId, input.lines, direction);
 
   const movementDate = input.movementDate ?? new Date().toISOString().slice(0, 10);
 
@@ -143,7 +163,7 @@ export async function postMovement(
       numberPeriod: allocated.period,
       numberValue: allocated.value,
       type: input.type,
-      status: 'posted',
+      status: requiresApproval ? 'pending_approval' : 'posted',
       movementDate,
       projectId: input.projectId,
       partyId: input.partyId,
@@ -153,8 +173,8 @@ export async function postMovement(
       sourceEntityId: input.sourceEntityId,
       reference: input.reference,
       notes: input.notes,
-      postedAt: new Date(),
-      postedBy: userId,
+      postedAt: requiresApproval ? null : new Date(),
+      postedBy: requiresApproval ? null : userId,
       createdBy: userId,
     })
     .returning({ id: stockMovement.id });
@@ -165,76 +185,43 @@ export async function postMovement(
 
   for (const [index, line] of input.lines.entries()) {
     const stockQuantity = line.stockQuantity ?? line.quantity;
-    // An adjustment SETS an absolute quantity rather than moving one, and zero
-    // is a real shelf, not a meaningless line — a count that finds nothing
-    // left must be able to write the book down to zero. Every other type
-    // moves a positive amount by definition; there is no such thing as
-    // issuing zero units.
-    const zeroIsValid = input.type === 'adjustment' && stockQuantity === 0;
-    if (stockQuantity < 0 || (stockQuantity === 0 && !zeroIsValid)) {
-      throw new InvalidMovementError(`Line ${index + 1}: quantity must be positive.`);
-    }
+    assertValidLineQuantity(input.type, stockQuantity, index);
 
-    let unitCost = line.unitCost ?? null;
-
-    // --- Take stock out -------------------------------------------------
-    if (direction.takesFrom) {
-      const from = await lockLevel(tx, {
+    if (requiresApproval) {
+      // The effect on stock — and the cost that comes from it, since an
+      // issue/transfer/scrap is valued at whatever the shelf is carrying —
+      // cannot be known until this is actually applied. Recorded now only as
+      // a proposal: what, how much, from where, to where.
+      await tx.insert(stockMovementLine).values({
         tenantId,
+        movementId,
+        lineNumber: index + 1,
         itemId: line.itemId,
-        warehouseId: line.fromWarehouseId!,
-        binId: line.fromBinId ?? null,
-        batchId: line.batchId ?? null,
+        batchId: line.batchId,
+        fromWarehouseId: line.fromWarehouseId,
+        fromBinId: line.fromBinId,
+        toWarehouseId: line.toWarehouseId,
+        toBinId: line.toBinId,
+        quantity: toNumeric(line.quantity),
+        uomId: line.uomId,
+        stockQuantity: toNumeric(stockQuantity),
+        unitCost: null,
+        totalCost: null,
+        offcutId: line.offcutId,
+        notes: line.notes,
       });
-
-      const result = applyIssue(from.position, stockQuantity, {
-        allowNegative: options.allowNegative,
-      });
-
-      // An issue is valued at the cost it leaves at, not at a cost the caller
-      // supplies — otherwise a job could be charged whatever it liked.
-      unitCost = from.position.averageCost;
-
-      await writeLevel(tx, from.id, result.position);
-      touched.push({ itemId: line.itemId, warehouseId: line.fromWarehouseId! });
+      continue;
     }
 
-    // --- Put stock in ---------------------------------------------------
-    if (direction.putsTo) {
-      const to = await lockLevel(tx, {
-        tenantId,
-        itemId: line.itemId,
-        warehouseId: line.toWarehouseId!,
-        binId: line.toBinId ?? null,
-        batchId: line.batchId ?? null,
-      });
-
-      const cost = direction.isCostSource ? (line.unitCost ?? 0) : (unitCost ?? 0);
-      const result = applyReceipt(to.position, { quantity: stockQuantity, unitCost: cost });
-
-      unitCost = direction.isCostSource ? cost : unitCost;
-      await writeLevel(tx, to.id, result);
-      touched.push({ itemId: line.itemId, warehouseId: line.toWarehouseId! });
-    }
-
-    // --- Adjustment sets an absolute quantity ---------------------------
-    if (input.type === 'adjustment') {
-      const level = await lockLevel(tx, {
-        tenantId,
-        itemId: line.itemId,
-        warehouseId: line.toWarehouseId ?? line.fromWarehouseId!,
-        binId: line.toBinId ?? line.fromBinId ?? null,
-        batchId: line.batchId ?? null,
-      });
-
-      const result = applyAdjustment(level.position, stockQuantity);
-      unitCost = level.position.averageCost;
-      await writeLevel(tx, level.id, result.position);
-      touched.push({
-        itemId: line.itemId,
-        warehouseId: line.toWarehouseId ?? line.fromWarehouseId!,
-      });
-    }
+    const { unitCost, touched: lineTouched } = await applyLineStockEffect(tx, {
+      tenantId,
+      type: input.type,
+      direction,
+      line,
+      stockQuantity,
+      options,
+    });
+    touched.push(...lineTouched);
 
     await tx.insert(stockMovementLine).values({
       tenantId,
@@ -283,6 +270,24 @@ export async function postMovement(
     }
   }
 
+  if (requiresApproval) {
+    await recordAudit(tx, {
+      moduleKey: MODULE_KEY,
+      entityType: 'inventory.stock_movement',
+      entityId: movementId,
+      entityLabel: allocated.formatted,
+      action: 'submit',
+    });
+
+    return {
+      movementId,
+      number: allocated.formatted,
+      linesPosted: input.lines.length,
+      offcutsCreated: 0,
+      reorderTriggered: [],
+    };
+  }
+
   const reorderTriggered = await checkReorderLevels(tx, tenantId, touched);
 
   await emit(tx, {
@@ -329,7 +334,287 @@ export async function postMovement(
   };
 }
 
+/**
+ * Applies sign-off to a movement staged as `pending_approval` — the stock
+ * effect `postMovement` deferred for a transfer or a scrap. Re-checks the
+ * warehouses and re-reads current stock rather than trusting whatever was
+ * true when this was proposed: stock can move in the meantime, which is the
+ * entire reason this gate exists.
+ */
+export async function approveMovement(
+  tx: Transaction,
+  input: { movementId: string },
+  options: { allowNegative?: boolean } = {},
+): Promise<PostMovementResult> {
+  const { tenantId, userId } = requireTenantContext();
+
+  const [movement] = await tx
+    .select()
+    .from(stockMovement)
+    .where(and(eq(stockMovement.tenantId, tenantId), eq(stockMovement.id, input.movementId)));
+  if (!movement) throw new InvalidMovementError('Movement not found.');
+  if (movement.status !== 'pending_approval') {
+    throw new InvalidMovementError(`A ${movement.status} movement cannot be approved.`);
+  }
+
+  const type = movement.type as CreateMovementInput['type'];
+  const direction = DIRECTION[type];
+
+  const storedLines = await tx
+    .select()
+    .from(stockMovementLine)
+    .where(
+      and(
+        eq(stockMovementLine.tenantId, tenantId),
+        eq(stockMovementLine.movementId, movement.id),
+      ),
+    )
+    .orderBy(asc(stockMovementLine.lineNumber));
+
+  await assertWarehousesUsable(tx, tenantId, storedLines, direction);
+
+  const touched: { itemId: string; warehouseId: string }[] = [];
+
+  for (const line of storedLines) {
+    const stockQuantity = toNumber(line.stockQuantity);
+
+    const { unitCost, touched: lineTouched } = await applyLineStockEffect(tx, {
+      tenantId,
+      type,
+      direction,
+      line: {
+        itemId: line.itemId,
+        batchId: line.batchId,
+        fromWarehouseId: line.fromWarehouseId,
+        fromBinId: line.fromBinId,
+        toWarehouseId: line.toWarehouseId,
+        toBinId: line.toBinId,
+        unitCost: null,
+      },
+      stockQuantity,
+      options,
+    });
+    touched.push(...lineTouched);
+
+    await tx
+      .update(stockMovementLine)
+      .set({
+        unitCost: unitCost === null ? null : toNumeric(unitCost, 6),
+        totalCost: unitCost === null ? null : toNumeric(unitCost * stockQuantity),
+      })
+      .where(eq(stockMovementLine.id, line.id));
+
+    if (line.offcutId) {
+      await tx
+        .update(offcut)
+        .set({
+          status: 'consumed',
+          consumedByMovementId: movement.id,
+          consumedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(offcut.tenantId, tenantId), eq(offcut.id, line.offcutId)));
+    }
+  }
+
+  const reorderTriggered = await checkReorderLevels(tx, tenantId, touched);
+
+  await tx
+    .update(stockMovement)
+    .set({ status: 'posted', postedAt: new Date(), postedBy: userId, updatedAt: new Date() })
+    .where(eq(stockMovement.id, movement.id));
+
+  await emit(tx, {
+    type: 'inventory.stock_movement.posted',
+    sourceModule: MODULE_KEY,
+    aggregateType: 'inventory.stock_movement',
+    aggregateId: movement.id,
+    payload: {
+      movementType: type,
+      number: movement.number,
+      movementDate: movement.movementDate,
+      projectId: movement.projectId ?? null,
+      costCodeId: movement.costCodeId ?? null,
+      lineCount: storedLines.length,
+      sourceModule: movement.sourceModule ?? null,
+      sourceEntityId: movement.sourceEntityId ?? null,
+    },
+  });
+
+  for (const trigger of reorderTriggered) {
+    await emit(tx, {
+      type: 'inventory.stock_level.below_reorder',
+      sourceModule: MODULE_KEY,
+      aggregateType: 'inventory.stock_level',
+      aggregateId: movement.id,
+      payload: trigger,
+    });
+  }
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'inventory.stock_movement',
+    entityId: movement.id,
+    entityLabel: movement.number ?? movement.id,
+    action: 'approve',
+  });
+
+  return {
+    movementId: movement.id,
+    number: movement.number ?? '',
+    linesPosted: storedLines.length,
+    offcutsCreated: 0,
+    reorderTriggered,
+  };
+}
+
+/**
+ * Refuses a movement awaiting approval. Nothing to undo — the stock effect
+ * was never applied — so this is only ever a status change and a reason.
+ */
+export async function rejectMovement(
+  tx: Transaction,
+  input: { movementId: string; reason: string },
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [movement] = await tx
+    .select()
+    .from(stockMovement)
+    .where(and(eq(stockMovement.tenantId, tenantId), eq(stockMovement.id, input.movementId)));
+  if (!movement) throw new InvalidMovementError('Movement not found.');
+  if (movement.status !== 'pending_approval') {
+    throw new InvalidMovementError(`A ${movement.status} movement cannot be rejected.`);
+  }
+  if (!input.reason.trim()) {
+    throw new InvalidMovementError('A reason is required to reject a movement.');
+  }
+
+  await tx
+    .update(stockMovement)
+    .set({ status: 'cancelled', cancelledReason: input.reason, updatedAt: new Date() })
+    .where(eq(stockMovement.id, input.movementId));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'inventory.stock_movement',
+    entityId: input.movementId,
+    entityLabel: movement.number ?? input.movementId,
+    action: 'reject',
+    reason: input.reason,
+  });
+}
+
 // ---------------------------------------------------------------------------
+
+function assertValidLineQuantity(
+  type: CreateMovementInput['type'],
+  stockQuantity: number,
+  index: number,
+): void {
+  // An adjustment SETS an absolute quantity rather than moving one, and zero
+  // is a real shelf, not a meaningless line — a count that finds nothing left
+  // must be able to write the book down to zero. Every other type moves a
+  // positive amount by definition; there is no such thing as issuing zero
+  // units.
+  const zeroIsValid = type === 'adjustment' && stockQuantity === 0;
+  if (stockQuantity < 0 || (stockQuantity === 0 && !zeroIsValid)) {
+    throw new InvalidMovementError(`Line ${index + 1}: quantity must be positive.`);
+  }
+}
+
+/**
+ * The actual stock mutation for one line — locking the level(s) involved,
+ * applying the domain rule for this movement type, and writing the result.
+ * Shared by the immediate path in `postMovement` and by `approveMovement`,
+ * which is what makes the deferred path a real gate rather than a rubber
+ * stamp: this is the code that reads CURRENT stock, run only once sign-off
+ * happens.
+ */
+async function applyLineStockEffect(
+  tx: Transaction,
+  args: {
+    tenantId: string;
+    type: CreateMovementInput['type'];
+    direction: (typeof DIRECTION)[keyof typeof DIRECTION];
+    line: {
+      itemId: string;
+      batchId?: string | null;
+      fromWarehouseId?: string | null;
+      fromBinId?: string | null;
+      toWarehouseId?: string | null;
+      toBinId?: string | null;
+      unitCost?: number | null;
+    };
+    stockQuantity: number;
+    options: { allowNegative?: boolean };
+  },
+): Promise<{ unitCost: number | null; touched: { itemId: string; warehouseId: string }[] }> {
+  const { tenantId, type, direction, line, stockQuantity, options } = args;
+  let unitCost = line.unitCost ?? null;
+  const touched: { itemId: string; warehouseId: string }[] = [];
+
+  // --- Take stock out -------------------------------------------------
+  if (direction.takesFrom) {
+    const from = await lockLevel(tx, {
+      tenantId,
+      itemId: line.itemId,
+      warehouseId: line.fromWarehouseId!,
+      binId: line.fromBinId ?? null,
+      batchId: line.batchId ?? null,
+    });
+
+    const result = applyIssue(from.position, stockQuantity, {
+      allowNegative: options.allowNegative,
+    });
+
+    // An issue is valued at the cost it leaves at, not at a cost the caller
+    // supplies — otherwise a job could be charged whatever it liked.
+    unitCost = from.position.averageCost;
+
+    await writeLevel(tx, from.id, result.position);
+    touched.push({ itemId: line.itemId, warehouseId: line.fromWarehouseId! });
+  }
+
+  // --- Put stock in ---------------------------------------------------
+  if (direction.putsTo) {
+    const to = await lockLevel(tx, {
+      tenantId,
+      itemId: line.itemId,
+      warehouseId: line.toWarehouseId!,
+      binId: line.toBinId ?? null,
+      batchId: line.batchId ?? null,
+    });
+
+    const cost = direction.isCostSource ? (line.unitCost ?? 0) : (unitCost ?? 0);
+    const result = applyReceipt(to.position, { quantity: stockQuantity, unitCost: cost });
+
+    unitCost = direction.isCostSource ? cost : unitCost;
+    await writeLevel(tx, to.id, result);
+    touched.push({ itemId: line.itemId, warehouseId: line.toWarehouseId! });
+  }
+
+  // --- Adjustment sets an absolute quantity ---------------------------
+  if (type === 'adjustment') {
+    const level = await lockLevel(tx, {
+      tenantId,
+      itemId: line.itemId,
+      warehouseId: line.toWarehouseId ?? line.fromWarehouseId!,
+      binId: line.toBinId ?? line.fromBinId ?? null,
+      batchId: line.batchId ?? null,
+    });
+
+    const result = applyAdjustment(level.position, stockQuantity);
+    unitCost = level.position.averageCost;
+    await writeLevel(tx, level.id, result.position);
+    touched.push({
+      itemId: line.itemId,
+      warehouseId: line.toWarehouseId ?? line.fromWarehouseId!,
+    });
+  }
+
+  return { unitCost, touched };
+}
 
 function validateLines(
   input: CreateMovementInput,
@@ -368,12 +653,12 @@ function validateLines(
 async function assertWarehousesUsable(
   tx: Transaction,
   tenantId: string,
-  input: CreateMovementInput,
+  lines: { fromWarehouseId?: string | null }[],
   direction: (typeof DIRECTION)[keyof typeof DIRECTION],
 ): Promise<void> {
   if (!direction.takesFrom) return;
 
-  const sources = [...new Set(input.lines.map((l) => l.fromWarehouseId).filter(Boolean))];
+  const sources = [...new Set(lines.map((l) => l.fromWarehouseId).filter(Boolean))];
 
   for (const warehouseId of sources) {
     const [row] = await tx

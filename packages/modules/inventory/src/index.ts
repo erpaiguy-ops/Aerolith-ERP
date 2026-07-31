@@ -38,7 +38,9 @@ export {
 export {
   InvalidMovementError,
   MODULE_KEY,
+  approveMovement,
   postMovement,
+  rejectMovement,
   stockOnHand,
   type CreateMovementInput,
   type MovementLineInput,

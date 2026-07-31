@@ -168,7 +168,20 @@ labelled parts, becomes scanned progress.
   (`POST /api/v1/inventory/counts`, `POST /api/v1/inventory/counts/:id/generate`,
   `PATCH /api/v1/inventory/counts/lines/:id`, `POST /api/v1/inventory/counts/:id/reconcile`,
   `/inventory/counts`)
-- **1,100 tests**, including integration suites that prove tenant isolation holds and
+- **A stock transfer or a scrap now stages for sign-off instead of moving
+  stock on the strength of a hand-typed form** — `inventory.stock_movement.approve`
+  gated nothing; `postMovement` posted every movement type immediately,
+  including the two the manifest itself names as needing review
+  (`approvableEntities: ['inventory.stock_transfer', 'inventory.stock_write_off']`).
+  A transfer or a scrap now lands as `pending_approval` with the stock
+  untouched, and only `approveMovement` — re-checking the warehouse and
+  re-reading CURRENT stock, not whatever was true when it was proposed —
+  actually moves it. Receipts, issues, adjustments, returns and production
+  output are unaffected: they have a generating document or a count behind
+  them already, and post exactly as before
+  (`POST /api/v1/inventory/movements/:id/approve`,
+  `POST /api/v1/inventory/movements/:id/reject`, `/inventory/movements`)
+- **1,104 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
