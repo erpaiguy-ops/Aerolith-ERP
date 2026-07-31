@@ -20,6 +20,7 @@ pnpm-debug.log*
 .idea/
 .vscode/*
 !.vscode/extensions.json
+.claude/
 
 # Local database volume
 postgres-data/
