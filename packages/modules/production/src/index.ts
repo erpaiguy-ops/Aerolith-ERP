@@ -58,6 +58,7 @@ export {
   WORK_ORDER_SORTS,
   cuttingPlanOffcutIds,
   getCuttingPlan,
+  getRoutingDetail,
   listCuttingPlans,
   listFinishingBatches,
   listRoutings,
@@ -65,6 +66,35 @@ export {
   type CuttingPlanDetail,
   type CuttingPlanListRow,
   type FinishingBatchListRow,
+  type RoutingDetail,
   type RoutingListRow,
+  type RoutingOperationDetail,
   type WorkOrderListRow,
 } from './service/registers';
+
+export {
+  RoutingError,
+  addRoutingOperation,
+  createRouting,
+  createWorkCentre,
+  removeRoutingOperation,
+  updateRouting,
+  updateRoutingOperation,
+  updateWorkCentre,
+  type AddRoutingOperationInput,
+  type CreateRoutingInput,
+  type CreateWorkCentreInput,
+  type UpdateRoutingInput,
+  type UpdateRoutingOperationInput,
+  type UpdateWorkCentreInput,
+} from './service/routings';
+
+export {
+  FinishingError,
+  createFinishingBatch,
+  updateFinishingBatchStatus,
+  type CreateFinishingBatchInput,
+  type FinishingBatchPartInput,
+  type FinishingStatus,
+  type UpdateFinishingBatchStatusInput,
+} from './service/finishing';
