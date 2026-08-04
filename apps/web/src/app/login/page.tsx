@@ -38,6 +38,13 @@ async function signIn(_state: { error?: string }, formData: FormData) {
     });
   } catch (error) {
     if (error instanceof ApiError) return { error: error.message };
+    // Every other server action logs this via `runAction` (see lib/actions.ts).
+    // Sign-in has its own error handling — deliberately, since a bad password
+    // must not become an ApiError the generic "something went wrong" catch
+    // would show verbatim — but that means it was the one place a raw fetch
+    // failure (DNS, timeout, connection reset) vanished with nothing in the
+    // server logs to say what actually happened.
+    console.error('sign-in failed', error);
     return { error: 'Could not reach the server. Try again.' };
   }
 
