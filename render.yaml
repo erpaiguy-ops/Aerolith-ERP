@@ -30,16 +30,25 @@ services:
     dockerContext: .
     # `preDeployCommand` is a paid-plan feature — Render's free tier refuses
     # it outright ("pre-deploy command is not supported for free tier
-    # services"). `dockerCommand` overrides the Dockerfile's CMD instead,
-    # chaining migrate and seed before the actual server starts. Both are
-    # idempotent (upsert, not insert-only — the same reason
-    # docker-compose.prod.yml's one-shot `migrate`/`seed` containers are safe
-    # to re-run on every deploy), which matters more here: a free service
-    # spins down after 15 minutes idle, so this chain re-runs on every
-    # cold-start wake, not just on deploy. A few extra seconds per wake, and
-    # otherwise a no-op once the schema and country packs are current.
-    dockerCommand: >-
-      /bin/sh -c "pnpm db:migrate && pnpm db:seed && pnpm --filter @aerolith/api run start"
+    # services"). `dockerCommand` overrides the Dockerfile's CMD instead, to
+    # chain migrate and seed before the actual server starts.
+    #
+    # This points at a script (render-start.sh) rather than an inline
+    # `/bin/sh -c "a && b && c"` string: the inline form was tried first and
+    # failed — Render's dockerCommand field did not preserve the `-c` flag or
+    # the quoting, and `sh` tried to execute the entire literal string,
+    # `&&`s included, as one nonexistent filename. A single-token path is
+    # immune to whatever that field's tokenizing does, because there is
+    # nothing left to tokenize.
+    #
+    # migrate/seed are both idempotent (upsert, not insert-only — the same
+    # reason docker-compose.prod.yml's one-shot `migrate`/`seed` containers
+    # are safe to re-run on every deploy), which matters more here: a free
+    # service spins down after 15 minutes idle, so this script re-runs on
+    # every cold-start wake, not just on deploy. A few extra seconds per
+    # wake, and otherwise a no-op once the schema and country packs are
+    # current.
+    dockerCommand: apps/api/render-start.sh
     envVars:
       - key: NODE_ENV
         value: production

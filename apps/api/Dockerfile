@@ -25,6 +25,16 @@ FROM base AS runner
 WORKDIR /app
 RUN addgroup --system --gid 1001 aerolith && adduser --system --uid 1001 aerolith
 COPY --from=installer --chown=aerolith:aerolith /app .
+# Copied from `pruner`, not the `installer` output above: `turbo prune`'s
+# pruned tree only carries what a normal build needs, and this deploy-only
+# script has no reason to be part of that contract. Copying it from the
+# pre-prune stage (which still has the whole original repo) means its
+# presence here doesn't depend on prune's inclusion rules ever changing.
+# The executable bit is set here rather than relied on from git, so a
+# checkout that lost the mode bit (some editors and some Windows checkouts
+# do) still produces a working image.
+COPY --from=pruner --chown=aerolith:aerolith /app/apps/api/render-start.sh ./apps/api/render-start.sh
+RUN chmod +x ./apps/api/render-start.sh
 USER aerolith
 
 ENV NODE_ENV=production
