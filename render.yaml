@@ -54,6 +54,16 @@ services:
         value: production
       - key: API_PORT
         value: 3001
+      # Render's own routing convention, separate from API_PORT above (which
+      # apps/api/src/main.ts actually reads to decide what to listen on).
+      # Render injects a PORT var itself (default 10000) and recommends the
+      # app bind to it; it can sometimes auto-detect a different port from
+      # the Dockerfile's EXPOSE instead, but that is documented as "usually",
+      # not guaranteed. Setting this to the same 3001 the app actually
+      # listens on removes the ambiguity either way, rather than leaving the
+      # service reachable-or-not depending on which behaviour Render chose.
+      - key: PORT
+        value: 3001
       # The migration superuser connection. Render provisions and manages
       # this; `pnpm db:migrate` uses it to create the RLS-enforced
       # `aerolith_app` role that the running API actually connects as.
