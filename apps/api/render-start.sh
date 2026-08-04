@@ -14,4 +14,16 @@ set -e
 
 pnpm db:migrate
 pnpm db:seed
+# Opt-in, not automatic: `db:seed:demo` is idempotent (it wipes and rebuilds
+# its own fixed demo tenant every run), but "idempotent" is not "cheap" — it
+# recreates a realistic multi-module dataset spanning every module from
+# scratch every single time. Running that on every free-tier cold-start wake
+# would add real seconds to a boot that already has to beat Render's
+# port-scan timeout, which is exactly what just failed once already. Set
+# SEED_DEMO_DATA=true for one deploy to populate the demo tenant, then unset
+# it (or set it back to anything else) — the data persists in Postgres and
+# does not need to be seeded again on every subsequent boot.
+if [ "$SEED_DEMO_DATA" = "true" ]; then
+  pnpm db:seed:demo
+fi
 exec pnpm --filter @aerolith/api run start
