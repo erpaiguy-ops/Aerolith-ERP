@@ -26,9 +26,6 @@ describe('procurement isolation policies', () => {
 
     const statements = buildProcurementRls().join('\n');
     expect(statements).not.toContain(
-      'CREATE POLICY tenant_isolation_update ON procurement."goods_receipt_line"',
-    );
-    expect(statements).not.toContain(
       'CREATE POLICY tenant_isolation_delete ON procurement."goods_receipt_line"',
     );
 
@@ -37,6 +34,29 @@ describe('procurement isolation policies', () => {
     expect(buildProcurementGrants().join('\n')).toContain(
       'REVOKE UPDATE, DELETE ON procurement."goods_receipt_line" FROM aerolith_app;',
     );
+  });
+
+  it('still lets linkReceiptPostings attach a receipt line to its stock movement and accrual', () => {
+    // stockMovementId and costEntryId name rows in Inventory and Projects that
+    // cannot exist until the receipt line itself does — linkReceiptPostings
+    // (service/purchasing.ts) sets them in a second step after insert. That is
+    // not an edit to what was received; it's the one write append-only is not
+    // meant to block. A blanket "no UPDATE at all" policy blocked it anyway
+    // until this test's own name stopped being true — this asserts the fix
+    // stays narrow rather than reopening the whole row.
+    const statements = buildProcurementRls().join('\n');
+    expect(statements).toContain(
+      'CREATE POLICY tenant_isolation_update ON procurement."goods_receipt_line" FOR UPDATE TO aerolith_app',
+    );
+
+    // The grant is column-scoped, not the table-wide grant every other
+    // tenant table gets — quantityReceived, unitPrice and the rest of the
+    // received facts stay outside what aerolith_app can ever set.
+    const grants = buildProcurementGrants().join('\n');
+    expect(grants).toContain(
+      'GRANT UPDATE (stock_movement_id, cost_entry_id) ON procurement."goods_receipt_line" TO aerolith_app;',
+    );
+    expect(grants).not.toContain('GRANT UPDATE ON procurement."goods_receipt_line"');
   });
 
   it('does not lock down documents that are legitimately edited', () => {
