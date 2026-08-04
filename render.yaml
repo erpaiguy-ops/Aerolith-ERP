@@ -28,11 +28,18 @@ services:
     plan: free
     dockerfilePath: apps/api/Dockerfile
     dockerContext: .
-    # Migrations and the country-pack seed run before each deploy's start
-    # command — both are idempotent (upsert, not insert-only), so re-running
-    # on every deploy is safe. This is the same `db:migrate && db:seed` step
-    # docker-compose.prod.yml's one-shot `migrate`/`seed` containers run.
-    preDeployCommand: pnpm db:migrate && pnpm db:seed
+    # `preDeployCommand` is a paid-plan feature — Render's free tier refuses
+    # it outright ("pre-deploy command is not supported for free tier
+    # services"). `dockerCommand` overrides the Dockerfile's CMD instead,
+    # chaining migrate and seed before the actual server starts. Both are
+    # idempotent (upsert, not insert-only — the same reason
+    # docker-compose.prod.yml's one-shot `migrate`/`seed` containers are safe
+    # to re-run on every deploy), which matters more here: a free service
+    # spins down after 15 minutes idle, so this chain re-runs on every
+    # cold-start wake, not just on deploy. A few extra seconds per wake, and
+    # otherwise a no-op once the schema and country packs are current.
+    dockerCommand: >-
+      /bin/sh -c "pnpm db:migrate && pnpm db:seed && pnpm --filter @aerolith/api run start"
     envVars:
       - key: NODE_ENV
         value: production
