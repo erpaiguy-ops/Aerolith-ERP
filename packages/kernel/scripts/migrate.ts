@@ -13,6 +13,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 
+import { buildPlatformSchemaGrants } from '../src/platform/security';
 import {
   APP_ROLE,
   PLATFORM_ROLE,
@@ -98,6 +99,21 @@ async function main() {
 
     console.log('→ applying platform read grants');
     for (const statement of buildPlatformGrantStatements()) {
+      await db.execute(sql.raw(statement));
+    }
+
+    // The operator realm. Its own schema and its own migration folder, so the
+    // vendor's identity tables never fall under the app role's schema-wide
+    // grant on `kernel` — see src/platform/security.ts.
+    console.log('→ migrating platform schema');
+    await db.execute(sql`create schema if not exists drizzle_platform`);
+    await migrate(db, {
+      migrationsFolder: './drizzle-platform',
+      migrationsSchema: 'drizzle_platform',
+    });
+
+    console.log('→ applying platform schema privileges');
+    for (const statement of buildPlatformSchemaGrants()) {
       await db.execute(sql.raw(statement));
     }
 

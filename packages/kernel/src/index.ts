@@ -172,6 +172,20 @@ export type {
   EstateTenantRow,
 } from './platform/estate';
 export {
+  OperatorAuthError,
+  OPERATOR_SESSION_HOURS,
+  authenticateOperator,
+  operatorLogin,
+  operatorLogout,
+  pruneOperatorSessions,
+  recordOperatorAction,
+  type AuthenticatedOperator,
+  type OperatorLoginInput,
+  type OperatorSessionResult,
+} from './platform/operator-auth';
+export { generateTotpSecret, totpUri, verifyTotp } from './platform/totp';
+export { buildPlatformSchemaGrants } from './platform/security';
+export {
   assertPlatformRole,
   getEstateTenant,
   listEstate,

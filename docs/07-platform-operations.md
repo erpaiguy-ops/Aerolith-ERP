@@ -257,12 +257,70 @@ Shared UI components can move to a package if the duplication becomes annoying.
 Do not do that pre-emptively — the two surfaces will diverge more than expected,
 and a shared component library that serves two masters gets worse at both.
 
-### Authentication
+### Authentication — built
 
-Operator accounts should not use the tenant password flow. This is the surface
-where a credential compromise is worst, so require a second factor from the
-first version rather than retrofitting one. Sessions should be short and
-absolute-expiry rather than sliding.
+The realm, not yet the pages. Establishing it first is the point: retrofitting a
+realm split after routes already live in the tenant app is the migration nobody
+wants to do.
+
+```
+DATABASE_URL=… pnpm operator create --email ops@vendor.test --name "Ops Person"
+DATABASE_URL=… pnpm operator confirm --email ops@vendor.test --code 123456
+DATABASE_URL=… pnpm operator list|enable|disable
+```
+
+**Its own Postgres schema, and that is the load-bearing part.** Grants are
+per-schema: `aerolith_app` holds SELECT/INSERT/UPDATE/DELETE on ALL TABLES IN
+SCHEMA kernel, so putting `operator` there would have let the tenant
+application create an operator account — the exact escalation the split exists
+to prevent, handed over by a blanket grant nobody would think to re-read. In
+`platform` the application role has no privileges at all, verified: it cannot
+even resolve the schema name.
+
+**Three credentials, three capabilities**, none of which is "all of them":
+
+| Role | Tenant data | Estate | Operator identity |
+|---|---|---|---|
+| `aerolith_app` | read/write, RLS-scoped | — | none at all |
+| `aerolith_platform` | SELECT only, all tenants | read | sign-in bookkeeping only |
+| owner (`DATABASE_URL`) | migrations | — | create, confirm, enable/disable |
+
+`aerolith_platform` may write exactly two tables — `operator_session` and
+`operator_action` — plus a COLUMN-scoped update on `operator` limited to
+`last_login_at`, `failed_login_count` and `locked_until`. `password_hash`,
+`totp_secret`, `totp_confirmed_at`, `email` and `is_active` are all outside it,
+so a compromised operator session cannot rotate its own credential, re-enrol a
+second factor onto a device it controls, reactivate a disabled account, or mint
+a second operator. Those need the owner credential, which lives with whoever
+administers the database rather than in a running web process.
+
+That column grant was not in the design — running the login flow as the
+platform role failed with `permission denied for table operator`, because the
+design was right and the grants had not caught up with it.
+
+**TOTP is mandatory and implemented, not depended on.** Forty lines of HMAC and
+base32 against a new supply-chain dependency in the one place a compromised
+package would be worst. Proved against all six RFC 6238 vectors including the
+post-2038 one, so it is correct by specification rather than by trust.
+Enrolment is two steps — create, then confirm with a live code — because a
+mistyped secret otherwise produces an account with a second factor nobody
+holds, discovered at the worst possible moment. An unconfirmed account cannot
+sign in.
+
+**Sessions are eight hours and do not slide.** Shorter than the tenant
+application's fourteen days by two orders of magnitude, because the risks are
+not comparable: a stale tenant session exposes one company's own data to
+someone who already worked there; a stale operator session exposes every
+customer to whoever finds the laptop.
+
+### Still to build
+
+The pages. `apps/operator`, a separate Next application per the reasoning
+above, calling `listEstate` / `summariseEstate` for the screens and the
+`operator*` functions for its middleware. The read path can run entirely as
+`aerolith_platform`; provisioning stays on the CLI until there is a reason to
+put a write behind a form, and when there is, `operator_action` is already
+there to record it.
 
 ---
 
