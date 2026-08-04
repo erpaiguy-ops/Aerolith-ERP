@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+/*
+ * Visibly not the tenant application.
+ *
+ * The palette is deliberately colder and darker than apps/web's warm canvas and
+ * green accent. That is a safety feature, not decoration: an operator with both
+ * surfaces open is one tab-switch away from confusing "my workspace" with
+ * "every customer's data", and the two should never be mistaken for each other
+ * at a glance.
+ */
+@theme {
+  --color-canvas: #0f1115;
+  --color-surface: #171a21;
+  --color-ink: #e7e9ee;
+  --color-muted: #8b93a3;
+  --color-line: #262b35;
+  --color-accent: #d97706;
+  --color-accent-soft: #2a2015;
+  --color-good: #22c55e;
+  --color-bad: #f87171;
+  --color-warn: #fbbf24;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}

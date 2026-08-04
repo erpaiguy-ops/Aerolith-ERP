@@ -313,14 +313,41 @@ not comparable: a stale tenant session exposes one company's own data to
 someone who already worked there; a stale operator session exposes every
 customer to whoever finds the laptop.
 
-### Still to build
+### The pages — built
 
-The pages. `apps/operator`, a separate Next application per the reasoning
-above, calling `listEstate` / `summariseEstate` for the screens and the
-`operator*` functions for its middleware. The read path can run entirely as
-`aerolith_platform`; provisioning stays on the CLI until there is a reason to
-put a write behind a form, and when there is, `operator_action` is already
-there to record it.
+`apps/operator`, a separate Next application on port 3002 with its own
+Dockerfile. Sign in with email, password and a TOTP code; the estate list with
+customer counts, status, users, entitlements and lapsed trials; a per-customer
+page with entitlements and lifecycle.
+
+**Read-only by construction rather than by discipline.** It connects only as
+`aerolith_platform`, and `assertPlatformRole` runs at startup and refuses to
+serve a page if that connection can write to `kernel.tenant` — so pointing
+`DATABASE_PLATFORM_URL` at the app or owner credential fails loudly instead of
+producing a working application with a silently enormous blast radius. There
+are no buttons that change anything: the tenant page prints the `pnpm provision`
+command instead, so the path forward is obvious rather than absent.
+
+**Deliberately not a customer data browser.** The platform role can read every
+tenant's contracts, projects and money, which is exactly why these pages show
+none of it. "The vendor can technically see everything" and "the vendor's
+support tool shows everything" are different promises, and only the second one
+is ours to make.
+
+**The palette is colder and darker than apps/web's**, which is a safety feature
+rather than decoration: an operator with both surfaces open is one tab-switch
+from confusing "my workspace" with "every customer's data".
+
+Every screen writes to `operator_action` before rendering — `estate.read` with
+the number of customers it exposed, `tenant.read` naming the customer. That is
+the entry that answers "has anyone at the vendor looked at us".
+
+One build-time gotcha if this is extended: `middleware.ts` runs on the EDGE
+runtime, so it must not import anything reaching the kernel. The session
+cookie's name lives in its own `lib/cookie.ts` for exactly that reason —
+importing it from `lib/session` pulled `pg` and `node:url` into the edge bundle
+and failed the build with a module-not-found several layers deep that named the
+kernel's localisation loader and gave no hint that middleware was the cause.
 
 ---
 
