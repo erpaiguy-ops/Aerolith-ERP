@@ -74,6 +74,28 @@ export const APPEND_ONLY_TABLES = new Set(['audit_log', 'approval_action']);
 
 export const APP_ROLE = 'aerolith_app';
 
+/**
+ * The vendor's own read-only role, for the platform-operator surface.
+ *
+ * Cross-tenant reads need a role the policies recognise, and there are two ways
+ * to get one. `BYPASSRLS` is the obvious one and is rejected here: granting it
+ * requires superuser, which a managed Postgres role is not — established when
+ * `seed-demo.ts`, connecting as the database OWNER, was refused outright with
+ * `new row violates row-level security policy`. A deployment target that cannot
+ * grant the privilege is not a deployment target this can depend on.
+ *
+ * So the estate is read through explicit policies naming this role, generated
+ * from the same table list that generates tenant isolation — a new table cannot
+ * be remembered by one and forgotten by the other. Every policy is FOR SELECT
+ * with no `WITH CHECK`, so the role provably cannot write anything, anywhere,
+ * whatever the surface holding its credential believes it is doing.
+ *
+ * The connection string belongs ONLY to the operator service. Absent from the
+ * tenant API's environment, no bug in that codebase can reach across tenants,
+ * because it holds nothing that could.
+ */
+export const PLATFORM_ROLE = 'aerolith_platform';
+
 export interface RlsOptions {
   /** Postgres schema the tables live in. */
   schemaName: string;
@@ -160,6 +182,21 @@ export function buildRlsStatementsFor(options: RlsOptions): string[] {
           `USING (${userColumn} = nullif(current_setting('app.user_id', true), '')::uuid);`,
       );
     }
+
+    // The vendor's cross-tenant read. Generated here, in the same loop as the
+    // isolation policies, so a table added to `tables` gets both or neither —
+    // a platform surface that silently cannot see a new table is a reporting
+    // bug, and one that can see a table nobody meant it to is a disclosure.
+    //
+    // `USING (true)` reads every tenant, which is the entire purpose, and is
+    // safe only because of what surrounds it: FOR SELECT, so no `WITH CHECK`
+    // exists and no write is expressible; TO a role that holds no INSERT,
+    // UPDATE or DELETE grant anywhere (see buildPlatformGrantStatementsFor);
+    // and a credential the tenant API is never given.
+    statements.push(`DROP POLICY IF EXISTS platform_read ON ${qualified};`);
+    statements.push(
+      `CREATE POLICY platform_read ON ${qualified} FOR SELECT TO ${PLATFORM_ROLE} USING (true);`,
+    );
   }
 
   return statements;
@@ -181,6 +218,33 @@ export function buildGrantStatementsFor(options: RlsOptions): string[] {
   ];
 }
 
+/**
+ * Grants for the platform read role, for one schema.
+ *
+ * SELECT and nothing else — no INSERT, no UPDATE, no DELETE, no sequences.
+ * The `platform_read` policy says `USING (true)`, so the privilege grant is
+ * the only thing standing between this role and every tenant's data; it is
+ * kept to the narrowest verb that can answer a question.
+ *
+ * `ALTER DEFAULT PRIVILEGES` matters as much as the grant itself: without it a
+ * table added by a later migration is readable by the app role and invisible
+ * to this one, and the estate report quietly under-reports rather than failing.
+ */
+export function buildPlatformGrantStatementsFor(options: RlsOptions): string[] {
+  const { schemaName } = options;
+
+  return [
+    `GRANT USAGE ON SCHEMA ${schemaName} TO ${PLATFORM_ROLE};`,
+    `GRANT SELECT ON ALL TABLES IN SCHEMA ${schemaName} TO ${PLATFORM_ROLE};`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schemaName} GRANT SELECT ON TABLES TO ${PLATFORM_ROLE};`,
+    // Belt and braces against a future edit to the line above, and against a
+    // grant inherited from PUBLIC or a role this one is later added to. Cheap,
+    // and it makes "this role cannot write" true by two independent mechanisms
+    // rather than one.
+    `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA ${schemaName} FROM ${PLATFORM_ROLE};`,
+  ];
+}
+
 const KERNEL_RLS: RlsOptions = {
   schemaName: 'kernel',
   tables: TENANT_SCOPED_TABLES,
@@ -199,6 +263,11 @@ export function buildRlsStatements(): string[] {
 /** Grants for the non-owner application role. */
 export function buildGrantStatements(): string[] {
   return buildGrantStatementsFor(KERNEL_RLS);
+}
+
+/** SELECT-only grants for the platform read role. */
+export function buildPlatformGrantStatements(): string[] {
+  return buildPlatformGrantStatementsFor(KERNEL_RLS);
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

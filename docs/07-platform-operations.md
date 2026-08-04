@@ -86,11 +86,43 @@ period. "Plan" today is implicit — the set of enabled modules plus a jsonb of
 limits. Stage 3 makes it explicit; Stage 1 should report what exists rather
 than invent a vocabulary the data cannot back.
 
-### Deliverable
+### Deliverable — built
 
-A list of tenants with status, trial expiry, module count and user count; a
-tenant detail view; and a module take-up summary across the estate. Read-only,
-no mutations anywhere in the surface.
+Shipped as a command rather than a web page, deliberately. The isolation model
+is the part worth getting right first, and a CLI proves all of it without also
+standing up an operator identity realm, a second session mechanism and a login
+form — each of which is somewhere a cross-tenant surface can go wrong. The
+surface comes with Stage 4; this is the model underneath it.
+
+```
+PLATFORM_DB_PASSWORD=…   # once, at migration time, to enable the role
+DATABASE_PLATFORM_URL=postgres://aerolith_platform:…@host/db pnpm estate
+pnpm estate --json       # same data, for piping somewhere
+```
+
+Reports tenant count by status, per-tenant status, active users, module counts
+and trial expiry; module take-up across the estate; and trials ending or
+already lapsed. `listEstate`, `getEstateTenant` and `summariseEstate` in
+`packages/kernel/src/platform/estate.ts` are the read model — a Stage 4 web
+surface should call those rather than write its own queries.
+
+Two things it refuses to do, both verified against a real database:
+
+- **Write anything.** `INSERT`, `UPDATE` and `DELETE` as the platform role are
+  refused by Postgres, not by application code.
+- **Run as the wrong role.** `assertPlatformRole` checks the connection cannot
+  write to `kernel.tenant` before reading a single row, and aborts if it can.
+  Pointing `DATABASE_PLATFORM_URL` at the app or owner credential would
+  otherwise work perfectly — producing correct reports from a connection that
+  was never supposed to be capable of more, which is exactly the state nobody
+  notices until it matters.
+
+The role is created on every migration, `NOLOGIN` unless `PLATFORM_DB_PASSWORD`
+is set. It has to exist regardless, because `CREATE POLICY … TO <role>` naming
+a role Postgres does not know is a hard error rather than a no-op — a
+deployment with no operator surface would otherwise fail to migrate at all. A
+role that cannot log in is inert, so enabling the surface later is only setting
+the password: no policy or grant changes.
 
 ---
 

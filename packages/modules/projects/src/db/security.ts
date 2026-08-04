@@ -6,7 +6,8 @@
  * bypassed by anything holding a connection. A job cost report that can be
  * quietly edited is worth nothing in the dispute it exists for.
  */
-import { buildGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
+import { buildGrantStatementsFor,
+  buildPlatformGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
 
 import { PROJECTS_APPEND_ONLY_TABLES, PROJECTS_TENANT_TABLES } from './schema';
 
@@ -22,4 +23,9 @@ export function buildProjectsRls(): string[] {
 
 export function buildProjectsGrants(): string[] {
   return buildGrantStatementsFor(PROJECTS_RLS);
+}
+
+/** SELECT-only grants for the platform read role. See kernel rls.ts. */
+export function buildProjectsPlatformGrants(): string[] {
+  return buildPlatformGrantStatementsFor(PROJECTS_RLS);
 }

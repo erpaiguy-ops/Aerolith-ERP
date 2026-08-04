@@ -19,7 +19,8 @@
     "db:migrate": "pnpm --filter @aerolith/kernel db:migrate && pnpm --filter \"./packages/modules/*\" db:migrate",
     "db:seed": "pnpm --filter @aerolith/kernel db:seed",
     "verify": "pnpm typecheck && pnpm lint && pnpm boundaries && pnpm test",
-    "db:seed:demo": "pnpm --filter @aerolith/api db:seed:demo"
+    "db:seed:demo": "pnpm --filter @aerolith/api db:seed:demo",
+    "estate": "pnpm --filter @aerolith/kernel estate"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

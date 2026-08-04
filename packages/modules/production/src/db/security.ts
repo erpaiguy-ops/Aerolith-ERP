@@ -5,7 +5,8 @@
  * shape the kernel does — there is one implementation of tenant isolation in the
  * system and no module can accidentally end up weaker than it.
  */
-import { buildGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
+import { buildGrantStatementsFor,
+  buildPlatformGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
 
 import { PRODUCTION_APPEND_ONLY_TABLES, PRODUCTION_TENANT_TABLES } from './schema';
 
@@ -23,4 +24,9 @@ export function buildProductionRls(): string[] {
 
 export function buildProductionGrants(): string[] {
   return buildGrantStatementsFor(PRODUCTION_RLS);
+}
+
+/** SELECT-only grants for the platform read role. See kernel rls.ts. */
+export function buildProductionPlatformGrants(): string[] {
+  return buildPlatformGrantStatementsFor(PRODUCTION_RLS);
 }

@@ -5,7 +5,8 @@
  * competitor seeing a margin would be catastrophic — so it gets exactly the same
  * enforced policy shape as everything else, from the kernel's one implementation.
  */
-import { buildGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
+import { buildGrantStatementsFor,
+  buildPlatformGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
 
 import { ESTIMATION_TENANT_TABLES } from './schema';
 
@@ -21,4 +22,9 @@ export function buildEstimationRls(): string[] {
 
 export function buildEstimationGrants(): string[] {
   return buildGrantStatementsFor(ESTIMATION_RLS);
+}
+
+/** SELECT-only grants for the platform read role. See kernel rls.ts. */
+export function buildEstimationPlatformGrants(): string[] {
+  return buildPlatformGrantStatementsFor(ESTIMATION_RLS);
 }

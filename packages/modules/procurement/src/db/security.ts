@@ -9,7 +9,8 @@
  * different because it moved stock and raised an accrual, and the only honest
  * correction is another event.
  */
-import { buildGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
+import { buildGrantStatementsFor,
+  buildPlatformGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
 
 import { PROCUREMENT_APPEND_ONLY_TABLES, PROCUREMENT_TENANT_TABLES } from './schema';
 
@@ -57,4 +58,9 @@ function buildGoodsReceiptLineLinkGrant(): string[] {
   return [
     `GRANT UPDATE (stock_movement_id, cost_entry_id) ON procurement."goods_receipt_line" TO aerolith_app;`,
   ];
+}
+
+/** SELECT-only grants for the platform read role. See kernel rls.ts. */
+export function buildProcurementPlatformGrants(): string[] {
+  return buildPlatformGrantStatementsFor(PROCUREMENT_RLS);
 }

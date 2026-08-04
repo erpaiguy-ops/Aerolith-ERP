@@ -9,7 +9,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
 
-import { buildProjectsGrants, buildProjectsRls } from '../src/db/security';
+import { buildProjectsGrants, buildProjectsPlatformGrants, buildProjectsRls } from '../src/db/security';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -30,7 +30,13 @@ async function main() {
     });
 
     console.log('→ applying grants and row level security');
-    for (const statement of [...buildProjectsGrants(), ...buildProjectsRls()]) {
+    // Platform grants alongside the app's. The kernel migration creates the
+    // role (NOLOGIN unless configured), and it runs first, so it exists by now.
+    for (const statement of [
+      ...buildProjectsGrants(),
+      ...buildProjectsPlatformGrants(),
+      ...buildProjectsRls(),
+    ]) {
       await db.execute(sql.raw(statement));
     }
 

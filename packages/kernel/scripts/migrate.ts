@@ -13,7 +13,13 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 
-import { APP_ROLE, buildGrantStatements, buildRlsStatements } from '../src/db/rls';
+import {
+  APP_ROLE,
+  PLATFORM_ROLE,
+  buildGrantStatements,
+  buildPlatformGrantStatements,
+  buildRlsStatements,
+} from '../src/db/rls';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -22,6 +28,13 @@ if (!url) {
 }
 
 const appPassword = process.env.APP_DB_PASSWORD ?? 'aerolith_app';
+/**
+ * Optional, unlike the app password. A deployment with no platform-operator
+ * surface should not carry a credential that can read every tenant — so the
+ * role is created only when a password is supplied, and its absence is the
+ * normal case rather than a misconfiguration to warn about.
+ */
+const platformPassword = process.env.PLATFORM_DB_PASSWORD;
 
 async function main() {
   const pool = new pg.Pool({ connectionString: url });
@@ -49,8 +62,42 @@ async function main() {
     `),
     );
 
+    // Created ALWAYS, and without LOGIN unless a password is supplied.
+    //
+    // The role has to exist before the `platform_read` policies below, because
+    // `CREATE POLICY ... TO <role>` on a role Postgres does not know is a hard
+    // error, not a no-op — which would break every deployment that has no
+    // operator surface, i.e. all of them today. A role that cannot log in is
+    // inert: policies may name it, grants may target it, and nobody can
+    // authenticate as it. Enabling the surface later is then only setting
+    // PLATFORM_DB_PASSWORD, with no policy or grant changes at all.
+    console.log(`→ ensuring platform read role "${PLATFORM_ROLE}"`);
+    await db.execute(
+      sql.raw(`
+      do $$
+      begin
+        if not exists (select 1 from pg_roles where rolname = '${PLATFORM_ROLE}') then
+          create role ${PLATFORM_ROLE} nologin;
+        end if;
+      end
+      $$;
+    `),
+    );
+
+    if (platformPassword) {
+      console.log('  granting it login');
+      await db.execute(
+        sql.raw(`alter role ${PLATFORM_ROLE} login password '${platformPassword}';`),
+      );
+    }
+
     console.log('→ applying grants');
     for (const statement of buildGrantStatements()) {
+      await db.execute(sql.raw(statement));
+    }
+
+    console.log('→ applying platform read grants');
+    for (const statement of buildPlatformGrantStatements()) {
       await db.execute(sql.raw(statement));
     }
 

@@ -6,7 +6,8 @@
  * ordinary editing impossible. Immutability after submission is a lifecycle rule
  * enforced in the service, with the audit log as the record.
  */
-import { buildGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
+import { buildGrantStatementsFor,
+  buildPlatformGrantStatementsFor, buildRlsStatementsFor, type RlsOptions } from '@aerolith/kernel';
 
 import { CONTRACTS_TENANT_TABLES } from './schema';
 
@@ -22,4 +23,9 @@ export function buildContractsRls(): string[] {
 
 export function buildContractsGrants(): string[] {
   return buildGrantStatementsFor(CONTRACTS_RLS);
+}
+
+/** SELECT-only grants for the platform read role. See kernel rls.ts. */
+export function buildContractsPlatformGrants(): string[] {
+  return buildPlatformGrantStatementsFor(CONTRACTS_RLS);
 }

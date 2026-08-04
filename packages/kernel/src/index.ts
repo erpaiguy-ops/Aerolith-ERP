@@ -51,10 +51,13 @@ export {
 export {
   APPEND_ONLY_TABLES,
   APP_ROLE,
+  PLATFORM_ROLE,
   TENANT_SCOPED_TABLES,
   type RlsOptions,
   buildGrantStatements,
   buildGrantStatementsFor,
+  buildPlatformGrantStatements,
+  buildPlatformGrantStatementsFor,
   buildRlsStatements,
   buildRlsStatementsFor,
   clearTenantGuard,
@@ -160,6 +163,20 @@ export {
   listNumberSeries,
   updateNumberSeries,
 } from './numbering/admin';
+
+// Platform operations — the vendor's cross-tenant read. See
+// docs/07-platform-operations.md and src/platform/estate.ts.
+export type {
+  EstateModuleRow,
+  EstateSummary,
+  EstateTenantRow,
+} from './platform/estate';
+export {
+  assertPlatformRole,
+  getEstateTenant,
+  listEstate,
+  summariseEstate,
+} from './platform/estate';
 
 // Approvals
 export type {
