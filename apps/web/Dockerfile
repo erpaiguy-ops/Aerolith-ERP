@@ -17,6 +17,13 @@ RUN apk add --no-cache libc6-compat
 COPY --from=pruner /app/out/json/ .
 RUN pnpm install --frozen-lockfile
 COPY --from=pruner /app/out/full/ .
+# `apps/web/tsconfig.json` extends this repo-root file, but `turbo prune`
+# only carries files belonging to the pruned WORKSPACE PACKAGES into
+# `out/full/` — a shared config sitting outside every package directory is
+# not one of them. Without this, `next build` fails immediately with
+# `error TS5083: Cannot read file '/app/tsconfig.base.json'`, a known
+# Turborepo + Docker gotcha rather than anything specific to this app.
+COPY --from=pruner /app/tsconfig.base.json ./tsconfig.base.json
 # Only NEXT_PUBLIC_*-style build-time values belong here — anything a
 # request needs at runtime (the API's own base URL, session secrets) is read
 # from the environment when the server starts, not baked into the image.
