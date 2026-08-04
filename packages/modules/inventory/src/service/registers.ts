@@ -24,7 +24,7 @@ import {
   type ListResult,
   type Transaction,
 } from '@aerolith/kernel';
-import { and, asc, desc, eq, gt, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import {
@@ -227,14 +227,24 @@ export async function getItemDetail(tx: Transaction, itemId: string): Promise<It
 // ---------------------------------------------------------------------------
 
 export interface StockListRow {
+  /**
+   * The stock level's id, or `item:<id>` for an item that has never been
+   * stocked anywhere and therefore has no stock level to be identified by.
+   */
   id: string;
   itemId: string;
   itemCode: string;
   itemName: string;
   uomCode: string | null;
-  warehouseId: string;
-  warehouseCode: string;
-  warehouseName: string;
+  /**
+   * Null for an item that has never been stocked. There is no warehouse to
+   * name because the item has never been anywhere — which is a different fact
+   * from holding zero of it in a named warehouse, and the two must stay
+   * distinguishable on screen.
+   */
+  warehouseId: string | null;
+  warehouseCode: string | null;
+  warehouseName: string | null;
   binCode: string | null;
   batchCode: string | null;
   quantity: string;
@@ -247,6 +257,8 @@ export interface StockListRow {
   /** Null when no reorder rule covers this item and warehouse. */
   minimumQuantity: string | null;
   belowReorder: boolean;
+  /** True when this row is a catalogue entry with no stock level behind it. */
+  neverStocked: boolean;
 }
 
 export const STOCK_SORTS = [
@@ -271,21 +283,61 @@ export async function listStockOnHand(
 ): Promise<ListResult<StockListRow>> {
   const { tenantId } = requireTenantContext();
 
-  const value = sql<string>`(${stockLevel.quantity} * ${stockLevel.averageCost})`;
+  /*
+   * Anchored on `item`, not `stock_level`, with the stock level LEFT joined.
+   *
+   * Anchoring on the stock level meant an item that had never been stocked
+   * anywhere had no row to be found by: adding something to the catalogue and
+   * then looking for it here returned nothing, with no way to tell "I have none
+   * of this" from "I typed the name wrong". An item now always has at least one
+   * row, and several once it is stocked in several places.
+   *
+   * The distinction that anchoring preserved is kept in the data rather than in
+   * the absence of data: `neverStocked` is true only for the synthetic row, and
+   * its warehouse is null because there is genuinely no warehouse to name. A
+   * zero row against a named warehouse still means "stocked here, none now",
+   * which is a different fact and still reads differently on screen.
+   */
+  const stocked = isNotNull(stockLevel.id);
+  const quantity = sql<string>`coalesce(${stockLevel.quantity}, 0)`;
+  const reserved = sql<string>`coalesce(${stockLevel.reservedQuantity}, 0)`;
+  const available = sql<string>`coalesce(${stockLevel.availableQuantity}, 0)`;
+  const averageCost = sql<string>`coalesce(${stockLevel.averageCost}, 0)`;
+  const value = sql<string>`coalesce(${stockLevel.quantity} * ${stockLevel.averageCost}, 0)`;
   const belowReorder = sql<boolean>`(
     ${reorderRule.minimumQuantity} is not null
     and ${reorderRule.isActive}
-    and ${stockLevel.quantity} < ${reorderRule.minimumQuantity}
+    and coalesce(${stockLevel.quantity}, 0) < ${reorderRule.minimumQuantity}
   )`;
 
-  const conditions = [eq(stockLevel.tenantId, tenantId)];
-  if (filters.warehouseId) conditions.push(eq(stockLevel.warehouseId, filters.warehouseId));
-  if (filters.itemId) conditions.push(eq(stockLevel.itemId, filters.itemId));
-  // A zero row is not the same as no row: it says this item HAS been stocked
-  // here and currently is not, which is why zero rows are shown by default and
-  // filtering them is an explicit choice.
-  if (filters.holding === 'in_stock') conditions.push(gt(stockLevel.quantity, '0'));
-  if (filters.holding === 'zero') conditions.push(eq(stockLevel.quantity, '0'));
+  const conditions = [
+    eq(schema.item.tenantId, tenantId),
+    // A deleted item is gone from the catalogue; whatever it once held is the
+    // movement ledger's business, not this register's.
+    isNull(schema.item.deletedAt),
+  ];
+
+  if (filters.itemId) conditions.push(eq(schema.item.id, filters.itemId));
+
+  if (filters.warehouseId) {
+    // Asking "what is in THIS warehouse" excludes the never-stocked rows by
+    // definition — they are in no warehouse, and answering with the whole
+    // catalogue marked "not here" would be noise, not an answer.
+    conditions.push(eq(stockLevel.warehouseId, filters.warehouseId), stocked);
+  }
+
+  // `in_stock` is about holdings, so it drops the synthetic rows along with the
+  // real zeroes. `zero` reads as "none of this on hand", which is true of both
+  // a stocked-then-emptied location and an item never stocked at all — so it
+  // keeps them, and `neverStocked` still tells the two apart in the row.
+  if (filters.holding === 'in_stock') conditions.push(gt(stockLevel.quantity, '0'), stocked);
+  if (filters.holding === 'zero') conditions.push(sql`coalesce(${stockLevel.quantity}, 0) = 0`);
+
+  // An inactive item with stock still has to be visible — the ledger refers to
+  // it and somebody has to shift it — but a discontinued item that was never
+  // stocked is pure clutter, so it does not get a synthetic row.
+  conditions.push(or(stocked, eq(schema.item.isActive, true))!);
+
   // The same predicate the `belowReorder` flag reports, so the filter and the
   // badge can never disagree about which rows are short.
   if (filters.belowReorderOnly) conditions.push(belowReorder);
@@ -303,43 +355,64 @@ export async function listStockOnHand(
 
   const where = and(...conditions);
 
+  // Sorting on the coalesced expressions, not the raw columns: a null quantity
+  // would otherwise sort as null rather than as the zero it is displayed as,
+  // and the never-stocked rows would clump at one end regardless of direction.
   const sortColumn =
     {
       itemCode: schema.item.code,
       warehouseCode: warehouse.code,
-      quantity: stockLevel.quantity,
-      availableQuantity: stockLevel.availableQuantity,
+      quantity,
+      availableQuantity: available,
       value,
       lastMovementAt: stockLevel.lastMovementAt,
     }[params.sort as string] ?? schema.item.code;
 
+  // `stock_level.id` is null on a synthetic row, so it cannot be the tiebreaker
+  // that makes paging deterministic. Item id is present on every row by
+  // construction, and the stock level id separates the several rows one item
+  // can have.
+  // Written out rather than wrapped in `asc()`: that helper appends `asc` after
+  // whatever it is given, so `asc(sql\`… nulls first\`)` emits
+  // `… nulls first asc`, which is a syntax error rather than a sort order.
+  const tiebreak = [asc(schema.item.id), sql`${stockLevel.id} asc nulls first`];
+
+  const selection = {
+    // A React key and a stable handle for a row that has no stock level to be
+    // identified by. Prefixed rather than falling back to the item id alone, so
+    // the two kinds of id can never be confused for one another.
+    id: sql<string>`coalesce(${stockLevel.id}::text, 'item:' || ${schema.item.id}::text)`,
+    itemId: schema.item.id,
+    itemCode: schema.item.code,
+    itemName: schema.item.name,
+    uomCode: schema.unitOfMeasure.code,
+    warehouseId: warehouse.id,
+    warehouseCode: warehouse.code,
+    warehouseName: warehouse.name,
+    binCode: storageBin.code,
+    batchCode: batchTable.code,
+    quantity,
+    reservedQuantity: reserved,
+    availableQuantity: available,
+    averageCost,
+    value,
+    lastMovementAt: sql<string | null>`${stockLevel.lastMovementAt}`,
+    minimumQuantity: reorderRule.minimumQuantity,
+    belowReorder,
+    neverStocked: sql<boolean>`(${stockLevel.id} is null)`,
+  };
+
   const rows = await tx
-    .select({
-      id: stockLevel.id,
-      itemId: stockLevel.itemId,
-      itemCode: schema.item.code,
-      itemName: schema.item.name,
-      uomCode: schema.unitOfMeasure.code,
-      warehouseId: stockLevel.warehouseId,
-      warehouseCode: warehouse.code,
-      warehouseName: warehouse.name,
-      binCode: storageBin.code,
-      batchCode: batchTable.code,
-      quantity: stockLevel.quantity,
-      reservedQuantity: stockLevel.reservedQuantity,
-      availableQuantity: stockLevel.availableQuantity,
-      averageCost: stockLevel.averageCost,
-      value,
-      lastMovementAt: sql<string | null>`${stockLevel.lastMovementAt}`,
-      minimumQuantity: reorderRule.minimumQuantity,
-      belowReorder,
-    })
-    .from(stockLevel)
-    .innerJoin(
-      schema.item,
-      and(eq(schema.item.id, stockLevel.itemId), eq(schema.item.tenantId, tenantId)),
+    .select(selection)
+    .from(schema.item)
+    .leftJoin(
+      stockLevel,
+      and(eq(stockLevel.itemId, schema.item.id), eq(stockLevel.tenantId, tenantId)),
     )
-    .innerJoin(
+    // Left, not inner, and it has to be: an inner join here would discard every
+    // row whose stock level is null and undo the whole point of the left join
+    // above.
+    .leftJoin(
       warehouse,
       and(eq(warehouse.id, stockLevel.warehouseId), eq(warehouse.tenantId, tenantId)),
     )
@@ -355,26 +428,28 @@ export async function listStockOnHand(
     .leftJoin(
       reorderRule,
       and(
-        eq(reorderRule.itemId, stockLevel.itemId),
+        eq(reorderRule.itemId, schema.item.id),
         eq(reorderRule.warehouseId, stockLevel.warehouseId),
         eq(reorderRule.tenantId, tenantId),
       ),
     )
     .where(where)
-    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(stockLevel.id))
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), ...tiebreak)
     .limit(params.pageSize)
     .offset(params.offset);
 
   // The count repeats every join the filter can reference, or it counts a
-  // different set from the one on screen.
+  // different set from the one on screen. `warehouse` is joined here too now:
+  // it is no longer only a display join, because the never-stocked rows depend
+  // on it staying a LEFT join and the row count would differ if it were not.
   const [counted] = await tx
     .select({ total: sql<number>`count(*)::int` })
-    .from(stockLevel)
-    .innerJoin(
-      schema.item,
-      and(eq(schema.item.id, stockLevel.itemId), eq(schema.item.tenantId, tenantId)),
+    .from(schema.item)
+    .leftJoin(
+      stockLevel,
+      and(eq(stockLevel.itemId, schema.item.id), eq(stockLevel.tenantId, tenantId)),
     )
-    .innerJoin(
+    .leftJoin(
       warehouse,
       and(eq(warehouse.id, stockLevel.warehouseId), eq(warehouse.tenantId, tenantId)),
     )
@@ -382,7 +457,7 @@ export async function listStockOnHand(
     .leftJoin(
       reorderRule,
       and(
-        eq(reorderRule.itemId, stockLevel.itemId),
+        eq(reorderRule.itemId, schema.item.id),
         eq(reorderRule.warehouseId, stockLevel.warehouseId),
         eq(reorderRule.tenantId, tenantId),
       ),

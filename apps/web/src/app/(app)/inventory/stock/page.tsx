@@ -20,8 +20,8 @@ interface StockRow {
   itemCode: string;
   itemName: string;
   uomCode: string | null;
-  warehouseCode: string;
-  warehouseName: string;
+  warehouseCode: string | null;
+  warehouseName: string | null;
   binCode: string | null;
   batchCode: string | null;
   quantity: string;
@@ -32,6 +32,7 @@ interface StockRow {
   lastMovementAt: string | null;
   minimumQuantity: string | null;
   belowReorder: boolean;
+  neverStocked: boolean;
 }
 
 const BASE = '/inventory/stock';
@@ -77,9 +78,10 @@ export default async function StockPage({
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1.5">
-          {/* A zero row and a missing row are different facts — one says this
-              item has been stocked here and currently is not — so zero rows show
-              by default and excluding them is a deliberate choice. */}
+          {/* Three states, not two, and the register shows all of them by
+              default: stocked, stocked-here-but-empty, and never stocked at
+              all. "In stock" is the one that narrows to holdings; "Zero" means
+              none on hand, whether or not the item has ever been anywhere. */}
           <FilterChips base={BASE} query={query} param="holding" options={HOLDING} />
           <FilterChips
             base={BASE}
@@ -131,10 +133,21 @@ export default async function StockPage({
                   <span className="text-xs text-(--color-muted)">{row.itemName}</span>
                 </Td>
                 <Td>
-                  <span className="block">{row.warehouseName}</span>
-                  <span className="numeric text-xs text-(--color-muted)">
-                    {[row.warehouseCode, row.binCode].filter(Boolean).join(' · ')}
-                  </span>
+                  {row.neverStocked ? (
+                    // Not "—". A dash reads as a missing value; this row is a
+                    // definite answer — the item is in the catalogue and has
+                    // never been anywhere — and that is worth saying, because
+                    // it is exactly the state somebody who just added an item
+                    // is looking at.
+                    <span className="text-xs text-(--color-muted)">Not stocked anywhere</span>
+                  ) : (
+                    <>
+                      <span className="block">{row.warehouseName}</span>
+                      <span className="numeric text-xs text-(--color-muted)">
+                        {[row.warehouseCode, row.binCode].filter(Boolean).join(' · ')}
+                      </span>
+                    </>
+                  )}
                 </Td>
                 <Td>
                   {row.batchCode ? (

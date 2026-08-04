@@ -976,6 +976,71 @@ suite('Inventory', () => {
       expect(rows.every((r) => Number(r.quantity) > 0)).toBe(true);
     });
 
+    it('lists an item that has never been stocked, rather than omitting it', async () => {
+      // The reported problem: add something to the catalogue, look for it on
+      // the stock screen, find nothing — with no way to tell "I hold none of
+      // this" from "I searched wrong".
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/inventory/items',
+        headers: auth(),
+        payload: { code: 'NEVER-STOCKED-1', name: 'Never stocked anywhere', type: 'panel' },
+      });
+      expect(created.statusCode).toBe(200);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/stock?q=NEVER-STOCKED-1',
+        headers: auth(),
+      });
+      expect(response.statusCode).toBe(200);
+
+      const rows: {
+        itemCode: string;
+        quantity: string;
+        warehouseId: string | null;
+        neverStocked: boolean;
+      }[] = response.json().rows;
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.itemCode).toBe('NEVER-STOCKED-1');
+      // Zero, not null: the screen shows a quantity column and "none" is the
+      // honest answer, not a blank.
+      expect(Number(rows[0]!.quantity)).toBe(0);
+      // And distinguishable from a zero balance in a real warehouse, which is
+      // the distinction anchoring on stock_level used to encode by omission.
+      expect(rows[0]!.neverStocked).toBe(true);
+      expect(rows[0]!.warehouseId).toBeNull();
+    });
+
+    it('leaves the never-stocked row out of a single-warehouse view', async () => {
+      // "What is in this warehouse" must not answer with the whole catalogue
+      // marked "not here".
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/inventory/stock?warehouseId=${factoryId}&q=NEVER-STOCKED-1`,
+        headers: auth(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().rows).toHaveLength(0);
+    });
+
+    it('counts the same set it lists, now that an item can outnumber its stock levels', async () => {
+      // Paging is driven by a separate count query, and the joins there have to
+      // match the ones the row query uses or the pager promises rows that are
+      // not there. Re-anchoring the query from stock_level to item is exactly
+      // the change that can break that agreement.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/inventory/stock?pageSize=100',
+        headers: auth(),
+      });
+
+      const body = response.json();
+      expect(body.total).toBe(body.rows.length);
+    });
+
     it('values the offcut rack by summing piece costs, not by multiplying area', async () => {
       // The trap this pins: the column is called `unitCost` but holds the
       // piece's ABSOLUTE cost. Multiplying by area squares it, and the result
