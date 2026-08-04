@@ -2100,6 +2100,14 @@ Customer/supplier portal · integration hub and public API · advanced BI · mob
 polish · tenant billing and self-serve onboarding · localisation packs for the
 second country.
 
+"Tenant billing and self-serve onboarding" is planned in **[07 — Platform
+operations](07-platform-operations.md)**: the vendor's own view of the estate,
+and the customer lifecycle it implies. Worth reading before it is scheduled,
+for one finding that is easy to miss — nothing in the codebase creates a
+tenant, so onboarding a customer today means hand-written SQL. That is a
+present-tense gap, not a Phase 5 one; the reporting most people ask for first
+is the smaller half of it.
+
 ## Notes, risks and things to decide early
 
 **Get the data model right before the features.** Item, party, project, cost code,
