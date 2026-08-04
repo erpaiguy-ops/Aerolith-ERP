@@ -49,7 +49,18 @@ USER aerolith
 
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
+# Not 0.0.0.0. Next's standalone server, when self-hosted (not on Vercel),
+# makes an internal loopback request to fetch a redirected route's RSC
+# payload after a Server Action calls `redirect()` — sign-in is exactly
+# this case. That request targets the literal hostname `localhost`, which
+# Node 17+ resolves to `::1` (IPv6) first. A server bound only to the IPv4
+# wildcard `0.0.0.0` has nothing listening on `::1`, so that internal
+# request fails with ECONNREFUSED — surfacing to the user as sign-in itself
+# failing, even though the real login already succeeded by that point.
+# `::` is the IPv6 wildcard, and on Linux a socket bound to it accepts IPv4
+# connections too (dual-stack is the default; Node does not set the
+# IPv6-only socket option), so external traffic over IPv4 is unaffected.
+ENV HOSTNAME=::
 EXPOSE 3000
 
 CMD ["node", "apps/web/server.js"]
