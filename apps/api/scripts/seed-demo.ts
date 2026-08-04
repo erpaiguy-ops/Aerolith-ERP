@@ -120,9 +120,19 @@ async function main() {
   // leaving stale rows for the next run to collide with on their primary
   // keys. `withTenantId` makes the guard match every predicate here,
   // including `tenant`'s own self-keyed policy (`id = app.tenant_id`).
+  //
+  // `auditLog` and `approvalAction` are deliberately absent from this list.
+  // Both are append-only (packages/kernel/src/db/rls.ts's APPEND_ONLY_TABLES):
+  // `aerolith_app` has UPDATE and DELETE explicitly REVOKEd on them at the
+  // database level, by design — "immutable audit trail" is meant to survive
+  // even a demo tenant reset, not just a permission an admin could route
+  // around. `approvalAction.instanceId` carries a real `ON DELETE CASCADE` FK
+  // to `approvalInstance`, deleted below, so it cleans itself up regardless.
+  // `auditLog` carries no FK into it from anything, so leaving its rows
+  // behind (pointing at entity ids this reseed is about to recycle) breaks
+  // nothing — there is no constraint anywhere that requires them gone first.
   await withTenantId(TENANT, async (tx) => {
     for (const table of [
-      schema.auditLog,
       schema.eventOutbox,
       schema.numberAllocation,
 
@@ -150,9 +160,12 @@ async function main() {
       // `stockMovement`; bins and batches go before the warehouse that owns them.
       // Production: parts, operations and scans hang off the work order; a
       // finishing batch points at parts, and a cutting plan at the order.
+      // `productionScan` is not listed: it is append-only (PRODUCTION_APPEND_ONLY_TABLES),
+      // so `aerolith_app` has DELETE revoked on it outright, same as `auditLog`
+      // above — but every FK into it (`workOrderId`, `operationId`) cascades, so
+      // deleting `workOrder` below removes it automatically.
       productionSchema.finishingBatchPart,
       productionSchema.finishingBatch,
-      productionSchema.productionScan,
       productionSchema.cuttingPlan,
       productionSchema.workOrderOperation,
       productionSchema.workOrderPart,
@@ -186,7 +199,17 @@ async function main() {
       procurementSchema.matchException,
       procurementSchema.supplierInvoiceLine,
       procurementSchema.supplierInvoice,
-      procurementSchema.goodsReceiptLine,
+      // `goodsReceiptLine` is not listed: append-only (PROCUREMENT_APPEND_ONLY_TABLES),
+      // DELETE revoked from `aerolith_app` outright. Unlike `productionScan`
+      // above, its FK to `goodsReceipt` is `onDelete: 'restrict'`, not cascade —
+      // so once this tenant has actually received goods, no role this script can
+      // use is able to delete `goodsReceipt` either: `aerolith_app` still holds
+      // the DELETE grant on `goodsReceipt` itself, but the restrict blocks it
+      // while un-deletable `goodsReceiptLine` rows still reference it, and the
+      // delete below will throw a real foreign-key violation rather than the
+      // silent zero-row no-op the tables above get. A first run against a fresh
+      // tenant (nothing received yet) never reaches this — flagged here as a
+      // real limitation on any LATER reseed, not something this pass fixes.
       procurementSchema.goodsReceipt,
       procurementSchema.purchaseOrderLine,
       procurementSchema.purchaseOrder,
@@ -200,7 +223,11 @@ async function main() {
       procurementSchema.requisitionLine,
       procurementSchema.requisition,
 
-      projectsSchema.costEntry,
+      // `costEntry` is not listed: append-only (PROJECTS_APPEND_ONLY_TABLES),
+      // DELETE revoked from `aerolith_app`. Its own FKs are nullable/set-null
+      // (`wbsNodeId`) or not real FKs at all (`projectId` is a plain uuid, same
+      // reasoning as the kernel-vs-module note above), and nothing references it,
+      // so leftover rows here are inert — no cascade needed, nothing blocked.
       projectsSchema.commitment,
       projectsSchema.progressEntry,
       projectsSchema.budgetLine,
@@ -210,12 +237,14 @@ async function main() {
       projectsSchema.wbsNode,
       projectsSchema.projectDetail,
 
-      // Approvals. Actions and tasks hang off the instance, the instance off a
-      // pinned workflow version, and the version off the workflow. Missing from
-      // this list until now, which meant a second run of the seed died on
+      // Approvals. Tasks hang off the instance, the instance off a pinned
+      // workflow version, and the version off the workflow. Missing from this
+      // list until now, which meant a second run of the seed died on
       // `approval_workflow_uq` — the same "idempotent by accident of always
       // running against a fresh database" failure the note above describes.
-      schema.approvalAction,
+      // `approvalAction` is not listed: it is append-only (see the note above
+      // this loop) and cleans itself up via its own `ON DELETE CASCADE` FK to
+      // `approvalInstance`, deleted below.
       schema.approvalTask,
       schema.approvalInstance,
       schema.approvalWorkflowVersion,
