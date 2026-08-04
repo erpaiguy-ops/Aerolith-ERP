@@ -18,7 +18,28 @@ import { and, asc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { authenticate, requirePermission, withPrincipal } from '../context';
+import {
+  authenticate,
+  requireAnyPermission,
+  requirePermission,
+  withPrincipal,
+} from '../context';
+
+/**
+ * Reading the country pack is an administrative act, not a formatting one.
+ *
+ * Worth stating because it looks like the opposite: nothing here is needed to
+ * render a date or a currency. Locale, timezone and currency reach the browser
+ * on `/me`, so an ordinary user never calls these endpoints at all — the only
+ * callers are the two Settings screens. That is why gating them does not
+ * break anyone, and why `kernel.localisation.read` was declared in the first
+ * place. It simply was never enforced.
+ *
+ * `…manage` passes too: it is the strictly stronger half of the pair, and the
+ * Settings nav is gated on it, so requiring only `…read` here would hand a
+ * workspace admin a menu entry leading to a 403.
+ */
+const READ_LOCALISATION = ['kernel.localisation.read', 'kernel.localisation.manage'];
 
 const adoptBody = z.object({
   countryCode: z.string().length(2),
@@ -46,6 +67,7 @@ export async function localisationRoutes(app: FastifyInstance) {
   /** Countries available to adopt. Not tenant-scoped — this is the global master. */
   app.get('/localisation/countries', async (request) => {
     const principal = await authenticate(request);
+    requireAnyPermission(principal, READ_LOCALISATION);
 
     return withPrincipal(principal, () =>
       withTenant(async (tx) => {
@@ -70,6 +92,7 @@ export async function localisationRoutes(app: FastifyInstance) {
   /** Everything the UI needs to render a country's forms: address shape, divisions. */
   app.get<{ Params: { code: string } }>('/localisation/countries/:code', async (request, reply) => {
     const principal = await authenticate(request);
+    requireAnyPermission(principal, READ_LOCALISATION);
 
     return withPrincipal(principal, () =>
       withTenant(async (tx) => {
@@ -123,6 +146,7 @@ export async function localisationRoutes(app: FastifyInstance) {
     '/localisation/requirements',
     async (request) => {
       const principal = await authenticate(request);
+      requireAnyPermission(principal, READ_LOCALISATION);
 
       return withPrincipal(principal, () =>
         withTenant(async (tx) => {
@@ -149,6 +173,7 @@ export async function localisationRoutes(app: FastifyInstance) {
   /** The tenant's tax codes, ready for an invoice line to reference. */
   app.get('/localisation/tax-codes', async (request) => {
     const principal = await authenticate(request);
+    requireAnyPermission(principal, READ_LOCALISATION);
 
     return withPrincipal(principal, () =>
       withTenant(async (tx) => {
@@ -177,6 +202,8 @@ export async function localisationRoutes(app: FastifyInstance) {
     '/localisation/rules',
     async (request, reply) => {
       const principal = await authenticate(request);
+      requireAnyPermission(principal, READ_LOCALISATION);
+
       const countryCode = principal.context.countryCode;
       if (!countryCode) {
         return reply.code(409).send({ error: 'This tenant has not adopted a country yet.' });

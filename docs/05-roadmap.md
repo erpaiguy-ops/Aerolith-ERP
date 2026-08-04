@@ -1986,6 +1986,103 @@ days past its due date with the overdue banner correctly showing, and a
 method statement submitted from draft straight through the browser, its
 revision history updating to show it awaiting review.
 
+### The kernel's own admin surface — the last permissions gating nothing
+
+With phase 2 closed, the same audit that had been run over each module was run
+over everything at once: every permission any manifest declares, against every
+`requirePermission` call in every route, against every nav path's `page.tsx`.
+The six business modules came back clean. The kernel did not — four of its own
+permissions were declared and enforced nowhere, which is the same defect this
+log has recorded a dozen times, in the one place nobody had looked because it
+is not a module.
+
+**Modules can now be enabled and disabled** (`kernel.module.manage`).
+Entitlements were rows a SQL script inserted; `/modules/catalogue` could list
+what the deployment ships and `/me` what the tenant has, with no way to move a
+module from one list to the other.
+
+Two things fell out of building it, both latent for months:
+
+- **`provisionSeries` had never been called by anything.** Every manifest
+  declares `numberSeries`, and this function was written to consume that
+  declaration — its own comment says "called when a tenant enables the module".
+  Nothing enabled a module, so nothing called it, so every series in existence
+  was created by hand in `seed-demo.ts` and in each integration test's
+  `beforeAll`. That is the platform gap recorded three times in the entries
+  above as "declaring a series in the manifest does not provision it". Enabling
+  a module now provisions its series, idempotently, and the test asserts the
+  Production series appears for a tenant that had only Inventory.
+- **`modulesForTenant` ignored `status` entirely.** It selected every
+  `tenant_module` row regardless, so a row marked `disabled` still granted
+  access and an `expired` entitlement never expired. Harmless while the only
+  way to get a row was a script that always wrote `enabled`; not harmless the
+  moment a screen can disable one, which would have appeared to work and
+  changed nothing. Now filtered on status and on `expiresOn`.
+
+Disabling refuses while another enabled module depends on it, **naming** the
+dependents rather than counting them — `resolveForTenant` would otherwise
+silently skip a module whose dependency vanished, and an admin turning off
+Inventory would find Procurement gone with nothing having said so. The row is
+kept and marked disabled rather than deleted: a tenant who stops paying for
+Production still has last year's work orders, and re-enabling should give them
+back rather than present an empty module.
+
+**Approval workflows can now be created and versioned**
+(`kernel.approval_workflow.manage`). The engine could route an approval,
+resolve approvers, hold a quorum, and pin a running instance to the version it
+started under — and nothing could create the workflow it routes by, so every
+workflow came from a seed script.
+
+Editing publishes a **new version** and leaves the old one exactly as it was.
+That is the whole reason `approval_workflow_version` exists: `approval_instance`
+holds a foreign key to the precise version it started under, so a service that
+edited a definition in place would silently rewrite the rules a half-finished
+approval is being judged by. The in-flight count is shown next to the publish
+button, because that is where somebody needs to be told it is safe.
+
+Validation is all of one class — steps that can never be satisfied.
+`resolveApprovers` returns an empty list for a `role` or `user` step with no
+`approverRef`, and an approval that reaches a step with no approvers waits
+forever with nothing to tell the requester. Refused at publish time, where
+there is somebody to tell. Same for a `count` quorum with no count, and for an
+entity type no module declares approvable — a workflow that can never run is
+worse than no workflow, because it looks configured.
+
+**Document numbering is now editable** (`kernel.number_series.manage`). The one
+rule worth the module: **the counter cannot be rewound onto a number already
+issued.** `number_allocation` is uniquely keyed on `(seriesId, period, value)`,
+so a rewind does not fail at the edit — it fails on the *next* document
+somebody creates, as a unique-constraint error thrown from inside
+`allocateNumber`, at a keystroke unrelated to the change that caused it.
+Refusing it costs one query and turns an incident into a sentence. Only the
+current period is checked, because a yearly series may reissue 1 next January
+without colliding with last January's. Gapless may be switched on and never
+off, the same "widen, never narrow" rule `provisionSeries` already applies when
+it defaults tax documents to gapless. `code` and `entityType` are shown but not
+editable: they are the identity `allocateNumber` looks a series up by, and
+renaming one would detach the series from the documents that ask for it.
+
+**`kernel.localisation.read` is now enforced.** It was declared from the start
+and checked nowhere, leaving every country-pack read open to any authenticated
+principal. Worth stating why gating it breaks nobody: locale, timezone and
+currency reach the browser on `/me`, so nothing needs these endpoints to render
+a date or a number — the only callers are the two Settings screens. `…manage`
+satisfies the check too, via a new `requireAnyPermission`, because the Settings
+nav is gated on the manage half and requiring only the read half would hand a
+workspace admin a menu entry leading to a 403.
+
+One kernel type changed: `WorkflowCondition.value` was required, although
+`exists` takes no operand and `evaluateCondition` already handled its absence
+in every branch. Made optional, which documents behaviour that was already
+there rather than introducing any.
+
+Thirty new integration tests across the four slices, and the suite was run
+twice to prove the new cleanup keeps it re-runnable. Verified live in a
+browser against the seeded demo: all three new Settings screens render, the
+rewind guard refuses `nextValue: 1` on a series that has issued 1 with the
+real message, a workflow step approved "by role" naming no role is refused
+with the real message, and the same step with a role named creates.
+
 ## Phase 3 — Commercial completion (months 14-20)
 
 **Accounts/GL** (start the ledger design early even if it ships here — everything

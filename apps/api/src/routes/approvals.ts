@@ -10,13 +10,73 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { authenticate, withPrincipal } from '../context';
+import { authenticate, requirePermission, withPrincipal } from '../context';
+import {
+  WorkflowError,
+  approvableEntityTypes,
+  createWorkflow,
+  listWorkflows,
+  publishWorkflowVersion,
+  updateWorkflow,
+} from '../workflows';
 
 const decideBody = z.object({
   decision: z.enum(['approved', 'rejected']),
   comment: z.string().max(4000).optional(),
   documentIds: z.array(z.string().uuid()).optional(),
 });
+
+const APPROVER_TYPES = [
+  'role',
+  'user',
+  'manager_of_requester',
+  'department_head',
+  'project_manager',
+  'legal_entity_owner',
+  'cost_centre_owner',
+  'dynamic',
+] as const;
+
+const stepSchema = z.object({
+  sequence: z.number().int().min(1),
+  name: z.string().min(1),
+  approverType: z.enum(APPROVER_TYPES),
+  approverRef: z.string().optional(),
+  quorum: z.enum(['all', 'any', 'majority', 'count']).optional(),
+  quorumCount: z.number().int().min(1).optional(),
+  slaHours: z.number().int().min(1).optional(),
+  skipIfRequester: z.boolean().optional(),
+  requireComment: z.boolean().optional(),
+  conditions: z
+    .array(
+      z.object({
+        field: z.string().min(1),
+        operator: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'contains', 'exists']),
+        value: z.unknown(),
+      }),
+    )
+    .optional(),
+});
+
+const workflowBody = z.object({
+  entityType: z.string().min(1),
+  code: z.string().min(2).max(64),
+  name: z.string().min(1),
+  description: z.string().nullish(),
+  priority: z.number().int().optional(),
+  fallbackBehaviour: z.enum(['block', 'auto_approve']).optional(),
+  steps: z.array(stepSchema).min(1),
+});
+
+const workflowPatch = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().nullish(),
+  priority: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+  fallbackBehaviour: z.enum(['block', 'auto_approve']).optional(),
+});
+
+const publishBody = z.object({ steps: z.array(stepSchema).min(1) });
 
 export async function approvalRoutes(app: FastifyInstance) {
   /** What is waiting on me. */
@@ -276,6 +336,90 @@ export async function approvalRoutes(app: FastifyInstance) {
         return { recalled: true };
       } catch (error) {
         return reply.code(409).send({ error: (error as Error).message });
+      }
+    },
+  );
+
+  // --- Workflow definitions --------------------------------------------------
+  //
+  // The engine could route, resolve, hold a quorum and pin a running instance
+  // to its version; nothing could create the workflow it routes by.
+
+  app.get('/approvals/workflows', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.approval_workflow.manage');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => ({
+        workflows: await listWorkflows(tx),
+        // Sent with the list so the create form can offer only entity types
+        // something actually submits for approval.
+        approvableEntityTypes: approvableEntityTypes(),
+      })),
+    );
+  });
+
+  app.post('/approvals/workflows', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.approval_workflow.manage');
+
+    const parsed = workflowBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createWorkflow(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof WorkflowError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/approvals/workflows/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.approval_workflow.manage');
+
+    const parsed = workflowPatch.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateWorkflow(tx, { workflowId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof WorkflowError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  /** Publishes a new version. The previous one is left exactly as it was. */
+  app.post<{ Params: { id: string } }>(
+    '/approvals/workflows/:id/versions',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      requirePermission(principal, 'kernel.approval_workflow.manage');
+
+      const parsed = publishBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            publishWorkflowVersion(tx, { workflowId: request.params.id, steps: parsed.data.steps }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof WorkflowError) return reply.code(409).send({ error: error.message });
+        throw error;
       }
     },
   );

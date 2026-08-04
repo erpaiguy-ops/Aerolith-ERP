@@ -5,12 +5,79 @@
  * a single-module product to one tenant and the full ERP to another, based on
  * entitlement rows.
  */
+import { withTenant } from '@aerolith/kernel';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 
-import { authenticate } from '../context';
+import { authenticate, requirePermission, withPrincipal } from '../context';
 import { modulesForTenant, navigationFor, registry } from '../bootstrap';
+import { EntitlementError, disableModule, enableModule, listModuleEntitlements } from '../entitlements';
+
+const entitlementBody = z.object({ moduleKey: z.string().min(1).max(64) });
 
 export async function moduleRoutes(app: FastifyInstance) {
+  /** The catalogue annotated with what this tenant actually has. */
+  app.get('/admin/modules', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.module.manage');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => ({
+        modules: await listModuleEntitlements(tx, principal.context.tenantId),
+      })),
+    );
+  });
+
+  app.post('/admin/modules/enable', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.module.manage');
+
+    const parsed = entitlementBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          enableModule(tx, {
+            tenantId: principal.context.tenantId,
+            moduleKey: parsed.data.moduleKey,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof EntitlementError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.post('/admin/modules/disable', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.module.manage');
+
+    const parsed = entitlementBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          disableModule(tx, {
+            tenantId: principal.context.tenantId,
+            moduleKey: parsed.data.moduleKey,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof EntitlementError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { disabled: true };
+  });
+
   /** Everything this deployment could serve — the module catalogue. */
   app.get('/modules/catalogue', async () => ({
     modules: registry.all().map((module) => ({
@@ -193,6 +260,43 @@ export async function moduleRoutes(app: FastifyInstance) {
                     label: 'Cost Codes',
                     path: '/settings/cost-codes',
                     order: 70,
+                  },
+                ]
+              : []),
+            // Its own permission, and a dangerous one: changing a gapless
+            // series is audit-relevant in a way editing a cost code is not.
+            ...(may('kernel.number_series.manage')
+              ? [
+                  {
+                    key: 'kernel.settings.number_series',
+                    label: 'Numbering',
+                    path: '/settings/number-series',
+                    order: 80,
+                  },
+                ]
+              : []),
+            // Deciding who signs off what is its own authority, and a
+            // dangerous one — it is the permission that can route a million
+            // dirham variation past everybody.
+            ...(may('kernel.approval_workflow.manage')
+              ? [
+                  {
+                    key: 'kernel.settings.workflows',
+                    label: 'Approval Workflows',
+                    path: '/settings/workflows',
+                    order: 85,
+                  },
+                ]
+              : []),
+            // Last in Settings, because it is the entry that changes what every
+            // other entry in the sidebar is.
+            ...(may('kernel.module.manage')
+              ? [
+                  {
+                    key: 'kernel.settings.modules',
+                    label: 'Modules',
+                    path: '/settings/modules',
+                    order: 90,
                   },
                 ]
               : []),

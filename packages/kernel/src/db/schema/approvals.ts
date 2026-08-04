@@ -118,7 +118,14 @@ export const approvalWorkflowVersion = kernel.table(
 export type WorkflowCondition = {
   field: string;
   operator: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'contains' | 'exists';
-  value: unknown;
+  /**
+   * Optional because `exists` takes no operand — "has a project been set" is a
+   * complete condition on its own. `evaluateCondition` already treats a missing
+   * value as well-defined in every branch (comparisons fail closed, `in`/`nin`
+   * guard on `Array.isArray`), so this documents behaviour that was already
+   * there rather than introducing it.
+   */
+  value?: unknown;
 };
 
 export type WorkflowStepDefinition = {

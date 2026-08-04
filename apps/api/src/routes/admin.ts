@@ -12,18 +12,21 @@
 import {
   AUDIT_LOG_SORTS,
   MemberError,
+  NumberSeriesError,
   addMember,
   createRole,
   listAuditActions,
   listAuditEntityTypes,
   listAuditEvents,
   listMembers,
+  listNumberSeries,
   listRoles,
   parseListParams,
   schema,
   setMemberRoles,
   setMemberStatus,
   setRolePermissions,
+  updateNumberSeries,
   withTenant,
 } from '@aerolith/kernel';
 import { asc } from 'drizzle-orm';
@@ -69,6 +72,27 @@ const roleBody = z.object({
 
 const rolePatch = z.object({
   permissionKeys: z.array(z.string()),
+});
+
+/**
+ * `code` and `entityType` are deliberately absent.
+ *
+ * They are the identity a module's manifest declares and `allocateNumber`
+ * looks a series up by — renaming either from a settings screen would silently
+ * detach the series from the documents that ask for it, and the next purchase
+ * order would fail to find a series at all. Everything editable here changes
+ * how a number LOOKS, not which series answers for what.
+ */
+const numberSeriesBody = z.object({
+  name: z.string().min(1).optional(),
+  pattern: z.string().min(1).optional(),
+  prefix: z.string().max(16).nullish(),
+  suffix: z.string().max(16).nullish(),
+  padding: z.number().int().min(1).max(12).optional(),
+  increment: z.number().int().min(1).optional(),
+  nextValue: z.number().int().min(1).optional(),
+  isGapless: z.boolean().optional(),
+  isActive: z.boolean().optional(),
 });
 
 /** A `MemberError` is a user error, not a fault: 409 with its own sentence. */
@@ -282,5 +306,39 @@ export async function adminRoutes(app: FastifyInstance) {
         actions: await listAuditActions(tx),
       })),
     );
+  });
+
+  // --- Number series ---------------------------------------------------------
+
+  app.get('/admin/number-series', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.number_series.manage');
+
+    return withPrincipal(principal, () =>
+      withTenant(async (tx) => ({ series: await listNumberSeries(tx) })),
+    );
+  });
+
+  app.patch<{ Params: { id: string } }>('/admin/number-series/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.number_series.manage');
+
+    const parsed = numberSeriesBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateNumberSeries(tx, { seriesId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      // 409, not 400: rewinding a counter or un-gapling a series is a
+      // well-formed request that conflicts with numbers already issued.
+      if (error instanceof NumberSeriesError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+
+    return { updated: true };
   });
 }

@@ -172,6 +172,27 @@ export function requirePermission(principal: Principal, permission: string): voi
   }
 }
 
+/**
+ * Passes if the principal holds ANY of `permissions`.
+ *
+ * Exists for read/manage pairs, where the manage half is strictly stronger and
+ * a holder of it obviously may read. Without this, granting somebody
+ * `kernel.localisation.manage` alone would let them edit a rule through a
+ * screen they cannot load — the UI and the API disagreeing about the same
+ * authority, which is the failure this codebase has fixed twice already.
+ *
+ * The FIRST key is what a refusal reports, so pass the one that names the
+ * authority actually being asked for: a user refused here is missing the read,
+ * and telling them they lack `…manage` would send them after the wrong grant.
+ */
+export function requireAnyPermission(principal: Principal, permissions: string[]): void {
+  if (principal.isOwner) return;
+  const held = principal.context.permissions;
+  if (!permissions.some((permission) => held?.has(permission))) {
+    throw new ForbiddenError(permissions[0]!);
+  }
+}
+
 /** `permission` is a global catalogue, so this needs no tenant guard. */
 async function allPermissionKeys(): Promise<ReadonlySet<string>> {
   const all = await withoutTenantGuard(async (tx) =>

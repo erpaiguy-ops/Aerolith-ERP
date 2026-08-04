@@ -95,6 +95,15 @@ suite('API', () => {
     await db.delete(schema.party).where(inArray(schema.party.tenantId, tenants));
     await db.delete(schema.costCode).where(inArray(schema.costCode.tenantId, tenants));
     await db.delete(schema.costCentre).where(inArray(schema.costCentre.tenantId, tenants));
+    await db
+      .delete(schema.numberAllocation)
+      .where(inArray(schema.numberAllocation.tenantId, tenants));
+    await db.delete(schema.numberSeries).where(inArray(schema.numberSeries.tenantId, tenants));
+    // Versions cascade from the workflow, but the workflow itself has a unique
+    // code per tenant — leaving it behind makes a second run collide.
+    await db
+      .delete(schema.approvalWorkflow)
+      .where(inArray(schema.approvalWorkflow.tenantId, tenants));
     await db.delete(schema.tenantRequirement).where(inArray(schema.tenantRequirement.tenantId, tenants));
     await db.delete(schema.tenantTaxCode).where(inArray(schema.tenantTaxCode.tenantId, tenants));
     await db.delete(schema.tenantHoliday).where(inArray(schema.tenantHoliday.tenantId, tenants));
@@ -310,6 +319,150 @@ suite('API', () => {
         .delete(schema.tenantModule)
         .where(eq(schema.tenantModule.moduleKey, 'not_a_shipped_module'));
       invalidateTenantModules(TENANT_FULL);
+    });
+  });
+
+  describe('module entitlements', () => {
+    /*
+     * `kernel.module.manage` was declared from the start and gated nothing:
+     * entitlements were rows a SQL script inserted, and nothing could move a
+     * module from the catalogue into a tenant's world.
+     *
+     * TENANT_SOLO is the subject throughout — it starts with Inventory alone,
+     * which is what makes it the tenant whose entitlements can be changed
+     * without disturbing the rest of the suite.
+     */
+    const solo = () => auth(OWNER_TOKEN, TENANT_SOLO);
+
+    it('refuses a principal without kernel.module.manage', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/modules',
+        headers: auth(STAFF_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('lists the catalogue annotated with what the tenant has', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/modules',
+        headers: solo(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const modules: { key: string; status: string | null }[] = response.json().modules;
+      expect(modules.find((m) => m.key === 'inventory')?.status).toBe('enabled');
+      // Present in the catalogue, owned by nobody — one list, not two.
+      expect(modules.find((m) => m.key === 'production')?.status).toBeNull();
+    });
+
+    it('enables a module and provisions the number series its manifest declares', async () => {
+      // The gap this closes: `provisionSeries` was written to consume each
+      // manifest's `numberSeries` and had no caller anywhere, so series were
+      // only ever created by hand in the seed and in test setup.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/modules/enable',
+        headers: solo(),
+        payload: { moduleKey: 'production' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().enabled).toContain('production');
+      expect(response.json().seriesCreated).toBeGreaterThan(0);
+
+      const db = getDatabase();
+      const series = await db
+        .select({ code: schema.numberSeries.code })
+        .from(schema.numberSeries)
+        .where(eq(schema.numberSeries.tenantId, TENANT_SOLO));
+      expect(series.map((s) => s.code)).toContain('WO');
+    });
+
+    it('shows the newly enabled module in that tenant navigation', async () => {
+      const response = await app.inject({ method: 'GET', url: '/api/v1/me', headers: solo() });
+      expect(response.json().modules.map((m: { key: string }) => m.key)).toContain('production');
+    });
+
+    it('is idempotent — re-enabling neither duplicates a series nor resets a counter', async () => {
+      const db = getDatabase();
+      const before = await db
+        .select({ code: schema.numberSeries.code })
+        .from(schema.numberSeries)
+        .where(eq(schema.numberSeries.tenantId, TENANT_SOLO));
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/modules/enable',
+        headers: solo(),
+        payload: { moduleKey: 'production' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().seriesCreated).toBe(0);
+
+      const after = await db
+        .select({ code: schema.numberSeries.code })
+        .from(schema.numberSeries)
+        .where(eq(schema.numberSeries.tenantId, TENANT_SOLO));
+      expect(after).toHaveLength(before.length);
+    });
+
+    it('refuses a module this deployment does not ship', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/modules/enable',
+        headers: solo(),
+        payload: { moduleKey: 'payroll' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('not a module this deployment ships');
+    });
+
+    it('disables a module, and the tenant stops seeing it', async () => {
+      // The second latent bug this closes: `modulesForTenant` selected every
+      // `tenant_module` row regardless of status, so marking one disabled
+      // changed nothing and this assertion would have failed.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/modules/disable',
+        headers: solo(),
+        payload: { moduleKey: 'production' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me', headers: solo() });
+      expect(me.json().modules.map((m: { key: string }) => m.key)).not.toContain('production');
+    });
+
+    it('keeps the row so re-enabling restores rather than recreates', async () => {
+      const db = getDatabase();
+      const [row] = await db
+        .select({ status: schema.tenantModule.status })
+        .from(schema.tenantModule)
+        .where(
+          and(
+            eq(schema.tenantModule.tenantId, TENANT_SOLO),
+            eq(schema.tenantModule.moduleKey, 'production'),
+          ),
+        );
+
+      // Disabled, not deleted: a tenant who stops paying for Production still
+      // has last year's work orders.
+      expect(row?.status).toBe('disabled');
+    });
+
+    it('refuses to disable a module the tenant does not have', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/admin/modules/disable',
+        headers: solo(),
+        payload: { moduleKey: 'estimation' },
+      });
+
+      expect(response.statusCode).toBe(409);
     });
   });
 
@@ -582,6 +735,24 @@ suite('API', () => {
       expect(response.statusCode).toBe(403);
     });
 
+    // `kernel.localisation.read` was declared from the start and enforced
+    // nowhere: every read below was open to any authenticated principal. These
+    // reads are administrative — locale, timezone and currency reach the
+    // browser on `/me`, so gating them costs an ordinary user nothing.
+    it.each([
+      ['/api/v1/localisation/countries'],
+      ['/api/v1/localisation/countries/AE'],
+      ['/api/v1/localisation/requirements'],
+      ['/api/v1/localisation/tax-codes'],
+      ['/api/v1/localisation/rules'],
+    ])('refuses %s to a principal holding neither localisation permission', async (url) => {
+      const response = await app.inject({ method: 'GET', url, headers: auth(STAFF_TOKEN) });
+      expect(response.statusCode).toBe(403);
+      // Named for the grant actually missing. Reporting the manage half would
+      // send them after the wrong permission.
+      expect(response.json().error).toContain('kernel.localisation.read');
+    });
+
     it('adopts a country and pre-fills the tenant requirement set', async () => {
       const response = await app.inject({
         method: 'POST',
@@ -844,6 +1015,212 @@ suite('API', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('approval workflow definitions', () => {
+    /*
+     * `kernel.approval_workflow.manage` was declared from the start and gated
+     * nothing: the engine could route an approval, resolve approvers, hold a
+     * quorum and pin a running instance to its version — and nothing could
+     * create the workflow it routes by.
+     */
+    let workflowId: string;
+
+    it('refuses a principal without kernel.approval_workflow.manage', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(STAFF_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('offers only entity types a module says can be approved', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const types: string[] = response.json().approvableEntityTypes;
+      expect(types).toContain('procurement.purchase_order');
+      expect(types).toContain('contracts.variation');
+    });
+
+    it('creates a workflow at version 1', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          entityType: 'procurement.purchase_order',
+          code: 'PO-STANDARD',
+          name: 'Purchase orders over 10,000',
+          steps: [
+            {
+              sequence: 1,
+              name: 'Commercial manager',
+              approverType: 'role',
+              approverRef: 'commercial-manager',
+              conditions: [{ field: 'totalAmount', operator: 'gte', value: 10000 }],
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().version).toBe(1);
+      workflowId = response.json().workflowId;
+    });
+
+    it('refuses an entity type nothing submits for approval', async () => {
+      // A workflow that can never run is worse than no workflow: it looks
+      // configured.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          entityType: 'procurement.stapler',
+          code: 'NOPE',
+          name: 'Never runs',
+          steps: [{ sequence: 1, name: 'Someone', approverType: 'role', approverRef: 'x' }],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('Nothing submits');
+    });
+
+    it('refuses a role step that names no role', async () => {
+      // `resolveApprovers` returns nobody for this, so the approval would
+      // reach the step and wait forever with nothing to say why.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          entityType: 'contracts.variation',
+          code: 'BROKEN',
+          name: 'Resolves to nobody',
+          steps: [{ sequence: 1, name: 'Whoever', approverType: 'role' }],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('resolve to nobody');
+    });
+
+    it('refuses a count quorum with no count', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          entityType: 'contracts.variation',
+          code: 'NOCOUNT',
+          name: 'Quorum without a number',
+          steps: [
+            {
+              sequence: 1,
+              name: 'Board',
+              approverType: 'role',
+              approverRef: 'director',
+              quorum: 'count',
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('refuses a duplicate code', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          entityType: 'procurement.purchase_order',
+          code: 'PO-STANDARD',
+          name: 'Clash',
+          steps: [{ sequence: 1, name: 'X', approverType: 'role', approverRef: 'y' }],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+    });
+
+    it('publishes a new version instead of editing the old one', async () => {
+      // The guarantee the version table exists for: a running approval keeps
+      // being judged by the rules it started under.
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/approvals/workflows/${workflowId}/versions`,
+        headers: auth(OWNER_TOKEN),
+        payload: {
+          steps: [
+            { sequence: 1, name: 'Commercial manager', approverType: 'role', approverRef: 'commercial-manager' },
+            { sequence: 2, name: 'Finance director', approverType: 'role', approverRef: 'finance-director' },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().version).toBe(2);
+
+      const db = getDatabase();
+      const versions = await db
+        .select({
+          version: schema.approvalWorkflowVersion.version,
+          isCurrent: schema.approvalWorkflowVersion.isCurrent,
+        })
+        .from(schema.approvalWorkflowVersion)
+        .where(eq(schema.approvalWorkflowVersion.workflowId, workflowId));
+
+      // Both rows still exist; exactly one is current.
+      expect(versions).toHaveLength(2);
+      expect(versions.filter((v) => v.isCurrent)).toHaveLength(1);
+      expect(versions.find((v) => v.isCurrent)?.version).toBe(2);
+    });
+
+    it('lists the workflow with the steps of its current version', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      const row = response
+        .json()
+        .workflows.find((w: { id: string }) => w.id === workflowId);
+      expect(row.currentVersion).toBe(2);
+      expect(row.steps).toHaveLength(2);
+      expect(row.inFlight).toBe(0);
+    });
+
+    it('deactivates a workflow without touching its versions', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/approvals/workflows/${workflowId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isActive: false, priority: 50 },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/approvals/workflows',
+        headers: auth(OWNER_TOKEN),
+      });
+      const row = list.json().workflows.find((w: { id: string }) => w.id === workflowId);
+      expect(row.isActive).toBe(false);
+      expect(row.priority).toBe(50);
+      expect(row.currentVersion).toBe(2);
     });
   });
 
@@ -1232,6 +1609,147 @@ suite('API', () => {
       });
 
       expect(response.statusCode).toBe(403);
+    });
+  });
+
+  describe('number series', () => {
+    /*
+     * `kernel.number_series.manage` was declared from the start and enforced
+     * nowhere, because nothing could edit a series: `provisionSeries` created
+     * them from each module's manifest and `allocateNumber` consumed them,
+     * with no way in between to fix a pattern or retire one.
+     */
+    let seriesId: string;
+
+    beforeAll(async () => {
+      const db = getDatabase();
+      const [row] = await db
+        .insert(schema.numberSeries)
+        .values({
+          tenantId: TENANT_FULL,
+          entityType: 'test.widget',
+          code: 'WGT',
+          name: 'Widget',
+          pattern: 'WGT-{YYYY}-{SEQ}',
+        })
+        .returning({ id: schema.numberSeries.id });
+      seriesId = row!.id;
+    });
+
+    it('lists the tenant series with what each has issued', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/number-series',
+        headers: auth(OWNER_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const row = response
+        .json()
+        .series.find((s: { id: string }) => s.id === seriesId);
+      expect(row.code).toBe('WGT');
+      expect(row.allocatedCount).toBe(0);
+      expect(row.lastFormatted).toBeNull();
+    });
+
+    it('refuses a principal without kernel.number_series.manage', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/number-series',
+        headers: auth(STAFF_TOKEN),
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('edits how a number looks', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Widget order', pattern: 'WO-{YYYY}-{SEQ}', padding: 6 },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: '/api/v1/admin/number-series',
+        headers: auth(OWNER_TOKEN),
+      });
+      const row = list.json().series.find((s: { id: string }) => s.id === seriesId);
+      expect(row.pattern).toBe('WO-{YYYY}-{SEQ}');
+      expect(row.padding).toBe(6);
+    });
+
+    it('refuses a pattern with no sequence token', async () => {
+      // Every document in the series would format to the same string.
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { pattern: 'WO-{YYYY}' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('{SEQ}');
+    });
+
+    it('refuses to rewind the counter onto a number already issued', async () => {
+      // The defect this whole module exists to prevent. `number_allocation` is
+      // uniquely keyed on (series, period, value), so a rewind does not fail
+      // here — it fails on the NEXT document created, as a constraint error
+      // thrown from inside `allocateNumber`, nowhere near this edit.
+      const db = getDatabase();
+      const period = String(new Date().getUTCFullYear());
+      await db.insert(schema.numberAllocation).values([
+        {
+          tenantId: TENANT_FULL,
+          seriesId,
+          period,
+          value: 7,
+          formatted: 'WO-2026-000007',
+        },
+      ]);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { nextValue: 5 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toContain('already issued 7');
+
+      // Forward is fine: skipping numbers is a tenant's business.
+      const forward = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { nextValue: 100 },
+      });
+      expect(forward.statusCode).toBe(200);
+    });
+
+    it('lets gapless be switched on but never off', async () => {
+      const on = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isGapless: true },
+      });
+      expect(on.statusCode).toBe(200);
+
+      // "Widen, never narrow" — the same rule `provisionSeries` applies when
+      // it defaults tax documents to gapless.
+      const off = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/admin/number-series/${seriesId}`,
+        headers: auth(OWNER_TOKEN),
+        payload: { isGapless: false },
+      });
+      expect(off.statusCode).toBe(409);
     });
   });
 

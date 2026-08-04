@@ -153,8 +153,20 @@ export {
   provisionSeries,
   voidNumber,
 } from './numbering/service';
+export {
+  type NumberSeriesRow,
+  type UpdateNumberSeriesInput,
+  NumberSeriesError,
+  listNumberSeries,
+  updateNumberSeries,
+} from './numbering/admin';
 
 // Approvals
+export type {
+  WorkflowCondition,
+  WorkflowDefinition,
+  WorkflowStepDefinition,
+} from './db/schema/approvals';
 export {
   type ApprovalContext,
   type WorkflowCandidate,

@@ -25,7 +25,7 @@ import { estimationModule } from '@aerolith/module-estimation';
 import { procurementModule } from '@aerolith/module-procurement';
 import { productionModule } from '@aerolith/module-production';
 import { projectsModule } from '@aerolith/module-projects';
-import { eq } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, or } from 'drizzle-orm';
 
 /** Every module compiled into this binary. */
 export const MODULES: ModuleManifest[] = [
@@ -133,6 +133,15 @@ export async function syncModules(): Promise<{ permissions: number; rules: numbe
  * Cached per tenant — this runs on every request and the entitlement set
  * changes rarely. Invalidated explicitly when entitlements are edited.
  */
+/**
+ * Entitlement statuses that actually grant access.
+ *
+ * Lives here rather than beside the entitlement service because this is the
+ * file that reads it on every request; the service imports it from here, which
+ * also keeps the dependency pointing one way.
+ */
+export const ACTIVE_MODULE_STATUSES = ['enabled', 'trial'] as const;
+
 const cache = new Map<string, ResolvedModules>();
 
 export async function modulesForTenant(tenantId: string): Promise<ResolvedModules> {
@@ -145,11 +154,31 @@ export async function modulesForTenant(tenantId: string): Promise<ResolvedModule
   // so every module answers 404 and the whole application looks unentitled. The
   // tenant is already known here, so no policy needs widening; the guard just
   // has to be set.
+  /*
+   * Status is part of the question, not decoration.
+   *
+   * This selected every row regardless of `status`, so a `disabled` entitlement
+   * still granted access and an `expired` one never expired — the column existed
+   * and nothing read it. Harmless while the only way to get a row was a SQL
+   * script that always wrote 'enabled'; not harmless once a screen can disable
+   * a module, which would otherwise appear to work and change nothing.
+   */
   const entitlements = await withTenantId(tenantId, async (tx) =>
     tx
       .select({ moduleKey: schema.tenantModule.moduleKey })
       .from(schema.tenantModule)
-      .where(eq(schema.tenantModule.tenantId, tenantId)),
+      .where(
+        and(
+          eq(schema.tenantModule.tenantId, tenantId),
+          inArray(schema.tenantModule.status, [...ACTIVE_MODULE_STATUSES]),
+          // An entitlement with no end date never lapses; one with a date
+          // lapses the day after it.
+          or(
+            isNull(schema.tenantModule.expiresOn),
+            gte(schema.tenantModule.expiresOn, new Date().toISOString().slice(0, 10)),
+          ),
+        ),
+      ),
   );
 
   const active = entitlements.map((e) => e.moduleKey);

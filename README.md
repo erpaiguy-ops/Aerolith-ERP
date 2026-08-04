@@ -241,7 +241,43 @@ labelled parts, becomes scanned progress.
   search tries, the same mechanism that already searches sort order and fit
   score. A realistic wardrobe-carcass job that used to need 21 sheets now runs
   in 20.
-- **1,123 tests**, including integration suites that prove tenant isolation holds and
+- **The kernel's own administrative surface**, which was the last place a
+  declared permission gated nothing. Four gaps, found by auditing every
+  permission against every route:
+  - **Modules can be enabled and disabled** (`kernel.module.manage`).
+    Entitlements were rows a SQL script inserted. Enabling now also provisions
+    the number series each manifest declares — `provisionSeries` was written for
+    exactly that and had never been called by anything, which is why every
+    series until now was created by hand in the seed and in each test's setup.
+    Disabling refuses while another enabled module depends on it, and keeps the
+    row so re-enabling restores rather than recreates
+    (`GET/POST /api/v1/admin/modules*`, `/settings/modules`)
+  - **Approval workflows can be created and versioned**
+    (`kernel.approval_workflow.manage`). The engine could route, resolve
+    approvers, hold a quorum and pin a running instance to its version; nothing
+    could create the workflow it routes by. Editing publishes a **new** version
+    and leaves the old one untouched, which is what stops a change to the
+    matrix rewriting the rules a half-finished approval is being judged by. A
+    step approved by a role or person that names neither is refused at publish
+    time, because the engine resolves it to nobody and the approval would stall
+    with nothing to say why
+    (`GET/POST/PATCH /api/v1/approvals/workflows*`, `/settings/workflows`)
+  - **Document numbering is editable** (`kernel.number_series.manage`). A series
+    could be created and consumed but never changed. The counter cannot be
+    rewound onto a number already issued — that collides with the
+    `(series, period, value)` index on the *next* document created, surfacing as
+    a constraint error nowhere near the edit that caused it
+    (`GET/PATCH /api/v1/admin/number-series*`, `/settings/number-series`)
+  - **`kernel.localisation.read` is actually enforced.** It was declared from
+    the start and checked nowhere, leaving the country-pack reads open to any
+    authenticated principal
+- **Two latent bugs found while building the above**: `modulesForTenant` selected
+  every `tenant_module` row regardless of `status`, so a disabled entitlement
+  still granted access and an `expired` one never expired — disabling a module
+  would have appeared to work and changed nothing. And `WorkflowCondition.value`
+  was required although `exists` takes no operand and the engine already handled
+  its absence in every branch.
+- **1,153 tests**, including integration suites that prove tenant isolation holds and
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
