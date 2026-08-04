@@ -48,6 +48,29 @@ export const LOCKOUT_MINUTES = 15;
 export const SESSION_DAYS = 14;
 
 /**
+ * Tenant statuses whose members may sign in.
+ *
+ * This used to be `status === 'active'` inline, with a comment explaining that
+ * a suspended workspace is not one you can log into — which was the intent and
+ * not what the code did. `trial` is the schema DEFAULT for a new tenant, so
+ * every tenant created through the schema began in a state nobody could sign
+ * in to, and a trial customer was locked out of their own trial. Provisioning
+ * found it immediately, because the first thing a provisioned owner does is
+ * fail to log in.
+ *
+ * `past_due` is deliberately excluded and deliberately worth revisiting.
+ * Nothing sets it today — there is no billing — so the choice is currently
+ * inert either way, and locking a customer out the moment an invoice is late is
+ * a harsher policy than most would choose. When Stage 3 of
+ * docs/07-platform-operations.md introduces subscriptions, this is one of the
+ * decisions it has to make on purpose rather than inherit from here.
+ *
+ * `suspended` and `cancelled` stay out: both mean somebody decided this
+ * workspace should stop.
+ */
+export const SIGN_IN_STATUSES = ['trial', 'active'] as const;
+
+/**
  * A real argon2id hash of a value nobody knows, used to spend the same work on
  * an unknown email as on a known one.
  *
@@ -218,8 +241,7 @@ async function loadMemberships(
       return t;
     });
 
-    // A suspended workspace is not a workspace you can log into.
-    if (found && found.status === 'active') {
+    if (found && (SIGN_IN_STATUSES as readonly string[]).includes(found.status)) {
       result.push({
         tenantId: found.id,
         name: found.name,

@@ -365,6 +365,7 @@ export {
   LOCKOUT_MINUTES,
   MAX_FAILED_ATTEMPTS,
   SESSION_DAYS,
+  SIGN_IN_STATUSES,
   login,
   logout,
   pruneSessions,

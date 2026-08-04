@@ -25,6 +25,9 @@ const suite = url ? describe : describe.skip;
 const TENANT = 'aaaa7777-7777-4777-8777-777777777777';
 const OTHER = 'bbbb8888-8888-4888-8888-888888888888';
 const USER = '11111111-2222-4222-8222-111111111111';
+/** A workspace still inside its trial, and the user who owns it. */
+const TRIAL_TENANT = 'cccc9999-9999-4999-8999-999999999999';
+const TRIAL_USER = '22222222-3333-4333-8333-222222222222';
 
 const PASSWORD = 'a perfectly ordinary passphrase';
 const WEAK = { ln: 12, r: 8, p: 1 };
@@ -40,18 +43,28 @@ suite('auth over HTTP', () => {
     await db.insert(schema.tenant).values([
       { id: TENANT, slug: 'http-auth', name: 'HTTP Auth Co', status: 'active', primaryCountryCode: 'AE', baseCurrencyCode: 'AED' },
       { id: OTHER, slug: 'http-auth-two', name: 'Second Workspace', status: 'active', primaryCountryCode: 'QA', baseCurrencyCode: 'QAR' },
+      { id: TRIAL_TENANT, slug: 'http-auth-trial', name: 'Trialling Co', status: 'trial', primaryCountryCode: 'AE', baseCurrencyCode: 'AED' },
     ]);
 
-    await db.insert(schema.appUser).values({
-      id: USER,
-      email: 'user@http.test',
-      name: 'HTTP User',
-      passwordHash: await hashPassword(PASSWORD, WEAK),
-    });
+    await db.insert(schema.appUser).values([
+      {
+        id: USER,
+        email: 'user@http.test',
+        name: 'HTTP User',
+        passwordHash: await hashPassword(PASSWORD, WEAK),
+      },
+      {
+        id: TRIAL_USER,
+        email: 'trial@http.test',
+        name: 'Trial User',
+        passwordHash: await hashPassword(PASSWORD, WEAK),
+      },
+    ]);
 
     await db.insert(schema.membership).values([
       { tenantId: TENANT, userId: USER, status: 'active', isOwner: true },
       { tenantId: OTHER, userId: USER, status: 'active', isOwner: true },
+      { tenantId: TRIAL_TENANT, userId: TRIAL_USER, status: 'active', isOwner: true },
     ]);
 
     await db
@@ -65,12 +78,15 @@ suite('auth over HTTP', () => {
 
   afterAll(async () => {
     const db = getDatabase();
-    await db.delete(schema.session).where(eq(schema.session.userId, USER));
+    for (const userId of [USER, TRIAL_USER]) {
+      await db.delete(schema.session).where(eq(schema.session.userId, userId));
+      await db.delete(schema.membership).where(eq(schema.membership.userId, userId));
+      await db.delete(schema.appUser).where(eq(schema.appUser.id, userId));
+    }
     await db.delete(schema.tenantModule).where(eq(schema.tenantModule.tenantId, TENANT));
-    await db.delete(schema.membership).where(eq(schema.membership.userId, USER));
-    await db.delete(schema.appUser).where(eq(schema.appUser.id, USER));
-    await db.delete(schema.tenant).where(eq(schema.tenant.id, TENANT));
-    await db.delete(schema.tenant).where(eq(schema.tenant.id, OTHER));
+    for (const tenantId of [TENANT, OTHER, TRIAL_TENANT]) {
+      await db.delete(schema.tenant).where(eq(schema.tenant.id, tenantId));
+    }
     await app.close();
     await closeDatabase();
   });
@@ -119,6 +135,52 @@ suite('auth over HTTP', () => {
     expect(me.statusCode).toBe(200);
     expect(me.json().user.id).toBe(USER);
     expect(me.json().modules.map((m: { key: string }) => m.key)).toEqual(['inventory']);
+  });
+
+  it('lets a trialling workspace sign in', async () => {
+    /*
+     * `trial` is the schema DEFAULT for a new tenant, and the sign-in gate used
+     * to admit `status === 'active'` alone — so every tenant created through
+     * the schema started in a state nobody could log into, and a trial customer
+     * was locked out of their own trial. The inline comment said "a suspended
+     * workspace is not a workspace you can log into", which was the intent and
+     * not what the code did.
+     *
+     * Provisioning found it on its first run. This pins it.
+     */
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: 'trial@http.test', password: PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().memberships).toHaveLength(1);
+    expect(response.json().memberships[0].slug).toBe('http-auth-trial');
+  });
+
+  it('keeps a suspended workspace shut', async () => {
+    // The half the original check got right, asserted so that widening the
+    // statuses cannot quietly widen this one too.
+    const db = getDatabase();
+    await db
+      .update(schema.tenant)
+      .set({ status: 'suspended' })
+      .where(eq(schema.tenant.id, TRIAL_TENANT));
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: 'trial@http.test', password: PASSWORD },
+      });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await db
+        .update(schema.tenant)
+        .set({ status: 'trial' })
+        .where(eq(schema.tenant.id, TRIAL_TENANT));
+    }
   });
 
   it('returns 401 with the same message for a bad password and an unknown email', async () => {

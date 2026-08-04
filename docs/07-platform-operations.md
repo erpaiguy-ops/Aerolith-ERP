@@ -148,11 +148,60 @@ All of it in one transaction. A half-provisioned tenant is worse than none: the
 owner logs in and every screen fails on something absent, and diagnosing that
 costs more than the signup was worth.
 
-`enableModule` in `apps/api/src/entitlements.ts` already does steps 4 and 5
-correctly, including pulling in module dependencies. It is written against a
-tenant context, so the operator path either reuses it under a synthesised
-context or the shared part moves into the kernel. Prefer the latter — the logic
-is the same and duplicating it guarantees drift.
+### Built
+
+```
+DATABASE_APP_URL=… pnpm provision create \
+  --slug acme --name "Acme Joinery" --country AE --currency AED \
+  --timezone Asia/Dubai --owner-email owner@acme.test --owner-name "A. Owner" \
+  --modules projects,contracts,inventory [--trial-days 30] [--password …]
+
+DATABASE_APP_URL=… pnpm provision suspend|resume|delete --tenant <uuid>
+```
+
+`apps/api/src/provisioning.ts`, and `apps/api` rather than the kernel on
+purpose: enabling a module needs the module registry, which is
+application-level by design — the kernel must not know a module exists. Putting
+it in the kernel would either invert that dependency or fork `enableModule`'s
+dependency resolution, and a second copy would drift.
+
+**No new credential.** This writes, so the SELECT-only platform role cannot be
+used; it connects as `aerolith_app` and writes exactly the way the application
+does — `kernel.tenant` and `kernel.app_user` carry no RLS policy and are written
+unguarded, then everything tenant-scoped goes through `withTenantId` for the
+tenant just created. The isolation model is untouched, which is the point. The
+plan above says "a separate credential"; that turned out to be unnecessary, and
+inventing one would have meant a second way to write across tenants for no gain.
+
+**Not one transaction**, which the plan also assumed. `kernel.tenant` has to be
+committed before the tenant-scoped writes can see it — `withTenantId` opens its
+own transaction, and an uncommitted tenant row is invisible to it. So the shape
+is create-then-populate, with a compensating delete if a later step fails. That
+delete is narrow on purpose: it removes the tenant and, only if this run created
+it, the owner account. An owner who already had an account is never deleted,
+because that would remove their access to a different workspace.
+
+**The initial password is generated and printed once.** There is no mail
+transport — `addMember` already says so — so an invitation link would be a link
+nobody receives. Generating beats letting an operator choose, because the one
+they choose is memorable, reused across customers, and sometimes still in place
+a year later. When the email already had an account, the output says so
+explicitly: it keeps its existing password, and an operator who assumed
+otherwise would hand the customer a credential that does not work.
+
+### What this found
+
+The first provisioned owner could not log in. `loadMemberships` admitted
+`status === 'active'` alone, under a comment saying a *suspended* workspace is
+not one you can log into — the intent and not the code. `trial` is the schema
+DEFAULT for a new tenant, so every tenant created through the schema began in a
+state nobody could sign in to, and a trial customer was locked out of their own
+trial. Now `SIGN_IN_STATUSES`, exported and tested from both sides.
+
+`past_due` is deliberately still excluded, and deliberately worth revisiting:
+nothing sets it today, so the choice is inert, and locking a customer out the
+moment an invoice is late is harsher than most would choose. Stage 3 has to
+decide that on purpose rather than inherit it.
 
 **Suspension and deletion** belong here too, and are the operations most worth
 getting right, because they are the ones done in anger. Suspending sets
