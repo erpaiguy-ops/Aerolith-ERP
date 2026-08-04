@@ -110,6 +110,44 @@ async function main() {
   createDatabase({ connectionString: url! });
   await syncModules();
 
+  // --- Already seeded? ------------------------------------------------------
+  // This script is wired into apps/api/render-start.sh, which runs on every
+  // CONTAINER START, not just on deploy — a free-tier service spins down after
+  // 15 minutes idle, so a cold-start wake re-runs it. Combined with `set -e`
+  // in that script, ANY failure here stops the API server from ever starting:
+  // the container exits and every request 502s until someone notices.
+  //
+  // The clean-slate wipe below cannot be made to survive a re-run against a
+  // tenant that has already traded. `goods_receipt_line` is append-only, so
+  // `aerolith_app` has DELETE revoked on it outright, and its FK to
+  // `goods_receipt` is `onDelete: 'restrict'` — so once the demo has received
+  // goods, deleting `goods_receipt` raises a foreign-key violation that no
+  // role this script can use is able to clear. That is the immutability
+  // guarantee working as designed, not a bug to route around.
+  //
+  // So: seed once, then get out of the way. A caller who genuinely wants the
+  // demo rebuilt drops the database (or the tenant) first, which is the honest
+  // way to ask for it — and exiting 0 here means a re-run is a no-op rather
+  // than a crash loop that takes the whole API down with it.
+  // `withTenantId`, not `withoutTenantGuard`: `kernel.tenant`'s policy is
+  // self-keyed (`id = app.tenant_id`, see rls.ts's `selfKeyed`), so without the
+  // guard set this SELECT comes back empty whether the row exists or not — and
+  // an empty result here would mean "not seeded", sending every boot straight
+  // back into the wipe-and-rebuild this check exists to prevent.
+  const alreadySeeded = await withTenantId(TENANT, async (tx) => {
+    const [row] = await tx
+      .select({ id: schema.tenant.id })
+      .from(schema.tenant)
+      .where(eq(schema.tenant.id, TENANT));
+    return row !== undefined;
+  });
+
+  if (alreadySeeded) {
+    console.log(`✓ demo tenant ${TENANT} already present — nothing to do.`);
+    console.log(`  Sign in as ${EMAIL}. To rebuild it, drop the database first.`);
+    return;
+  }
+
   // --- Clean slate ---------------------------------------------------------
   // Every table below except `session` and `appUser` is tenant-scoped and RLS
   // protected (the module schemas apply the same `FORCE ROW LEVEL SECURITY`
