@@ -301,9 +301,20 @@ suite('Documents', () => {
       });
 
       expect(response.statusCode).toBe(503);
-      // Names the missing variable — this is a deployment that has not been
-      // configured yet, not a generic failure.
-      expect(response.json().error).toMatch(/S3_ENDPOINT/);
+
+      // Says what is wrong in terms the person who hit it can act on: this
+      // deployment has not been configured, the rest of the application is
+      // unaffected, and an administrator is who fixes it.
+      const { error } = response.json();
+      expect(error).toMatch(/not set up/i);
+      expect(error).toMatch(/administrator/i);
+
+      // And names no environment variable. Which one is missing is an
+      // operator's problem — it goes to the log, not to whoever was trying to
+      // attach a drawing. Asserted rather than assumed, because the obvious
+      // implementation interpolates the underlying message straight through
+      // and that is exactly what this used to do.
+      expect(error).not.toMatch(/S3_/);
     });
 
     it('confirms an upload — pure metadata, so it works with no R2 configured at all', async () => {

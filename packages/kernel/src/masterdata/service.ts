@@ -5,10 +5,14 @@
  * One table with role flags rather than separate customer/supplier tables,
  * per the schema's own reasoning: the same company is routinely a client on
  * one job and a subcontractor on another, and splitting them guarantees
- * duplicate records. `code` is chosen by the caller, not allocated — a
- * supplier code is usually a meaningful abbreviation ("EMAAR", "HAFELE"),
- * not a sequence number, which is why this does not go through
- * `allocateNumber` the way a tender or requisition does.
+ * duplicate records.
+ *
+ * `code` is OPTIONAL, and the two ways of filling it both matter. A supplier
+ * code is often a meaningful abbreviation somebody chose — "EMAAR", "HAFELE" —
+ * and that is worth keeping, so a caller may still pass one. But requiring it
+ * put a naming decision in front of every person adding a contact, and left
+ * whoever typed fastest to invent a convention for everyone else. Omit it and
+ * it comes from a number series like any other document reference.
  */
 import { and, asc, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 
@@ -17,6 +21,7 @@ import { costCentre, costCode, party, partyContact } from '../db/schema';
 import { recordAudit } from '../audit/service';
 import { listCustomFieldDefinitions, validateCustomFieldValues } from '../customfields/service';
 import { listResult, searchPattern, type ListParams, type ListResult } from '../db/list';
+import { allocateNumber, provisionSeries } from '../numbering/service';
 import { requireTenantContext } from '../tenancy/context';
 
 const MODULE_KEY = 'kernel';
@@ -143,7 +148,12 @@ export async function getPartyDetail(tx: Transaction, partyId: string): Promise<
 }
 
 export interface CreatePartyInput {
-  code: string;
+  /**
+   * Omit to have one allocated from the `kernel.party` series. Pass one to
+   * keep a meaningful abbreviation — who is ALLOWED to pass one is the route's
+   * decision, not this function's.
+   */
+  code?: string | null;
   name: string;
   type?: 'organisation' | 'individual';
   nativeName?: string | null;
@@ -164,6 +174,38 @@ export interface CreatePartyInput {
   creditLimit?: number | null;
 }
 
+/** The series a party code comes from when the caller does not supply one. */
+const PARTY_SERIES = {
+  entityType: 'kernel.party',
+  code: 'PTY',
+  pattern: 'PTY-{SEQ}',
+} as const;
+
+/**
+ * The caller's code, trimmed — or a freshly allocated one.
+ *
+ * `provisionSeries` runs first and is idempotent (`onConflictDoNothing`), which
+ * is doing real work rather than being defensive: party numbering did not exist
+ * until now, so no tenant created before this has a `kernel.party` series and
+ * every one of them would otherwise get `NoNumberSeriesError` on the first
+ * party they added. Provisioning on demand fixes that without a data migration
+ * over tenants nobody has enumerated. A tenant that has since renamed or
+ * repatterned their series keeps their version — the conflict target is
+ * (tenant, code), so this only ever fills a gap.
+ *
+ * No pattern is chosen for a country or a role here. `PTY-{SEQ}` is a starting
+ * point a tenant can edit on the Numbering screen like any other series.
+ */
+async function resolvePartyCode(tx: Transaction, supplied: string | null | undefined): Promise<string> {
+  const trimmed = supplied?.trim();
+  if (trimmed) return trimmed;
+
+  const { tenantId } = requireTenantContext();
+  await provisionSeries(tx, { tenantId, series: [{ ...PARTY_SERIES }] });
+  const allocated = await allocateNumber(tx, { entityType: PARTY_SERIES.entityType });
+  return allocated.formatted;
+}
+
 export async function createParty(tx: Transaction, input: CreatePartyInput): Promise<{ id: string }> {
   const { tenantId } = requireTenantContext();
 
@@ -181,7 +223,7 @@ export async function createParty(tx: Transaction, input: CreatePartyInput): Pro
     .insert(party)
     .values({
       tenantId,
-      code: input.code,
+      code: (await resolvePartyCode(tx, input.code)),
       name: input.name,
       type: input.type ?? 'organisation',
       nativeName: input.nativeName,

@@ -80,12 +80,24 @@ const lockBody = z.object({
  * Maps the two error kinds this module can throw to their status codes.
  *
  * `StorageNotConfiguredError` is deliberately NOT a 409: it is not a data
- * conflict, it is a deployment that has not set its R2 environment variables
- * yet. 503 says "come back once this is configured", which 409 does not.
+ * conflict, it is a deployment that has not set its object-store environment
+ * variables yet. 503 says "come back once this is configured", which 409 does
+ * not.
+ *
+ * The message the CALLER gets names no environment variable. It used to
+ * interpolate `error.message` straight through, so somebody trying to attach a
+ * drawing was told "S3_ENDPOINT is not set" — which tells them nothing they can
+ * act on, and tells anyone else reading over their shoulder how this deployment
+ * is wired. Which variable is missing is an operator's problem, so it goes to
+ * the log, where operators actually look.
  */
 function handleError(error: unknown, reply: FastifyReply) {
   if (error instanceof StorageNotConfiguredError) {
-    return reply.code(503).send({ error: `Document storage is not configured: ${error.message}` });
+    reply.log.error({ err: error }, 'document storage is not configured');
+    return reply.code(503).send({
+      error:
+        'Document storage is not set up on this deployment yet, so files cannot be uploaded or downloaded. Everything else works as normal — an administrator needs to configure it.',
+    });
   }
   if (error instanceof DocumentError) {
     return reply.code(409).send({ error: error.message });

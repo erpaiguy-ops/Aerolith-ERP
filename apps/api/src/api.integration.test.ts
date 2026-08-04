@@ -1246,6 +1246,30 @@ suite('API', () => {
       partyId = response.json().id;
     });
 
+    it('allocates a code when none is given', async () => {
+      // The tenant has no `kernel.party` series until this runs: party
+      // numbering did not exist when these tenants were created, which is
+      // exactly the case every EXISTING tenant is in. `resolvePartyCode`
+      // provisions it on demand, so this asserts the lazy provisioning as much
+      // as the allocation — without it the first party any established tenant
+      // added would fail with NoNumberSeriesError.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/master-data/parties',
+        headers: auth(OWNER_TOKEN),
+        payload: { name: 'Unnamed Trading', isSupplier: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: `/api/v1/master-data/parties/${response.json().id}`,
+        headers: auth(OWNER_TOKEN),
+      });
+      expect(detail.json().party.code).toMatch(/^PTY-/);
+    });
+
     it('refuses a code already in use', async () => {
       const response = await app.inject({
         method: 'POST',

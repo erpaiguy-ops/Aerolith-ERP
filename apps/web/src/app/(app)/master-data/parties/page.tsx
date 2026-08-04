@@ -67,6 +67,10 @@ export default async function PartiesPage({
   const query = listQuery(await searchParams);
   const me = await getMe();
   const mayManage = can(me.permissions, 'kernel.master_data.manage') || me.user.isOwner;
+  // Mirrors the API's own rule (routes/masterdata.ts): everyone who can add a
+  // party gets an allocated code; choosing one is for whoever already governs
+  // how documents are numbered.
+  const mayChooseCode = can(me.permissions, 'kernel.number_series.manage') || me.user.isOwner;
 
   const result = await fetchList<PartyRow>('/master-data/parties', query);
 
@@ -147,11 +151,24 @@ export default async function PartiesPage({
       {mayManage ? (
         <Card title="Add a party">
           <ActionForm action={createPartyAction} className="grid gap-3 sm:grid-cols-3">
-            <label className="block">
-              <span className="mb-1 block text-xs text-(--color-muted)">Code</span>
-              <input name="code" placeholder="EMAAR" className={field} />
-            </label>
-            <label className="block sm:col-span-2">
+            {/* Shown only to somebody allowed to set it. For everyone else the
+                code is allocated from the `kernel.party` series — so the field
+                is not disabled, it is absent: a greyed-out box invites people
+                to hunt for the setting that ungreys it, and there isn't one
+                they can reach. The note says where the code comes from instead.
+                The API refuses a supplied code from an unpermitted caller
+                regardless, so this is presentation, not enforcement. */}
+            {mayChooseCode ? (
+              <label className="block">
+                <span className="mb-1 block text-xs text-(--color-muted)">Code</span>
+                <input
+                  name="code"
+                  placeholder="Leave blank to allocate"
+                  className={field}
+                />
+              </label>
+            ) : null}
+            <label className={mayChooseCode ? 'block sm:col-span-2' : 'block sm:col-span-3'}>
               <span className="mb-1 block text-xs text-(--color-muted)">Name</span>
               <input name="name" dir="auto" placeholder="Emaar Properties PJSC" className={field} />
             </label>

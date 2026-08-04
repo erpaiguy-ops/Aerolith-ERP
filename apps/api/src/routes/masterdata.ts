@@ -35,8 +35,24 @@ import { authenticate, requirePermission, withPrincipal } from '../context';
 
 const ROLES = new Set(['customer', 'supplier', 'subcontractor', 'consultant', 'employee']);
 
+/**
+ * Who may choose a party's code rather than take the allocated one.
+ *
+ * An owner, or somebody trusted with `kernel.number_series.manage` — the
+ * permission that already governs how documents are numbered, so extending it
+ * to "may override an allocated number" needs no new permission and no new
+ * concept for an administrator to reason about. Everybody else creating a party
+ * gets a code from the series, which is the point: a shared naming convention
+ * nobody has to be told about.
+ */
+const MAY_CHOOSE_CODE = 'kernel.number_series.manage';
+
 const createBody = z.object({
-  code: z.string().min(1).max(32),
+  // Optional. Omitted, the kernel allocates from the `kernel.party` series;
+  // supplied, it is honoured — but only for a principal allowed to supply it,
+  // which is checked in the route rather than here because zod cannot see who
+  // is asking.
+  code: z.string().min(1).max(32).optional(),
   name: z.string().min(1),
   type: z.enum(['organisation', 'individual']).optional(),
   nativeName: z.string().nullish(),
@@ -134,6 +150,19 @@ export async function masterDataRoutes(app: FastifyInstance) {
     const parsed = createBody.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    // Refused outright rather than quietly ignored. Silently dropping a code
+    // somebody typed would create the party under a different one and tell
+    // them nothing — they would find out when a colleague could not search for
+    // it. The form already hides the field from anyone this applies to, so
+    // reaching here means the request did not come from the form.
+    const mayChooseCode =
+      principal.isOwner || Boolean(principal.context.permissions?.has(MAY_CHOOSE_CODE));
+    if (parsed.data.code !== undefined && !mayChooseCode) {
+      return reply.code(403).send({
+        error: 'Party codes are allocated automatically. Choosing one requires permission to manage number series.',
+      });
     }
 
     try {
