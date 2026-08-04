@@ -94,6 +94,19 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Without this, the server-side `fetch()` calls in apps/web/src/lib/api.ts
+      # (every page load, sign-in included) fail with an empty
+      # `AggregateError` wrapping ECONNREFUSED or ETIMEDOUT — Node 18+'s
+      # default "Happy Eyeballs" dual-stack connection algorithm tries the
+      # target's IPv6 address first, and IPv6 resolves via DNS but is not
+      # actually routable from inside this container. This disables that
+      # algorithm and falls back to trying the first resolved address
+      # directly, which is the documented fix (not `--dns-result-order`,
+      # which undici's own DNS resolution ignores). Confirmed via
+      # aerolith-web's own logs showing exactly this AggregateError/
+      # ECONNREFUSED pattern on every sign-in attempt.
+      - key: NODE_OPTIONS
+        value: --no-network-family-autoselection
       # Cannot be filled in until aerolith-api exists and Render has
       # assigned it a hostname.
       - key: AEROLITH_API_URL
