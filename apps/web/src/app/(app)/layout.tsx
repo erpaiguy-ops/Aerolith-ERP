@@ -1,4 +1,3 @@
-import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 import { Shell } from '@/components/Shell';
@@ -22,19 +21,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     throw error;
   }
 
-  // Set by the middleware. A server component cannot read the current URL, and
-  // the alternative — making the shell a client component for `usePathname()` —
-  // would ship the whole navigation tree to the browser.
-  const currentPath = (await headers()).get('x-pathname') ?? '';
+  // The sidebar reads the current path itself, via `usePathname()` in
+  // `SidebarNav`. It used to be passed down from the middleware's `x-pathname`
+  // header, read here — and that was the bug: a header is resolved when this
+  // layout renders, Next preserves a layout across client-side navigations
+  // rather than re-rendering it, so the highlight stopped tracking the router
+  // and only caught up when some action forced a re-render.
 
   // Established here, before the children render, so every formatting helper
   // beneath — including the ones in shared components that never see the
   // session — renders in the user's own locale rather than the `en-AE` fallback.
   setLocale(formattingLocale(me.user.locale, me.tenant.countryCode));
 
-  return (
-    <Shell me={me} currentPath={currentPath}>
-      {children}
-    </Shell>
-  );
+  return <Shell me={me}>{children}</Shell>;
 }

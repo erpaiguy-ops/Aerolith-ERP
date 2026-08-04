@@ -120,7 +120,17 @@ export function FilterChips({
             key={option.label}
             // Changing a filter returns to page 1. Staying on page 4 of a
             // narrower result set shows an empty screen and looks like a bug.
-            href={href(base, query, { [param]: option.value ?? undefined, page: undefined })}
+            //
+            // Clicking the selected chip CLEARS it. Without that, a group with
+            // no "all" option — "Include discontinued" is the whole filter, one
+            // chip on its own — was one-way: switched on, it could only be
+            // switched off by editing the address bar, which nobody does. A
+            // group that does have an "all" chip is unaffected, because that
+            // chip was already how you cleared it.
+            href={href(base, query, {
+              [param]: selected ? undefined : (option.value ?? undefined),
+              page: undefined,
+            })}
             className={`rounded-full border px-2.5 py-1 text-xs ${
               selected
                 ? 'border-(--color-accent) bg-(--color-accent)/10 text-(--color-accent)'
