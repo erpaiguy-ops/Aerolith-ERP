@@ -34,11 +34,16 @@ WORKDIR /app
 RUN addgroup --system --gid 1001 aerolith && adduser --system --uid 1001 aerolith
 
 # The standalone output already bundles a pruned node_modules; the app's own
-# compiled server and the static/public assets are copied in separately, per
-# Next's documented standalone layout.
+# compiled server and static assets are copied in separately, per Next's
+# documented standalone layout.
+#
+# No `public/` copy: this app has never had one (no favicon, no static
+# assets checked in) — Next.js does not require the directory to exist, and
+# the build otherwise-standard `COPY .../public ./public` line fails outright
+# when the source path is genuinely absent rather than just empty. If a
+# `public/` directory is ever added, this line needs to come back with it.
 COPY --from=installer --chown=aerolith:aerolith /app/apps/web/.next/standalone ./
 COPY --from=installer --chown=aerolith:aerolith /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=installer --chown=aerolith:aerolith /app/apps/web/public ./apps/web/public
 
 USER aerolith
 
