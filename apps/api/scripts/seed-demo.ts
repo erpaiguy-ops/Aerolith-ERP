@@ -18,6 +18,7 @@ import {
   schema,
   runWithTenantContext,
   withTenant,
+  withTenantId,
   withoutTenantGuard,
 } from '@aerolith/kernel';
 import {
@@ -101,7 +102,16 @@ async function main() {
   await syncModules();
 
   // --- Clean slate ---------------------------------------------------------
-  await withoutTenantGuard(async (tx) => {
+  // Every table below except `session` and `appUser` is tenant-scoped and RLS
+  // protected (the module schemas apply the same `FORCE ROW LEVEL SECURITY`
+  // policy shape as the kernel — see packages/*/db/security.ts). A DELETE's
+  // `USING` policy that never matches does not error, it just deletes zero
+  // rows — so running this under `withoutTenantGuard` looked idempotent and
+  // was actually a silent no-op on any role without a bypass privilege,
+  // leaving stale rows for the next run to collide with on their primary
+  // keys. `withTenantId` makes the guard match every predicate here,
+  // including `tenant`'s own self-keyed policy (`id = app.tenant_id`).
+  await withTenantId(TENANT, async (tx) => {
     for (const table of [
       schema.auditLog,
       schema.eventOutbox,
@@ -230,6 +240,17 @@ async function main() {
   });
 
   console.log('→ workspace');
+  // `tenant` and `appUser` carry no `tenant_id` at all — genuinely platform-level
+  // tables, so `withoutTenantGuard` is correct for them. Everything below this
+  // point (membership, role, rolePermission, userRole, tenantModule, numberSeries,
+  // project) IS tenant-scoped, so it moves to `withTenantId`: the tenant row above
+  // already exists once this transaction opens, and the id is known outright — no
+  // request-scoped context exists yet, which is exactly what `withTenantId` is for.
+  // Running these under `withoutTenantGuard` instead used to "work" locally only
+  // because the local Postgres role holds a bypass privilege a managed database's
+  // application role does not; Render's Postgres enforces `FORCE ROW LEVEL
+  // SECURITY` for real and rejected every one of these inserts with
+  // `new row violates row-level security policy`.
   await withoutTenantGuard(async (tx) => {
     await tx.insert(schema.tenant).values({
       id: TENANT,
@@ -241,7 +262,7 @@ async function main() {
       timezone: 'Asia/Dubai',
     });
 
-    const sharedHash = await hashPassword(PASSWORD);
+    const hash = await hashPassword(PASSWORD);
 
     await tx.insert(schema.appUser).values([
       {
@@ -249,17 +270,19 @@ async function main() {
         email: EMAIL,
         name: 'Demo Commercial Manager',
         locale: 'en',
-        passwordHash: sharedHash,
+        passwordHash: hash,
       },
       {
         id: QS_USER,
         email: 'qs@aerolith.test',
         name: 'Rana Haddad',
         locale: 'en',
-        passwordHash: sharedHash,
+        passwordHash: hash,
       },
     ]);
+  });
 
+  await withTenantId(TENANT, async (tx) => {
     await tx.insert(schema.membership).values([
       { tenantId: TENANT, userId: USER, status: 'active', isOwner: true },
       // Not an owner: an owner bypasses the permission matrix, and a demo where
