@@ -25,9 +25,24 @@ Hetzner (~€4/mo for a CX22, which is where you should move the day you have on
 paying customer — one machine failure on the free tier is not something you want
 to explain to a customer).
 
-**Do not build on:** Vercel Hobby (commercial use is prohibited by its terms),
-Supabase free (500 MB, pauses after ~a week idle), Render free (services spin
-down and cold-start), Railway (no meaningful free tier any more).
+**Do not build on:** Vercel Hobby (commercial use is prohibited by its terms —
+also an architecture mismatch: `apps/api` is a long-running Fastify server
+with a persistent connection pool, not a shape that fits serverless
+functions), Supabase free (500 MB, pauses after ~a week idle), Render free
+(services spin down and cold-start), Railway (no meaningful free tier any
+more), Fly.io (free allowance effectively retired for new accounts as of
+2026 — a small Node+Postgres app now runs $8-12/mo there).
+
+**Render free is the one exception, and only for a throwaway test.** Its
+cold-start caveat is exactly why it's disqualified above as somewhere to
+*run* the product — but it is a genuine no-card, commercial-use-permitted
+free tier that hosts a Docker web service with a persistent connection pool,
+which none of the others in that list are. `render.yaml` at the repo root is
+a Blueprint for exactly that: click through Render's own signup and "New →
+Blueprint" flow, see the real app running on a real URL today, then move to
+the OCI + Coolify plan above when it's time to keep it running. The free
+Postgres it provisions expires in 30 days on purpose — nothing here is meant
+to hold data anyone would miss.
 
 ## Edge and storage — Cloudflare (free tier, permanently)
 

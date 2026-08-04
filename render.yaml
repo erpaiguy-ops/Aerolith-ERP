@@ -1,0 +1,74 @@
+# Render Blueprint — a FREE, TEMPORARY test deployment, not the production
+# topology docs/04-infrastructure.md recommends.
+#
+# Real differences from that doc's plan, stated so nobody is surprised:
+#  - The API is a public `web` service here, not hidden behind a tunnel —
+#    Render's free plan does not support private services. Fine for a test
+#    login; not the posture to ship a paying customer's data behind.
+#  - The free Postgres instance expires 30 days after creation (a 14-day
+#    grace period follows). This is for trying the app, not running it.
+#  - Both free web services spin down after 15 minutes idle and take ~1
+#    minute to wake back up on the next request. Expect that on first load.
+#
+# Three values below are `sync: false` rather than guessed at: Render only
+# assigns each service's public hostname once it exists, so WEB_URL,
+# AEROLITH_API_URL and DATABASE_APP_URL cannot be known until after the first
+# apply. See the deploy steps for exactly what to paste in and where.
+
+databases:
+  - name: aerolith-db
+    plan: free
+    databaseName: aerolith
+    user: aerolith
+
+services:
+  - type: web
+    name: aerolith-api
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    # Migrations and the country-pack seed run before each deploy's start
+    # command — both are idempotent (upsert, not insert-only), so re-running
+    # on every deploy is safe. This is the same `db:migrate && db:seed` step
+    # docker-compose.prod.yml's one-shot `migrate`/`seed` containers run.
+    preDeployCommand: pnpm db:migrate && pnpm db:seed
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 3001
+      # The migration superuser connection. Render provisions and manages
+      # this; `pnpm db:migrate` uses it to create the RLS-enforced
+      # `aerolith_app` role that the running API actually connects as.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aerolith-db
+          property: connectionString
+      # Password for the app role `db:migrate` creates. Render generates and
+      # stores a real secret here — nothing to type in.
+      - key: APP_DB_PASSWORD
+        generateValue: true
+      # Cannot be filled in until aerolith-db exists and its host is known.
+      # See step 5 in the deploy instructions: same host/port/database as
+      # DATABASE_URL above, but user `aerolith_app` and this APP_DB_PASSWORD.
+      - key: DATABASE_APP_URL
+        sync: false
+      # The web service's CORS origin. Cannot be filled in until the web
+      # service below exists and Render has assigned it a hostname.
+      - key: WEB_URL
+        sync: false
+
+  - type: web
+    name: aerolith-web
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/web/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Cannot be filled in until aerolith-api exists and Render has
+      # assigned it a hostname.
+      - key: AEROLITH_API_URL
+        sync: false
