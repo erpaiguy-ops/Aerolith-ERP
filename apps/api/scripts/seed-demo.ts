@@ -76,9 +76,18 @@ import { and, eq, inArray } from 'drizzle-orm';
 
 import { syncModules } from '../src/bootstrap';
 
-const url = process.env.DATABASE_URL;
+// The same connection apps/api/src/main.ts uses, and deliberately not
+// DATABASE_URL: every RLS policy `packages/kernel/src/db/rls.ts` creates is
+// scoped `TO aerolith_app` by name. A connection authenticated as any other
+// role — including the migration/owner role DATABASE_URL points at — matches
+// zero policies on a tenant-scoped table, forced RLS included, and gets a
+// hard "new row violates row-level security policy" on every INSERT no
+// matter what `app.tenant_id` is set to. withTenant/withTenantId only ever
+// set that guard; they cannot substitute for connecting as the role the
+// policies actually name.
+const url = process.env.DATABASE_APP_URL ?? process.env.DATABASE_URL;
 if (!url) {
-  console.error('DATABASE_URL is not set.');
+  console.error('DATABASE_APP_URL (or DATABASE_URL) must be set.');
   process.exit(1);
 }
 
