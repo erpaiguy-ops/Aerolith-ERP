@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import {
   EmptyList,
   FilterChips,
@@ -8,6 +10,7 @@ import {
   listQuery,
 } from '@/components/List';
 import { Badge, Card, Money, PageHeader, Table, Td, Th } from '@/components/ui';
+import { can } from '@/lib/actions';
 import { date, quantity } from '@/lib/format';
 import { getMe } from '@/lib/session';
 
@@ -46,6 +49,7 @@ export default async function StockPage({
 }) {
   const query = listQuery(await searchParams);
   const me = await getMe();
+  const mayPost = can(me.permissions, 'inventory.stock_movement.create') || me.user.isOwner;
 
   const result = await fetchList<StockRow>('/inventory/stock', query);
 
@@ -53,7 +57,22 @@ export default async function StockPage({
     <>
       <PageHeader
         title="Stock on hand"
-        subtitle="What is where, what it is worth, and what is short."
+        subtitle="What is where, what it is worth, and what is short. Quantities are the ledger's answer, not an editable field — they change by posting a movement."
+        actions={
+          // The figures on this screen are derived from posted movements, so
+          // there is deliberately nothing to edit here. That is only defensible
+          // if the way to change them is visible: without this the screen reads
+          // as read-only with no way forward, and the movement form — which has
+          // existed all along — was reachable only by knowing it was there.
+          mayPost ? (
+            <Link
+              href="/inventory/movements"
+              className="rounded bg-(--color-accent) px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+            >
+              Record a movement
+            </Link>
+          ) : null
+        }
       />
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -77,7 +96,7 @@ export default async function StockPage({
           <EmptyList
             query={query}
             noun={['stock line', 'stock lines']}
-            hint="Stock appears here once a receipt is posted against a warehouse."
+            hint="Stock appears here once a movement is posted against a warehouse. Adding an item to the catalogue does not create stock on its own — receive some against a warehouse and it will show up here."
           />
         ) : (
           <Table
