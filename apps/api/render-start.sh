@@ -79,5 +79,16 @@ if [ -n "$BOOTSTRAP_OPERATOR_EMAIL" ]; then
     --email "$BOOTSTRAP_OPERATOR_EMAIL" \
     --name "${BOOTSTRAP_OPERATOR_NAME:-$BOOTSTRAP_OPERATOR_EMAIL}" \
     "$@" || echo "! operator bootstrap failed — continuing to start the API anyway"
+else
+  # Says what it skipped, and why.
+  #
+  # Silence here cost a debugging round already. A boot log that jumps straight
+  # from the seed to the server is consistent with two completely different
+  # causes — the variable is unset, or the image is stale and this file has no
+  # bootstrap block in it at all — and telling them apart took reading the
+  # Docker layer list for CACHED markers. One line makes the first case
+  # self-evident, and its ABSENCE now positively identifies the second, which
+  # is the case no amount of env-var checking would have found.
+  echo "→ BOOTSTRAP_OPERATOR_EMAIL is not set — skipping the operator bootstrap"
 fi
 exec pnpm --filter @aerolith/api run start
