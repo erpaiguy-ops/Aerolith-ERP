@@ -41,4 +41,34 @@ pnpm db:seed
 if [ "$SEED_DEMO_DATA" = "true" ]; then
   pnpm db:seed:demo || echo "! demo seed failed — continuing to start the API anyway"
 fi
+
+# The first vendor operator, for a host with no shell.
+#
+# It runs from THIS service rather than from aerolith-operator because creating
+# an operator is an OWNER operation: `pnpm operator` connects as DATABASE_URL,
+# and the whole point of the operator app is that it holds only the SELECT-only
+# platform credential. Putting the owner URL on that service to bootstrap it
+# would hand the cross-tenant read surface a connection that can also write
+# every tenant — permanently, for one first-run convenience.
+#
+# Idempotent: with the account already present this prints one line and exits.
+# Set BOOTSTRAP_OPERATOR_RESET=true to replace it (new password, new TOTP
+# secret, existing sessions revoked), which is also how the credentials printed
+# below get rotated once they have been read off a log.
+#
+# Not under `set -e`, for the same reason as the demo seed above: a failure to
+# create a vendor account has no bearing on whether the API can serve the
+# customers already in the database, and a boot script that exits here would
+# crash-loop the entire service on every cold start.
+if [ -n "$BOOTSTRAP_OPERATOR_EMAIL" ]; then
+  if [ "$BOOTSTRAP_OPERATOR_RESET" = "true" ]; then
+    set -- --reset
+  else
+    set --
+  fi
+  pnpm operator bootstrap \
+    --email "$BOOTSTRAP_OPERATOR_EMAIL" \
+    --name "${BOOTSTRAP_OPERATOR_NAME:-$BOOTSTRAP_OPERATOR_EMAIL}" \
+    "$@" || echo "! operator bootstrap failed — continuing to start the API anyway"
+fi
 exec pnpm --filter @aerolith/api run start

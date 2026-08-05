@@ -349,6 +349,55 @@ importing it from `lib/session` pulled `pg` and `node:url` into the edge bundle
 and failed the build with a module-not-found several layers deep that named the
 kernel's localisation loader and gave no hint that middleware was the cause.
 
+### Deploying it — built
+
+`render.yaml` carries a third web service, `aerolith-operator`. Three things
+about how it is wired are decisions rather than details:
+
+**`PLATFORM_DB_PASSWORD` is set on `aerolith-api`, not on the operator
+service.** That is the service that runs migrations, and the password's presence
+is what turns `aerolith_platform` from `NOLOGIN` into a role that can connect at
+all. The operator service receives only the assembled
+`DATABASE_PLATFORM_URL` — no `DATABASE_URL`, no `DATABASE_APP_URL`. What a
+compromised operator process can reach is bounded by Postgres rather than by
+this application being careful.
+
+**Omitting the service is a supported configuration.** Delete the block and
+leave `PLATFORM_DB_PASSWORD` unset, and the role stays inert: no process
+anywhere holds a credential that can read across tenants, and nothing else in
+the deployment changes.
+
+**The first operator is created by `operator bootstrap`, from the API service's
+boot script.** A managed platform's free tier usually has no shell, so the
+`create` + `confirm` pair — which assumes a terminal and a psql-reachable
+database — cannot be run, and without an alternative the deployment produces a
+login page nobody can get past. Setting `BOOTSTRAP_OPERATOR_EMAIL` (and
+optionally `BOOTSTRAP_OPERATOR_NAME`) on `aerolith-api` creates the account on
+the next boot and prints the password and enrolment URI to the deploy log.
+It is idempotent — an existing account is left alone — and
+`BOOTSTRAP_OPERATOR_RESET=true` replaces it, revoking its sessions, which is
+also the rotation path.
+
+Two honest costs, neither of them hidden:
+
+- The account is created **already confirmed**, unlike `create`. The confirm
+  round-trip exists to catch a secret mistyped into an authenticator by hand;
+  here the secret is machine-generated and delivered as a scannable URI, so
+  there is nothing to catch, and requiring one would mean a second deploy
+  carrying a six-digit code in an environment variable.
+- The password and TOTP secret are written to the **deployment platform's log
+  store**, which retains them and which more people can usually read than can
+  reach the database. That is a real downgrade from running `create` on a
+  laptop, and it is the right trade only because the alternative is no operator
+  surface at all — and because `--reset` means it can be undone rather than
+  lived with.
+
+The audit trail survives a reset: `operator_action.operator_id` is a plain
+column rather than a foreign key, precisely so deleting an operator never
+deletes the record of what they did. Verified against a real database — three
+sign-ins recorded before a reset were all still present afterwards, while the
+old session and the old password had both stopped working.
+
 ---
 
 ## Auditing, and why it is not optional here

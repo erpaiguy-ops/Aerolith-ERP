@@ -281,8 +281,11 @@ labelled parts, becomes scanned progress.
   drive the approval engine, the API, stock posting, cutlist planning, the full
   factory flow and tender-to-work-order conversion end to end
 
-**Deployment artefacts** — `apps/api/Dockerfile` and `apps/web/Dockerfile`
-(multi-stage, `turbo prune`-based), `docker-compose.prod.yml` (Postgres +
+**Deployment artefacts** — `apps/api/Dockerfile`, `apps/web/Dockerfile` and
+`apps/operator/Dockerfile`
+(multi-stage, `turbo prune`-based), `render.yaml` (a free three-service
+blueprint for trying the app, the operator surface included and removable),
+`docker-compose.prod.yml` (Postgres +
 migrate/seed + api + web + Cloudflare Tunnel, no port opened publicly),
 `scripts/backup.sh` (hourly `pg_dump` to R2, 7 daily / 4 weekly / 12 monthly
 retention) and `.github/workflows/backup-verify.yml` (the monthly

@@ -7,12 +7,13 @@
 #    login; not the posture to ship a paying customer's data behind.
 #  - The free Postgres instance expires 30 days after creation (a 14-day
 #    grace period follows). This is for trying the app, not running it.
-#  - Both free web services spin down after 15 minutes idle and take ~1
+#  - Every free web service spins down after 15 minutes idle and takes ~1
 #    minute to wake back up on the next request. Expect that on first load.
 #
-# Three values below are `sync: false` rather than guessed at: Render only
-# assigns each service's public hostname once it exists, so WEB_URL,
-# AEROLITH_API_URL and DATABASE_APP_URL cannot be known until after the first
+# Four values below are `sync: false` rather than guessed at: Render only
+# assigns each service's public hostname once it exists, and only generates
+# each secret on the first apply, so WEB_URL, AEROLITH_API_URL,
+# DATABASE_APP_URL and DATABASE_PLATFORM_URL cannot be known until after that
 # apply. See the deploy steps for exactly what to paste in and where.
 
 databases:
@@ -75,6 +76,18 @@ services:
       # stores a real secret here — nothing to type in.
       - key: APP_DB_PASSWORD
         generateValue: true
+      # Password for the SELECT-only cross-tenant role, same deal. Its presence
+      # is what turns `aerolith_platform` from NOLOGIN into a role that can
+      # actually connect (see packages/kernel/scripts/migrate.ts) — a
+      # deployment with no operator surface simply omits it and then no
+      # credential anywhere can read across tenants.
+      #
+      # Deliberately set HERE and not on aerolith-operator: this is the service
+      # that runs migrations, so this is the service that creates the role.
+      # aerolith-operator gets the assembled connection string instead, and
+      # never the owner URL that could grant itself more.
+      - key: PLATFORM_DB_PASSWORD
+        generateValue: true
       # Cannot be filled in until aerolith-db exists and its host is known.
       # See step 5 in the deploy instructions: same host/port/database as
       # DATABASE_URL above, but user `aerolith_app` and this APP_DB_PASSWORD.
@@ -110,4 +123,43 @@ services:
       # Cannot be filled in until aerolith-api exists and Render has
       # assigned it a hostname.
       - key: AEROLITH_API_URL
+        sync: false
+
+  # The VENDOR's surface — every customer in one list, and their entitlements.
+  # Not a page inside aerolith-web behind a permission flag: a different
+  # audience, a different identity realm (platform.operator, TOTP required) and
+  # a different database role. Anyone who does not want a cross-tenant surface
+  # in their deployment deletes this block and omits PLATFORM_DB_PASSWORD above,
+  # and then no process anywhere holds a credential that can read every tenant.
+  #
+  # Read-only by construction, not by convention: it connects as
+  # `aerolith_platform`, which Postgres permits SELECT and nothing else across
+  # the tenant schemas, and `assertPlatformRole` refuses to serve a single page
+  # if the connection it was handed can write `kernel.tenant`. Pointing
+  # DATABASE_PLATFORM_URL at DATABASE_URL or DATABASE_APP_URL to "make it work"
+  # fails loudly rather than silently succeeding with far more access.
+  - type: web
+    name: aerolith-operator
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/operator/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Same reasoning as aerolith-api's PORT above: the Dockerfile EXPOSEs
+      # 3002 and Next's standalone server reads PORT, so setting both to the
+      # same number removes any dependence on Render's port auto-detection.
+      - key: PORT
+        value: 3002
+      # Cannot be filled in until aerolith-db exists and PLATFORM_DB_PASSWORD
+      # has been generated on aerolith-api. Same host/port/database as the
+      # API's DATABASE_URL, but user `aerolith_platform` and that password.
+      # See the deploy steps.
+      #
+      # This service gets NO other database variable. It has no DATABASE_URL and
+      # no DATABASE_APP_URL, and that absence is the whole security posture:
+      # what a compromised operator process can do is bounded by Postgres, not
+      # by this app being careful.
+      - key: DATABASE_PLATFORM_URL
         sync: false
