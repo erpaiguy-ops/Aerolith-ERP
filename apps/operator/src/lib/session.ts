@@ -2,6 +2,7 @@ import 'server-only';
 
 import {
   authenticateOperator,
+  closeDatabase,
   createDatabase,
   getDatabase,
   recordOperatorAction,
@@ -51,7 +52,29 @@ async function connect(): Promise<void> {
     createDatabase({ connectionString: url, maxConnections: 4 });
     const { assertPlatformRole } = await import('@aerolith/kernel');
     await getDatabase().transaction(assertPlatformRole);
-  })();
+  })().catch((error: unknown) => {
+    // Cleared on failure, or the FIRST failure becomes permanent.
+    //
+    // A cached rejected promise is still cached: every later request would
+    // re-await the same rejection and the process would serve nothing but the
+    // error boundary until it restarted, with no further connection attempts in
+    // the log to explain why. That is not hypothetical on a free tier — the
+    // service wakes from idle on demand, and a managed database that is still
+    // accepting connections a second later would otherwise take the whole
+    // application down until somebody redeployed it.
+    //
+    // The message is logged here rather than left to Next's digest, because the
+    // digest is the only thing the user-facing boundary can show and it is not
+    // searchable against anything meaningful. This line is.
+    // Ends the pool the failed attempt opened. `createDatabase` assigns a
+    // module-level singleton, so a retry replaces it — and without this the
+    // displaced pool keeps its sockets and its reconnect timers for the life of
+    // the process, one leak per failed attempt.
+    ready = undefined;
+    void closeDatabase().catch(() => {});
+    console.error('operator: platform database unavailable —', error);
+    throw error;
+  });
   return ready;
 }
 

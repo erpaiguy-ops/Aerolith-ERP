@@ -18,8 +18,16 @@ export default function OperatorError({
       <div className="w-full max-w-md">
         <h1 className="mb-1 text-lg font-semibold">Something went wrong</h1>
         <p className="mb-4 text-sm text-(--color-muted)">
-          The platform database could not be read. Check that DATABASE_PLATFORM_URL is set and
-          points at the SELECT-only platform role.
+          The platform database could not be read. Check that DATABASE_PLATFORM_URL is set, reaches
+          the database, and points at the SELECT-only platform role.
+        </p>
+        {/* Named explicitly, because the three causes are indistinguishable
+            from here and the server log line separates them — a wrong
+            password, an unreachable host and the wrong role all land on this
+            screen looking identical. */}
+        <p className="mb-4 text-sm text-(--color-muted)">
+          This service&rsquo;s own log says which:{' '}
+          <code className="numeric">operator: platform database unavailable</code>.
         </p>
         <button
           type="button"
