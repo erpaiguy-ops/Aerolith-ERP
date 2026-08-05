@@ -52,17 +52,26 @@ fi
 # every tenant — permanently, for one first-run convenience.
 #
 # Idempotent: with the account already present this prints one line and exits.
-# Set BOOTSTRAP_OPERATOR_RESET=true to replace it (new password, new TOTP
-# secret, existing sessions revoked), which is also how the credentials printed
-# below get rotated once they have been read off a log.
+# BOOTSTRAP_OPERATOR_RESET replaces the account (new password, new TOTP secret,
+# existing sessions revoked), which is how the credentials printed below get
+# rotated once they have been read off a log.
+#
+# Its VALUE is passed through, not just its presence, and that matters here more
+# than anywhere else this script runs: this file executes on every container
+# start, which on a free tier means every wake from idle, several times a day.
+# A presence-only switch left set in a dashboard would therefore rotate the
+# credentials again on every wake and silently break the authenticator somebody
+# had just enrolled. `operator bootstrap` records each applied value, so setting
+# it once rotates once and leaving it set does nothing — rotating again means
+# changing the value.
 #
 # Not under `set -e`, for the same reason as the demo seed above: a failure to
 # create a vendor account has no bearing on whether the API can serve the
 # customers already in the database, and a boot script that exits here would
 # crash-loop the entire service on every cold start.
 if [ -n "$BOOTSTRAP_OPERATOR_EMAIL" ]; then
-  if [ "$BOOTSTRAP_OPERATOR_RESET" = "true" ]; then
-    set -- --reset
+  if [ -n "$BOOTSTRAP_OPERATOR_RESET" ] && [ "$BOOTSTRAP_OPERATOR_RESET" != "false" ]; then
+    set -- --reset "$BOOTSTRAP_OPERATOR_RESET"
   else
     set --
   fi

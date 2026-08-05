@@ -17,12 +17,12 @@
  *
  * `bootstrap` is the same thing for a host with no shell — see its comment.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 
 import { assertPasswordAcceptable, hashPassword } from '../src/auth/password';
 import { closeDatabase, createDatabase, getDatabase } from '../src/db';
-import { operator } from '../src/db/schema/platform';
+import { operator, operatorAction } from '../src/db/schema/platform';
 import { generateTotpSecret, totpUri, verifyTotp } from '../src/platform/totp';
 
 const url = process.env.DATABASE_URL;
@@ -76,6 +76,24 @@ async function create(): Promise<void> {
   console.log(`    pnpm --filter @aerolith/kernel operator confirm --email ${email} --code <6 digits>\n`);
 }
 
+const BOOTSTRAP_ACTION = 'operator.bootstrap';
+
+/**
+ * `--reset` with or without a value.
+ *
+ * A bare `--reset` is what somebody types by hand; a value is what the boot
+ * script passes, since the value is the thing that makes the switch one-shot.
+ * Guarding against the next argv element being another flag matters because
+ * `--reset --email x` would otherwise silently adopt `--email` as the token,
+ * and the resulting marker would never match anything the user recognises.
+ */
+function resetToken(): string | undefined {
+  const index = process.argv.indexOf('--reset');
+  if (index === -1) return undefined;
+  const next = process.argv[index + 1];
+  return !next || next.startsWith('--') ? 'true' : next;
+}
+
 /**
  * The same account, created where there is no shell.
  *
@@ -93,13 +111,28 @@ async function create(): Promise<void> {
  *    step, so there is nothing for a confirm round-trip to catch, and requiring
  *    one would mean a second deploy carrying a six-digit code in an env var.
  *
- * 2. **Idempotent, and re-runnable with `--reset`.** This runs from a boot
- *    script, and boot scripts run on every cold start, not once. An existing
- *    account is left exactly as it is; `--reset` is the deliberate opt-in that
- *    replaces it, which is also the rotation path when the printed credentials
- *    need replacing. The audit trail survives either way: `operator_action`
- *    holds `operator_id` as a plain column rather than a foreign key, precisely
- *    so deleting an operator never deletes the record of what they did.
+ * 2. **Idempotent, and re-runnable with `--reset <token>`.** This runs from a
+ *    boot script, and boot scripts run on every container start, not once. An
+ *    existing account is left exactly as it is; `--reset` is the deliberate
+ *    opt-in that replaces it, which is also the rotation path when the printed
+ *    credentials need replacing. The audit trail survives either way:
+ *    `operator_action` holds `operator_id` as a plain column rather than a
+ *    foreign key, precisely so deleting an operator never deletes the record of
+ *    what they did.
+ *
+ * **`--reset` applies once per token, not once per boot**, and that is the
+ * difference between a usable rotation switch and a trap. The environment
+ * variable behind it is set in a dashboard, and a boot script re-reads it on
+ * every cold start — several times a day on a free tier that sleeps after 15
+ * minutes idle. A naive `--reset` would therefore regenerate the password and
+ * TOTP secret behind the operator's back on every wake, and the symptom would
+ * be an authenticator that "randomly stops working", diagnosed against a login
+ * page whose error message is deliberately uninformative. Recording each
+ * applied token in `operator_action` makes the switch one-shot: leaving it set
+ * does nothing, and rotating again is changing its VALUE rather than toggling
+ * it off and on. That the marker lands in the audit trail is not a workaround —
+ * a credential rotation is exactly the sort of vendor action that table exists
+ * to record.
  *
  * The cost, stated plainly rather than buried: the password and TOTP secret are
  * written to the deployment platform's log store, which retains them and which
@@ -111,7 +144,7 @@ async function create(): Promise<void> {
 async function bootstrap(): Promise<void> {
   const email = required('email').trim().toLowerCase();
   const name = flag('name') ?? email;
-  const reset = process.argv.includes('--reset');
+  const reset = resetToken();
 
   const database = getDatabase();
   const [existing] = await database
@@ -124,11 +157,32 @@ async function bootstrap(): Promise<void> {
     console.log(`✓ operator ${email} already exists — leaving it alone.`);
     return;
   }
-  if (existing) {
+  if (existing && reset) {
+    const [applied] = await database
+      .select({ occurredAt: operatorAction.occurredAt })
+      .from(operatorAction)
+      .where(
+        and(
+          eq(operatorAction.action, BOOTSTRAP_ACTION),
+          eq(operatorAction.operatorEmail, email),
+          sql`${operatorAction.detail}->>'resetToken' = ${reset}`,
+        ),
+      )
+      .limit(1);
+
+    if (applied) {
+      console.log(
+        `✓ operator ${email} already exists, and reset "${reset}" was already applied ` +
+          `at ${applied.occurredAt.toISOString()} — leaving the account alone.`,
+      );
+      console.log('  To rotate again, change the reset value rather than re-setting it.');
+      return;
+    }
+
     // Cascades to `operator_session`, which is the point: rotating credentials
     // that have been read off a log has to invalidate whatever was signed in
     // with them, or the rotation is cosmetic.
-    console.log(`→ --reset given: replacing the existing ${email} and revoking its sessions`);
+    console.log(`→ reset "${reset}" not yet applied: replacing ${email} and revoking its sessions`);
     await database.delete(operator).where(eq(operator.id, existing.id));
   }
 
@@ -136,12 +190,28 @@ async function bootstrap(): Promise<void> {
   assertPasswordAcceptable(password);
   const secret = generateTotpSecret();
 
-  await getDatabase().insert(operator).values({
-    email,
-    name,
-    passwordHash: await hashPassword(password),
-    totpSecret: secret,
-    totpConfirmedAt: new Date(),
+  const [created] = await getDatabase()
+    .insert(operator)
+    .values({
+      email,
+      name,
+      passwordHash: await hashPassword(password),
+      totpSecret: secret,
+      totpConfirmedAt: new Date(),
+    })
+    .returning({ id: operator.id });
+
+  if (!created) throw new Error(`insert into platform.operator returned no row for ${email}.`);
+
+  // The marker, and the audit entry, in one row. Written AFTER the account
+  // exists rather than before: a crash between the two would otherwise leave a
+  // token recorded as applied with no account to show for it, and the next boot
+  // would skip the work believing it was already done.
+  await getDatabase().insert(operatorAction).values({
+    operatorId: created.id,
+    operatorEmail: email,
+    action: BOOTSTRAP_ACTION,
+    detail: { reset: Boolean(existing), resetToken: reset ?? null },
   });
 
   console.log('');
@@ -156,8 +226,18 @@ async function bootstrap(): Promise<void> {
   console.log(`  │ ${totpUri(secret, email)}`);
   console.log('  │');
   console.log('  │ These are now in this deployment log. Unset the bootstrap');
-  console.log('  │ environment variables once enrolled; re-run with --reset to');
-  console.log('  │ rotate them.');
+  console.log('  │ environment variables once enrolled.');
+  console.log('  │');
+  if (reset) {
+    // Worth one line, because "leaving it set is safe" is the opposite of what
+    // anyone expects from a variable named RESET, and being told so here is
+    // what stops the next cold start from being watched anxiously.
+    console.log(`  │ Reset "${reset}" is now recorded as applied — leaving the`);
+    console.log('  │ variable set does nothing on later restarts. To rotate');
+    console.log('  │ again, change its value.');
+  } else {
+    console.log('  │ To rotate them, set the reset variable to any value.');
+  }
   console.log('  └─────────────────────────────────────────────────────────────');
   console.log('');
 }

@@ -375,8 +375,21 @@ login page nobody can get past. Setting `BOOTSTRAP_OPERATOR_EMAIL` (and
 optionally `BOOTSTRAP_OPERATOR_NAME`) on `aerolith-api` creates the account on
 the next boot and prints the password and enrolment URI to the deploy log.
 It is idempotent — an existing account is left alone — and
-`BOOTSTRAP_OPERATOR_RESET=true` replaces it, revoking its sessions, which is
-also the rotation path.
+`BOOTSTRAP_OPERATOR_RESET` replaces it, revoking its sessions, which is also the
+rotation path.
+
+**The reset applies once per value, not once per boot.** That distinction is the
+whole difference between a rotation switch and a trap. The variable is set in a
+dashboard and the boot script re-reads it on every container start — which on a
+free tier means every wake from idle, several times a day. A presence-only
+switch left set would therefore regenerate the password and TOTP secret behind
+the operator's back on every wake, and the symptom would be an authenticator
+that "randomly stops working", diagnosed against a login page whose error
+message is deliberately uninformative. Each applied value is recorded in
+`operator_action`, so setting it once rotates once, leaving it set does nothing,
+and rotating again means changing the value (`rotate-august`, `2`, anything).
+The marker is not a workaround living in the audit table: a credential rotation
+is exactly the sort of vendor action that table exists to record.
 
 Two honest costs, neither of them hidden:
 
@@ -396,7 +409,8 @@ The audit trail survives a reset: `operator_action.operator_id` is a plain
 column rather than a foreign key, precisely so deleting an operator never
 deletes the record of what they did. Verified against a real database — three
 sign-ins recorded before a reset were all still present afterwards, while the
-old session and the old password had both stopped working.
+old session and the old password had both stopped working, and repeating the
+same reset value twice more left the account untouched both times.
 
 ---
 
