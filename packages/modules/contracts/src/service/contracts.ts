@@ -1,0 +1,1801 @@
+/**
+ * Contract, variation and payment application lifecycle.
+ *
+ * The commercial terms of a contract are read from the resolved rule snapshot
+ * (tenant → country → default) at creation and then SNAPSHOTTED onto the row. A
+ * UAE tenant gets 10% retention, a 50/50 release, a 12-month defects period and
+ * 60-day terms without configuring anything, because the country pack already
+ * says so — and an admin who later changes the tenant default does not silently
+ * restate a contract that has been signed and part-certified.
+ */
+import {
+  allocateNumber,
+  emit,
+  listResult,
+  loadRuleSnapshot,
+  recordAudit,
+  requireTenantContext,
+  ruleValue,
+  schema,
+  searchPattern,
+  type ListParams,
+  type ListResult,
+  type Transaction,
+} from '@aerolith/kernel';
+import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+
+import {
+  backCharge,
+  contract,
+  contractLine,
+  paymentApplication,
+  paymentApplicationLine,
+  retentionRelease,
+  variation,
+  variationLine,
+} from '../db/schema';
+import { sumAgreedBackCharges } from './backcharges';
+import {
+  compareCertification,
+  paymentDue,
+  retentionReleasable,
+  valuePayment,
+  type RetentionReleaseTerms,
+  type ValuationInput,
+  type Valuation,
+} from '../domain/payment';
+import {
+  INSTRUCTED_STATUSES,
+  noticeStatus,
+  valueVariation,
+  variationPosition,
+  type ValuationBasis,
+  type VariationPosition,
+  type VariationStatus,
+} from '../domain/variation';
+
+export const MODULE_KEY = 'contracts';
+
+export class ContractsError extends Error {
+  override readonly name = 'ContractsError';
+}
+
+const num = (value: string | null | undefined): number => (value == null ? 0 : Number(value));
+
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
+
+export interface CreateContractInput {
+  name: string;
+  side?: 'receivable' | 'payable';
+  projectId?: string | null;
+  counterpartyId?: string | null;
+  externalReference?: string | null;
+  form?: string | null;
+  currencyCode?: string | null;
+  /** ISO country for rule resolution. The project's country, not the tenant's. */
+  countryCode: string;
+  originalSum: number;
+  lines?: ContractLineInput[];
+  advanceAmount?: number;
+  ldPerDay?: number | null;
+  ldCapPercent?: number | null;
+  awardedOn?: string | null;
+  contractCompletionDate?: string | null;
+  sourceTenderId?: string | null;
+  sourceEstimateId?: string | null;
+  /** Explicit overrides where the contract genuinely differs from the norm. */
+  overrides?: {
+    retentionPercent?: number;
+    retentionCapPercent?: number;
+    paymentTermDays?: number;
+    defectsLiabilityMonths?: number;
+    noticePeriodDays?: number;
+    taxPercent?: number;
+  };
+}
+
+export interface ContractLineInput {
+  reference?: string | null;
+  sectionName?: string | null;
+  description: string;
+  quantity: number;
+  uomCode?: string | null;
+  unitRate: number;
+  kind?: string;
+  sourceEstimateLineId?: string | null;
+  wbsNodeId?: string | null;
+}
+
+export async function createContract(
+  tx: Transaction,
+  input: CreateContractInput,
+): Promise<{ contractId: string; number: string; terms: Record<string, unknown> }> {
+  const { tenantId, userId } = requireTenantContext();
+
+  const snapshot = await loadRuleSnapshot(tx, { tenantId, countryCode: input.countryCode });
+  const o = input.overrides ?? {};
+
+  const retentionPercent =
+    o.retentionPercent ?? ruleValue<number>(snapshot, 'contract.retention.default_percent');
+  const releaseSchedule = ruleValue<{ practicalCompletion: number; endOfDlp: number }>(
+    snapshot,
+    'contract.retention.release_schedule',
+  );
+  const paymentTermDays =
+    o.paymentTermDays ?? ruleValue<number>(snapshot, 'contract.payment_terms.default_days');
+  const defectsLiabilityMonths =
+    o.defectsLiabilityMonths ?? ruleValue<number>(snapshot, 'contract.dlp.default_months');
+  const noticePeriodDays =
+    o.noticePeriodDays ?? ruleValue<number>(snapshot, 'contracts.variation.notice_period_days');
+  const advanceStart = ruleValue<number>(snapshot, 'contracts.advance.recovery_start_percent');
+  const advanceEnd = ruleValue<number>(snapshot, 'contracts.advance.recovery_end_percent');
+
+  const allocated = await allocateNumber(tx, { entityType: 'contracts.contract' });
+
+  const [created] = await tx
+    .insert(contract)
+    .values({
+      tenantId,
+      number: allocated.formatted,
+      numberPeriod: allocated.period,
+      numberValue: allocated.value,
+      projectId: input.projectId,
+      counterpartyId: input.counterpartyId,
+      side: input.side ?? 'receivable',
+      name: input.name,
+      externalReference: input.externalReference,
+      form: input.form,
+      currencyCode: input.currencyCode,
+      originalSum: input.originalSum.toFixed(2),
+      // No variations yet, so the current sum starts equal to the original.
+      currentSum: input.originalSum.toFixed(2),
+
+      retentionPercent: String(retentionPercent),
+      // The retention cap defaults to the retention percentage itself, which is
+      // the common Gulf formulation ("10% retention limited to 10% of the
+      // contract sum") and never over-holds when the contract is silent.
+      retentionCapPercent: String(o.retentionCapPercent ?? retentionPercent),
+      retentionReleaseSchedule: releaseSchedule,
+      paymentTermDays,
+      defectsLiabilityMonths,
+      noticePeriodDays,
+      taxPercent: o.taxPercent == null ? null : String(o.taxPercent),
+
+      advanceAmount: (input.advanceAmount ?? 0).toFixed(2),
+      advanceRecoveryStartPercent: String(advanceStart),
+      advanceRecoveryEndPercent: String(advanceEnd),
+      ldPerDay: input.ldPerDay == null ? null : input.ldPerDay.toFixed(2),
+      ldCapPercent: input.ldCapPercent == null ? null : String(input.ldCapPercent),
+
+      awardedOn: input.awardedOn,
+      contractCompletionDate: input.contractCompletionDate,
+      sourceTenderId: input.sourceTenderId,
+      sourceEstimateId: input.sourceEstimateId,
+      createdBy: userId,
+    })
+    .returning({ id: contract.id });
+
+  const contractId = created!.id;
+
+  for (const [index, line] of (input.lines ?? []).entries()) {
+    await tx.insert(contractLine).values({
+      tenantId,
+      contractId,
+      lineNumber: index + 1,
+      reference: line.reference,
+      sectionName: line.sectionName,
+      description: line.description,
+      quantity: line.quantity.toFixed(4),
+      uomCode: line.uomCode,
+      unitRate: line.unitRate.toFixed(4),
+      lineValue: (line.quantity * line.unitRate).toFixed(2),
+      kind: line.kind ?? 'measured',
+      sourceEstimateLineId: line.sourceEstimateLineId,
+      wbsNodeId: line.wbsNodeId,
+    });
+  }
+
+  const terms = {
+    retentionPercent,
+    retentionCapPercent: o.retentionCapPercent ?? retentionPercent,
+    retentionReleaseSchedule: releaseSchedule,
+    paymentTermDays,
+    defectsLiabilityMonths,
+    noticePeriodDays,
+    advanceRecoveryStartPercent: advanceStart,
+    advanceRecoveryEndPercent: advanceEnd,
+  };
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.contract',
+    entityId: contractId,
+    entityLabel: allocated.formatted,
+    action: 'create',
+    metadata: { originalSum: input.originalSum, countryCode: input.countryCode, terms },
+  });
+
+  return { contractId, number: allocated.formatted, terms };
+}
+
+// ---------------------------------------------------------------------------
+// Variations
+// ---------------------------------------------------------------------------
+
+export interface CreateVariationInput {
+  contractId: string;
+  title: string;
+  description?: string | null;
+  basis?: ValuationBasis;
+  lines?: {
+    description: string;
+    quantity: number;
+    uomCode?: string | null;
+    unitRate: number;
+    unitCost?: number | null;
+    sourceContractLineId?: string | null;
+    wbsNodeId?: string | null;
+  }[];
+  dayworks?: Record<string, unknown>;
+  lumpSumValue?: number;
+  lumpSumCost?: number;
+  ohpPercent?: number;
+  instructionReference?: string | null;
+  instructedOn?: string | null;
+  instructedBy?: string | null;
+  instructionDocumentId?: string | null;
+  eotClaimedDays?: number | null;
+  /**
+   * How much of the instructed work is actually built. Weights the exposure
+   * figure — an instruction for work not yet started is a commitment, not money
+   * already spent, and counting it as exposure inflates the number until nobody
+   * looks at it.
+   */
+  percentExecuted?: number;
+}
+
+/**
+ * Raises a variation and prices it.
+ *
+ * A variation with an instruction date starts life `instructed`, not
+ * `identified`: the client has said proceed, so the work is exposure from that
+ * moment. Recording it as merely identified until someone gets round to pricing
+ * it is precisely how exposure becomes invisible.
+ */
+export async function createVariation(
+  tx: Transaction,
+  input: CreateVariationInput,
+): Promise<{ variationId: string; number: string; value: number; cost: number | null }> {
+  const { tenantId, userId } = requireTenantContext();
+
+  const basis = input.basis ?? 'contract_rates';
+  const valuation = valueVariation({
+    basis,
+    lines: input.lines?.map((l) => ({
+      description: l.description,
+      quantity: l.quantity,
+      unitRate: l.unitRate,
+      unitCost: l.unitCost ?? undefined,
+    })),
+    dayworks: input.dayworks as never,
+    lumpSumValue: input.lumpSumValue,
+    lumpSumCost: input.lumpSumCost,
+    ohpPercent: input.ohpPercent,
+  });
+
+  const allocated = await allocateNumber(tx, { entityType: 'contracts.variation' });
+
+  const [created] = await tx
+    .insert(variation)
+    .values({
+      tenantId,
+      contractId: input.contractId,
+      number: allocated.formatted,
+      numberPeriod: allocated.period,
+      numberValue: allocated.value,
+      title: input.title,
+      description: input.description,
+      status: input.instructedOn ? 'instructed' : 'identified',
+      basis,
+      instructionReference: input.instructionReference,
+      instructedOn: input.instructedOn,
+      instructedBy: input.instructedBy,
+      instructionDocumentId: input.instructionDocumentId,
+      quotedValue: valuation.value.toFixed(2),
+      quotedCost: valuation.cost == null ? null : valuation.cost.toFixed(2),
+      eotClaimedDays: input.eotClaimedDays,
+      percentExecuted: (input.percentExecuted ?? 0).toFixed(3),
+      dayworks: input.dayworks ?? {},
+      ohpPercent: input.ohpPercent == null ? null : String(input.ohpPercent),
+      createdBy: userId,
+    })
+    .returning({ id: variation.id });
+
+  const variationId = created!.id;
+
+  for (const [index, line] of (input.lines ?? []).entries()) {
+    await tx.insert(variationLine).values({
+      tenantId,
+      variationId,
+      lineNumber: index + 1,
+      description: line.description,
+      quantity: line.quantity.toFixed(4),
+      uomCode: line.uomCode,
+      unitRate: line.unitRate.toFixed(4),
+      unitCost: line.unitCost == null ? null : line.unitCost.toFixed(4),
+      lineValue: (line.quantity * line.unitRate).toFixed(2),
+      sourceContractLineId: line.sourceContractLineId,
+      wbsNodeId: line.wbsNodeId,
+    });
+  }
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.variation',
+    entityId: variationId,
+    entityLabel: allocated.formatted,
+    action: 'create',
+    metadata: { basis, value: valuation.value, instructed: Boolean(input.instructedOn) },
+  });
+
+  return {
+    variationId,
+    number: allocated.formatted,
+    value: valuation.value,
+    cost: valuation.cost,
+  };
+}
+
+/**
+ * Records the client's approval of a variation and moves the contract sum.
+ *
+ * `approvedValue` is what the client agreed, which is usually not what was
+ * quoted. Both are kept: a client who settles every variation at 70% of the
+ * quote is a pattern that should change how the next one is priced, and it only
+ * becomes visible if the quote survives the approval.
+ */
+export async function approveVariation(
+  tx: Transaction,
+  input: { variationId: string; approvedValue: number; approvedOn: string; reference?: string | null; eotGrantedDays?: number | null },
+): Promise<{ contractId: string; currentSum: number; variance: number }> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select()
+    .from(variation)
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  if (!row) throw new ContractsError('Variation not found.');
+  if (row.status === 'approved') throw new ContractsError('Variation is already approved.');
+  if (row.status === 'withdrawn' || row.status === 'rejected') {
+    throw new ContractsError(`A ${row.status} variation cannot be approved.`);
+  }
+
+  await tx
+    .update(variation)
+    .set({
+      status: 'approved',
+      approvedValue: input.approvedValue.toFixed(2),
+      approvedOn: input.approvedOn,
+      approvedReference: input.reference,
+      eotGrantedDays: input.eotGrantedDays,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  const currentSum = await recalculateContractSum(tx, row.contractId);
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.variation',
+    entityId: input.variationId,
+    entityLabel: row.number,
+    action: 'approve',
+    metadata: {
+      quotedValue: num(row.quotedValue),
+      approvedValue: input.approvedValue,
+      currentSum,
+    },
+  });
+
+  await emit(tx, {
+    type: 'contracts.variation.approved',
+    sourceModule: MODULE_KEY,
+    aggregateType: 'contracts.variation',
+    aggregateId: input.variationId,
+    payload: {
+      contractId: row.contractId,
+      approvedValue: input.approvedValue,
+      currentSum,
+      eotGrantedDays: input.eotGrantedDays ?? 0,
+    },
+  });
+
+  return {
+    contractId: row.contractId,
+    currentSum,
+    variance: input.approvedValue - num(row.quotedValue),
+  };
+}
+
+/**
+ * Recomputes and stores the contract sum from approved variations only.
+ *
+ * Recomputed from the register rather than incremented on each approval. An
+ * incremented total drifts the first time an approval is corrected, and a
+ * contract sum that disagrees with the variation register is an argument nobody
+ * can win.
+ */
+export async function recalculateContractSum(
+  tx: Transaction,
+  contractId: string,
+): Promise<number> {
+  const { tenantId } = requireTenantContext();
+
+  const [head] = await tx
+    .select({ originalSum: contract.originalSum })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+
+  const [approved] = await tx
+    .select({ total: sql<string>`coalesce(sum(${variation.approvedValue}), 0)` })
+    .from(variation)
+    .where(
+      and(
+        eq(variation.tenantId, tenantId),
+        eq(variation.contractId, contractId),
+        eq(variation.status, 'approved'),
+      ),
+    );
+
+  const currentSum = num(head.originalSum) + num(approved?.total);
+
+  await tx
+    .update(contract)
+    .set({ currentSum: currentSum.toFixed(2), updatedAt: new Date() })
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, contractId)));
+
+  return currentSum;
+}
+
+/** The variation register, with exposure separated from approved value. */
+export async function getVariationPosition(
+  tx: Transaction,
+  input: { contractId: string; asAt?: Date },
+): Promise<VariationPosition> {
+  const { tenantId } = requireTenantContext();
+
+  const [head] = await tx
+    .select({ originalSum: contract.originalSum })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+
+  const rows = await tx
+    .select()
+    .from(variation)
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.contractId, input.contractId)))
+    .orderBy(asc(variation.numberValue));
+
+  return variationPosition(
+    num(head.originalSum),
+    rows.map((v) => ({
+      id: v.id,
+      reference: v.number ?? v.id,
+      status: v.status as VariationStatus,
+      // An approved variation is worth what was agreed; an unapproved one is
+      // worth what is claimed. Using the quote for both would report an
+      // approved variation at a price the client never accepted.
+      value: v.status === 'approved' ? num(v.approvedValue) : num(v.quotedValue),
+      cost: v.quotedCost == null ? null : num(v.quotedCost),
+      percentExecuted: num(v.percentExecuted),
+      instructedOn: v.instructedOn ? new Date(v.instructedOn) : null,
+      approvedOn: v.approvedOn ? new Date(v.approvedOn) : null,
+    })),
+    input.asAt,
+  );
+}
+
+/**
+ * Variations whose notice period is running out or has run out.
+ *
+ * The one report in this module that pays for the module. Entitlement lost to a
+ * missed 28-day notice is entitlement lost permanently, and the system already
+ * knows every instruction date.
+ */
+export async function getNoticeExposure(
+  tx: Transaction,
+  input: { contractId: string; asAt?: Date; warnWithinDays?: number },
+): Promise<
+  { variationId: string; number: string | null; title: string; value: number; status: ReturnType<typeof noticeStatus> }[]
+> {
+  const { tenantId } = requireTenantContext();
+
+  const [head] = await tx
+    .select({ noticePeriodDays: contract.noticePeriodDays })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+  const noticePeriodDays = head.noticePeriodDays ?? 28;
+  const warnWithin = input.warnWithinDays ?? 7;
+
+  const rows = await tx
+    .select()
+    .from(variation)
+    .where(
+      and(
+        eq(variation.tenantId, tenantId),
+        eq(variation.contractId, input.contractId),
+        inArray(variation.status, ['identified', 'instructed', 'quoted', 'submitted']),
+      ),
+    );
+
+  return rows
+    .filter((v) => v.instructedOn != null)
+    .map((v) => ({
+      variationId: v.id,
+      number: v.number,
+      title: v.title,
+      value: num(v.quotedValue),
+      status: noticeStatus({
+        noticePeriodDays,
+        eventOn: new Date(v.instructedOn!),
+        noticeGivenOn: v.noticeGivenOn ? new Date(v.noticeGivenOn) : null,
+        asAt: input.asAt,
+      }),
+    }))
+    .filter((r) => r.status.isTimeBarred || (!r.status.isGiven && r.status.daysRemaining <= warnWithin))
+    .sort((a, b) => a.status.daysRemaining - b.status.daysRemaining);
+}
+
+// ---------------------------------------------------------------------------
+// Payment applications
+// ---------------------------------------------------------------------------
+
+export interface CreateApplicationInput {
+  contractId: string;
+  periodTo: string;
+  periodFrom?: string | null;
+  /** Cumulative value of measured contract work. Not this month's. */
+  workDoneToDate: number;
+  /** Cumulative value of approved variation work executed. */
+  variationsToDate?: number;
+  materialsOnSite?: number;
+  materialsOnSitePercent?: number;
+  backChargesToDate?: number;
+  liquidatedDamagesToDate?: number;
+  retentionReleased?: number;
+  taxPercent?: number;
+  countryCode?: string;
+  lines?: {
+    contractLineId?: string | null;
+    variationId?: string | null;
+    description: string;
+    uomCode?: string | null;
+    unitRate: number;
+    quantityContract?: number | null;
+    quantityToDate: number;
+  }[];
+  notes?: string | null;
+}
+
+export interface CreateApplicationResult {
+  applicationId: string;
+  number: string;
+  sequence: number;
+  valuation: Valuation;
+}
+
+/**
+ * Prepares the next interim payment application.
+ *
+ * The previous application supplies `previouslyCertifiedNet` and
+ * `previouslyRecoveredAdvance`. Critically it uses what was CERTIFIED, not what
+ * was applied for: if the client cut last month's application, this month's
+ * difference must be measured against the certificate they actually issued, or
+ * the disallowance silently disappears and is never re-claimed.
+ */
+export async function createPaymentApplication(
+  tx: Transaction,
+  input: CreateApplicationInput,
+): Promise<CreateApplicationResult> {
+  const { tenantId, userId } = requireTenantContext();
+
+  const [head] = await tx
+    .select()
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+  if (head.status === 'draft') {
+    throw new ContractsError('Activate the contract before applying for payment against it.');
+  }
+
+  const previous = await tx
+    .select()
+    .from(paymentApplication)
+    .where(
+      and(
+        eq(paymentApplication.tenantId, tenantId),
+        eq(paymentApplication.contractId, input.contractId),
+      ),
+    )
+    .orderBy(desc(paymentApplication.sequence))
+    .limit(1);
+
+  const last = previous[0];
+  if (last && ['draft', 'pending_approval', 'submitted'].includes(last.status)) {
+    throw new ContractsError(
+      `Application ${last.number ?? last.sequence} is still ${last.status}. Certify or ` +
+        'cancel it before raising the next one — two open applications produce two ' +
+        'different cumulative positions.',
+    );
+  }
+
+  const sequence = (last?.sequence ?? 0) + 1;
+
+  // Certified where the client has certified, applied where they have not yet.
+  // Falling back to the applied figure keeps a not-yet-certified application
+  // from resetting the cumulative position to zero.
+  const previouslyCertifiedNet = last
+    ? last.certifiedNet != null
+      ? num(last.certifiedNet)
+      : num(last.netValuationToDate)
+    : 0;
+
+  const materialsPercent =
+    input.materialsOnSitePercent ??
+    (input.countryCode
+      ? ruleValue<number>(
+          await loadRuleSnapshot(tx, { tenantId, countryCode: input.countryCode }),
+          'contracts.application.materials_on_site_percent',
+        )
+      : 100);
+
+  // Straight from the register when the caller does not override it — see
+  // `sumAgreedBackCharges` for why 'disputed' and 'written_off' are excluded.
+  // An explicit `0` is a real override (nothing to deduct this cycle) and is
+  // left alone; only `undefined` falls back to the register.
+  const backChargesToDate =
+    input.backChargesToDate ?? (await sumAgreedBackCharges(tx, input.contractId));
+
+  const valuationInput: ValuationInput = {
+    contractSum: num(head.currentSum),
+    workDoneToDate: input.workDoneToDate,
+    variationsToDate: input.variationsToDate,
+    materialsOnSite: input.materialsOnSite,
+    materialsOnSitePercent: materialsPercent,
+    retention: head.retentionPercent
+      ? {
+          percent: num(head.retentionPercent),
+          capPercentOfContractSum: head.retentionCapPercent
+            ? num(head.retentionCapPercent)
+            : undefined,
+        }
+      : undefined,
+    advance:
+      num(head.advanceAmount) > 0
+        ? {
+            amount: num(head.advanceAmount),
+            recoveryStartsAtProgressPercent: head.advanceRecoveryStartPercent
+              ? num(head.advanceRecoveryStartPercent)
+              : undefined,
+            recoveryCompleteAtProgressPercent: head.advanceRecoveryEndPercent
+              ? num(head.advanceRecoveryEndPercent)
+              : undefined,
+          }
+        : undefined,
+    retentionReleased: input.retentionReleased,
+    backChargesToDate,
+    liquidatedDamagesToDate: input.liquidatedDamagesToDate,
+    previouslyCertifiedNet,
+    previouslyRecoveredAdvance: last ? num(last.advanceRecoveredToDate) : 0,
+    taxPercent: input.taxPercent ?? (head.taxPercent ? num(head.taxPercent) : 0),
+  };
+
+  const valuation = valuePayment(valuationInput);
+  const allocated = await allocateNumber(tx, { entityType: 'contracts.payment_application' });
+
+  const [created] = await tx
+    .insert(paymentApplication)
+    .values({
+      tenantId,
+      contractId: input.contractId,
+      number: allocated.formatted,
+      numberPeriod: allocated.period,
+      numberValue: allocated.value,
+      sequence,
+      status: 'draft',
+      periodFrom: input.periodFrom,
+      periodTo: input.periodTo,
+      contractSumAtValuation: valuation.contractSum.toFixed(2),
+
+      workDoneToDate: valuation.workDoneToDate.toFixed(2),
+      variationsToDate: valuation.variationsToDate.toFixed(2),
+      materialsOnSite: (input.materialsOnSite ?? 0).toFixed(2),
+      materialsOnSitePercent: String(materialsPercent),
+      grossValuationToDate: valuation.grossValuationToDate.toFixed(2),
+
+      retentionHeldToDate: valuation.retentionHeldToDate.toFixed(2),
+      retentionReleased: valuation.retentionReleasedThisCertificate.toFixed(2),
+      advanceRecoveredToDate: valuation.advanceRecoveredToDate.toFixed(2),
+      backChargesToDate: valuation.backChargesToDate.toFixed(2),
+      liquidatedDamagesToDate: valuation.liquidatedDamagesToDate.toFixed(2),
+
+      netValuationToDate: valuation.netValuationToDate.toFixed(2),
+      previouslyCertifiedNet: valuation.previouslyCertifiedNet.toFixed(2),
+      netThisApplication: valuation.netThisCertificate.toFixed(2),
+      taxAmount: valuation.taxAmount.toFixed(2),
+      totalApplied: valuation.totalPayable.toFixed(2),
+
+      notes: input.notes,
+      createdBy: userId,
+    })
+    .returning({ id: paymentApplication.id });
+
+  const applicationId = created!.id;
+
+  for (const line of input.lines ?? []) {
+    const previousQuantity = line.contractLineId
+      ? await previousCertifiedQuantity(tx, input.contractId, line.contractLineId, sequence)
+      : 0;
+
+    const valueToDate = line.quantityToDate * line.unitRate;
+
+    await tx.insert(paymentApplicationLine).values({
+      tenantId,
+      applicationId,
+      contractLineId: line.contractLineId,
+      variationId: line.variationId,
+      description: line.description,
+      uomCode: line.uomCode,
+      unitRate: line.unitRate.toFixed(4),
+      quantityContract: line.quantityContract == null ? null : line.quantityContract.toFixed(4),
+      quantityToDate: line.quantityToDate.toFixed(4),
+      quantityPrevious: previousQuantity.toFixed(4),
+      valueToDate: valueToDate.toFixed(2),
+      valueThisPeriod: ((line.quantityToDate - previousQuantity) * line.unitRate).toFixed(2),
+    });
+  }
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.payment_application',
+    entityId: applicationId,
+    entityLabel: allocated.formatted,
+    action: 'create',
+    metadata: {
+      sequence,
+      grossValuationToDate: valuation.grossValuationToDate,
+      netThisApplication: valuation.netThisCertificate,
+    },
+  });
+
+  return { applicationId, number: allocated.formatted, sequence, valuation };
+}
+
+async function previousCertifiedQuantity(
+  tx: Transaction,
+  contractId: string,
+  contractLineId: string,
+  currentSequence: number,
+): Promise<number> {
+  const { tenantId } = requireTenantContext();
+
+  const rows = await tx
+    .select({
+      quantityToDate: paymentApplicationLine.quantityToDate,
+      quantityCertified: paymentApplicationLine.quantityCertified,
+      sequence: paymentApplication.sequence,
+    })
+    .from(paymentApplicationLine)
+    .innerJoin(
+      paymentApplication,
+      eq(paymentApplicationLine.applicationId, paymentApplication.id),
+    )
+    .where(
+      and(
+        eq(paymentApplicationLine.tenantId, tenantId),
+        eq(paymentApplicationLine.contractLineId, contractLineId),
+        eq(paymentApplication.contractId, contractId),
+      ),
+    )
+    .orderBy(desc(paymentApplication.sequence));
+
+  const previous = rows.find((r) => r.sequence < currentSequence);
+  if (!previous) return 0;
+
+  // Certified quantity where the client measured the line, applied quantity
+  // otherwise — the same precedence as the header figures, for the same reason.
+  return previous.quantityCertified != null
+    ? num(previous.quantityCertified)
+    : num(previous.quantityToDate);
+}
+
+/** Submits an application to the client and sets the due date from the terms. */
+export async function submitApplication(
+  tx: Transaction,
+  input: { applicationId: string; submittedOn: string },
+): Promise<{ number: string | null; dueOn: string }> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select({
+      id: paymentApplication.id,
+      number: paymentApplication.number,
+      status: paymentApplication.status,
+      contractId: paymentApplication.contractId,
+      totalApplied: paymentApplication.totalApplied,
+    })
+    .from(paymentApplication)
+    .where(
+      and(eq(paymentApplication.tenantId, tenantId), eq(paymentApplication.id, input.applicationId)),
+    );
+
+  if (!row) throw new ContractsError('Payment application not found.');
+  if (row.status !== 'draft' && row.status !== 'pending_approval') {
+    throw new ContractsError(`A ${row.status} application cannot be submitted.`);
+  }
+
+  const [head] = await tx
+    .select({ paymentTermDays: contract.paymentTermDays })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, row.contractId)));
+
+  const due = new Date(input.submittedOn);
+  due.setUTCDate(due.getUTCDate() + (head?.paymentTermDays ?? 30));
+  const dueOn = due.toISOString().slice(0, 10);
+
+  await tx
+    .update(paymentApplication)
+    .set({ status: 'submitted', submittedOn: input.submittedOn, dueOn, updatedAt: new Date() })
+    .where(
+      and(eq(paymentApplication.tenantId, tenantId), eq(paymentApplication.id, input.applicationId)),
+    );
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.payment_application',
+    entityId: input.applicationId,
+    entityLabel: row.number,
+    action: 'submit',
+    metadata: { totalApplied: num(row.totalApplied), dueOn },
+  });
+
+  await emit(tx, {
+    type: 'contracts.application.submitted',
+    sourceModule: MODULE_KEY,
+    aggregateType: 'contracts.payment_application',
+    aggregateId: input.applicationId,
+    payload: { contractId: row.contractId, totalApplied: num(row.totalApplied), dueOn },
+  });
+
+  return { number: row.number, dueOn };
+}
+
+/**
+ * Records what the client actually certified.
+ *
+ * Kept beside the application rather than over it, so the disallowance survives.
+ * The comparison is returned and emitted, because "they certified 82% of what we
+ * applied for" is a fact worth acting on and it is invisible in every
+ * spreadsheet-based process.
+ */
+export async function certifyApplication(
+  tx: Transaction,
+  input: {
+    applicationId: string;
+    certifiedNet: number;
+    certifiedTax?: number;
+    certifiedOn: string;
+    certificateReference?: string | null;
+    disallowedReason?: string | null;
+  },
+): Promise<{ comparison: ReturnType<typeof compareCertification>; dueOn: string | null }> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select()
+    .from(paymentApplication)
+    .where(
+      and(eq(paymentApplication.tenantId, tenantId), eq(paymentApplication.id, input.applicationId)),
+    );
+
+  if (!row) throw new ContractsError('Payment application not found.');
+  if (row.status === 'paid') throw new ContractsError('A paid application cannot be re-certified.');
+
+  const comparison = compareCertification(
+    num(row.netThisApplication),
+    input.certifiedNet,
+  );
+
+  if (comparison.wasReduced && !input.disallowedReason) {
+    throw new ContractsError(
+      'The client certified less than was applied for. Record why — an unexplained ' +
+        'disallowance is one nobody re-claims.',
+    );
+  }
+
+  const [head] = await tx
+    .select({ paymentTermDays: contract.paymentTermDays })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, row.contractId)));
+
+  const due = paymentDue({
+    certifiedOn: new Date(input.certifiedOn),
+    paymentTermDays: head?.paymentTermDays ?? 30,
+  });
+  const dueOn = due.dueOn.toISOString().slice(0, 10);
+
+  const certifiedTax = input.certifiedTax ?? 0;
+
+  await tx
+    .update(paymentApplication)
+    .set({
+      status: 'certified',
+      certifiedNet: input.certifiedNet.toFixed(2),
+      certifiedTax: certifiedTax.toFixed(2),
+      certifiedTotal: (input.certifiedNet + certifiedTax).toFixed(2),
+      certifiedOn: input.certifiedOn,
+      certificateReference: input.certificateReference,
+      disallowedReason: input.disallowedReason,
+      dueOn,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(eq(paymentApplication.tenantId, tenantId), eq(paymentApplication.id, input.applicationId)),
+    );
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.payment_application',
+    entityId: input.applicationId,
+    entityLabel: row.number,
+    action: 'approve',
+    metadata: {
+      applied: comparison.applied,
+      certified: comparison.certified,
+      disallowed: comparison.difference,
+    },
+  });
+
+  await emit(tx, {
+    type: 'contracts.application.certified',
+    sourceModule: MODULE_KEY,
+    aggregateType: 'contracts.payment_application',
+    aggregateId: input.applicationId,
+    payload: {
+      contractId: row.contractId,
+      applied: comparison.applied,
+      certified: comparison.certified,
+      difference: comparison.difference,
+      dueOn,
+    },
+  });
+
+  return { comparison, dueOn };
+}
+
+// ---------------------------------------------------------------------------
+// Retention
+// ---------------------------------------------------------------------------
+
+/**
+ * Schedules the retention releasable now, given the contract's state.
+ *
+ * Gated on real events — practical completion certified, defects period actually
+ * expired — never on an optimistic date. The second half of retention is the
+ * only leverage that gets a snag list finished; releasing it early is giving
+ * that away for nothing.
+ */
+export async function scheduleRetentionRelease(
+  tx: Transaction,
+  input: { contractId: string; asAt?: Date },
+): Promise<{ releasable: number; totalHeld: number; previouslyReleased: number; created: boolean }> {
+  const { tenantId } = requireTenantContext();
+
+  const [head] = await tx
+    .select()
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+
+  const [latest] = await tx
+    .select({ retentionHeldToDate: paymentApplication.retentionHeldToDate })
+    .from(paymentApplication)
+    .where(
+      and(
+        eq(paymentApplication.tenantId, tenantId),
+        eq(paymentApplication.contractId, input.contractId),
+      ),
+    )
+    .orderBy(desc(paymentApplication.sequence))
+    .limit(1);
+
+  const totalHeld = num(latest?.retentionHeldToDate);
+
+  const [released] = await tx
+    .select({ total: sql<string>`coalesce(sum(${retentionRelease.amount}), 0)` })
+    .from(retentionRelease)
+    .where(
+      and(
+        eq(retentionRelease.tenantId, tenantId),
+        eq(retentionRelease.contractId, input.contractId),
+      ),
+    );
+
+  const previouslyReleased = num(released?.total);
+  const asAt = input.asAt ?? new Date();
+  const terms: RetentionReleaseTerms = {
+    practicalCompletionPercent: head.retentionReleaseSchedule.practicalCompletion,
+    endOfDlpPercent: head.retentionReleaseSchedule.endOfDlp,
+  };
+
+  const releasable = retentionReleasable(totalHeld, terms, {
+    practicalCompletionAchieved: head.practicalCompletionOn != null,
+    defectsLiabilityExpired:
+      head.defectsLiabilityEndsOn != null && new Date(head.defectsLiabilityEndsOn) <= asAt,
+    previouslyReleased,
+  });
+
+  let created = false;
+  if (releasable > 0.005) {
+    const trigger =
+      head.defectsLiabilityEndsOn != null && new Date(head.defectsLiabilityEndsOn) <= asAt
+        ? 'end_of_dlp'
+        : 'practical_completion';
+
+    await tx.insert(retentionRelease).values({
+      tenantId,
+      contractId: input.contractId,
+      trigger,
+      amount: releasable.toFixed(2),
+      dueOn: asAt.toISOString().slice(0, 10),
+    });
+    created = true;
+
+    await emit(tx, {
+      type: 'contracts.retention.due',
+      sourceModule: MODULE_KEY,
+      aggregateType: 'contracts.contract',
+      aggregateId: input.contractId,
+      payload: { amount: releasable, trigger, totalHeld },
+    });
+  }
+
+  return { releasable, totalHeld, previouslyReleased, created };
+}
+
+// ---------------------------------------------------------------------------
+// Position
+// ---------------------------------------------------------------------------
+
+export interface ContractPosition {
+  contractId: string;
+  number: string | null;
+  /**
+   * The job this contract belongs to, or null.
+   *
+   * Returned because valuing an application from measured progress needs it, and
+   * a screen that has the contract position already should not have to fetch the
+   * contract row again to find one uuid.
+   */
+  projectId: string | null;
+  originalSum: number;
+  currentSum: number;
+  variations: VariationPosition;
+  grossValuedToDate: number;
+  certifiedToDate: number;
+  /** Applied for but not yet certified. */
+  uncertified: number;
+  retentionHeld: number;
+  retentionReleased: number;
+  advanceOutstanding: number;
+  backChargesOutstanding: number;
+  /** Certified, past due, unpaid. */
+  overdueAmount: number;
+  /** Current sum plus unapproved exposure. The realistic final account. */
+  anticipatedFinalValue: number;
+  status: string;
+  practicalCompletionOn: string | null;
+  defectsLiabilityEndsOn: string | null;
+}
+
+/**
+ * Everything a commercial manager needs on one contract, in one call.
+ *
+ * `anticipatedFinalValue` is deliberately the optimistic-but-honest number:
+ * approved variations plus executed-and-instructed exposure. Reporting only the
+ * approved sum understates the job; reporting every claim overstates it. The
+ * middle figure, with the components visible beside it, is the one that survives
+ * a conversation with a client's QS.
+ */
+export async function getContractPosition(
+  tx: Transaction,
+  input: { contractId: string; asAt?: Date },
+): Promise<ContractPosition> {
+  const { tenantId } = requireTenantContext();
+  const asAt = input.asAt ?? new Date();
+
+  const [head] = await tx
+    .select()
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+
+  const variations = await getVariationPosition(tx, { contractId: input.contractId, asAt });
+
+  const applications = await tx
+    .select()
+    .from(paymentApplication)
+    .where(
+      and(
+        eq(paymentApplication.tenantId, tenantId),
+        eq(paymentApplication.contractId, input.contractId),
+      ),
+    )
+    .orderBy(desc(paymentApplication.sequence));
+
+  const latest = applications[0];
+
+  const certifiedToDate = applications
+    .filter((a) => a.certifiedNet != null)
+    .reduce((sum, a) => sum + num(a.certifiedNet), 0);
+
+  const overdueAmount = applications
+    .filter(
+      (a) =>
+        a.status === 'certified' &&
+        a.paidOn == null &&
+        a.dueOn != null &&
+        new Date(a.dueOn) < asAt,
+    )
+    .reduce((sum, a) => sum + num(a.certifiedTotal), 0);
+
+  const [released] = await tx
+    .select({ total: sql<string>`coalesce(sum(${retentionRelease.amount}), 0)` })
+    .from(retentionRelease)
+    .where(
+      and(
+        eq(retentionRelease.tenantId, tenantId),
+        eq(retentionRelease.contractId, input.contractId),
+      ),
+    );
+
+  const [charges] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(coalesce(${backCharge.agreedAmount}, ${backCharge.amount})), 0)`,
+    })
+    .from(backCharge)
+    .where(
+      and(
+        eq(backCharge.tenantId, tenantId),
+        eq(backCharge.contractId, input.contractId),
+        inArray(backCharge.status, ['raised', 'notified', 'agreed', 'disputed']),
+      ),
+    );
+
+  const grossValued = num(latest?.grossValuationToDate);
+  const netValued = num(latest?.netValuationToDate);
+
+  return {
+    contractId: input.contractId,
+    number: head.number,
+    projectId: head.projectId,
+    originalSum: num(head.originalSum),
+    currentSum: num(head.currentSum),
+    variations,
+    grossValuedToDate: grossValued,
+    certifiedToDate,
+    uncertified: netValued - certifiedToDate,
+    retentionHeld: num(latest?.retentionHeldToDate),
+    retentionReleased: num(released?.total),
+    advanceOutstanding: Math.max(
+      0,
+      num(head.advanceAmount) - num(latest?.advanceRecoveredToDate),
+    ),
+    backChargesOutstanding: num(charges?.total),
+    overdueAmount,
+    anticipatedFinalValue: variations.anticipatedFinalValue,
+    status: head.status,
+    practicalCompletionOn: head.practicalCompletionOn,
+    defectsLiabilityEndsOn: head.defectsLiabilityEndsOn,
+  };
+}
+
+/** Activates a contract, freezing its terms. Nothing may be valued before this. */
+export async function activateContract(
+  tx: Transaction,
+  input: { contractId: string; commencedOn?: string | null },
+): Promise<void> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select({ status: contract.status, number: contract.number })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!row) throw new ContractsError('Contract not found.');
+  if (row.status !== 'draft') throw new ContractsError(`Contract is already ${row.status}.`);
+
+  await tx
+    .update(contract)
+    .set({ status: 'active', commencedOn: input.commencedOn, updatedAt: new Date() })
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.contract',
+    entityId: input.contractId,
+    entityLabel: row.number,
+    action: 'update',
+    metadata: { status: 'active' },
+  });
+}
+
+/**
+ * Records practical completion, which starts the defects period.
+ *
+ * The DLP end date is computed from the months snapshotted on the contract, not
+ * from today's rule — the defects period a contract carries was agreed when it
+ * was signed.
+ */
+export async function recordPracticalCompletion(
+  tx: Transaction,
+  input: { contractId: string; practicalCompletionOn: string },
+): Promise<{ defectsLiabilityEndsOn: string }> {
+  const { tenantId } = requireTenantContext();
+
+  const [head] = await tx
+    .select({ defectsLiabilityMonths: contract.defectsLiabilityMonths, number: contract.number })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  if (!head) throw new ContractsError('Contract not found.');
+
+  const pc = new Date(input.practicalCompletionOn);
+  const dlpEnd = new Date(pc);
+  dlpEnd.setUTCMonth(dlpEnd.getUTCMonth() + (head.defectsLiabilityMonths ?? 12));
+  const defectsLiabilityEndsOn = dlpEnd.toISOString().slice(0, 10);
+
+  await tx
+    .update(contract)
+    .set({
+      status: 'defects_liability',
+      practicalCompletionOn: input.practicalCompletionOn,
+      defectsLiabilityEndsOn,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, input.contractId)));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    entityType: 'contracts.contract',
+    entityId: input.contractId,
+    entityLabel: head.number,
+    action: 'update',
+    metadata: { practicalCompletionOn: input.practicalCompletionOn, defectsLiabilityEndsOn },
+  });
+
+  return { defectsLiabilityEndsOn };
+}
+
+// ---------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------
+
+export interface ContractListRow {
+  id: string;
+  number: string | null;
+  name: string;
+  side: string;
+  status: string;
+  currencyCode: string | null;
+  originalSum: number;
+  currentSum: number;
+  /** Approved variations only — current less original. */
+  variationValue: number;
+  projectId: string | null;
+  projectCode: string | null;
+  projectName: string | null;
+  counterpartyId: string | null;
+  counterpartyName: string | null;
+  contractCompletionDate: string | null;
+  externalReference: string | null;
+}
+
+/**
+ * A page of contracts, for the index screen.
+ *
+ * Joins the project and counterparty names in, rather than returning ids for the
+ * client to resolve. A list screen that renders `a3f9c2e1-…` in the client column
+ * is not a list screen, and letting the browser fetch a name per row is the
+ * N+1 problem moved somewhere it is harder to see.
+ *
+ * `variationValue` is derived from the two sums already on the row rather than
+ * aggregated from the variation table: only approved variations move
+ * `currentSum`, so the subtraction is exact and costs nothing.
+ */
+export async function listContracts(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; side?: 'receivable' | 'payable'; projectId?: string } = {},
+): Promise<ListResult<ContractListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(contract.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(contract.status, filters.status as never));
+  if (filters.side) conditions.push(eq(contract.side, filters.side));
+  if (filters.projectId) conditions.push(eq(contract.projectId, filters.projectId));
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(contract.number, pattern),
+        ilike(contract.name, pattern),
+        // The client's own reference is what they quote in an email, so it is
+        // very often what a user pastes into a search box.
+        ilike(contract.externalReference, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: contract.number,
+    name: contract.name,
+    status: contract.status,
+    currentSum: contract.currentSum,
+    contractCompletionDate: contract.contractCompletionDate,
+    createdAt: contract.createdAt,
+  }[params.sort as string] ?? contract.createdAt;
+
+  const rows = await tx
+    .select({
+      id: contract.id,
+      number: contract.number,
+      name: contract.name,
+      side: contract.side,
+      status: contract.status,
+      currencyCode: contract.currencyCode,
+      originalSum: contract.originalSum,
+      currentSum: contract.currentSum,
+      projectId: contract.projectId,
+      projectCode: schema.project.code,
+      projectName: schema.project.name,
+      counterpartyId: contract.counterpartyId,
+      counterpartyName: schema.party.name,
+      contractCompletionDate: contract.contractCompletionDate,
+      externalReference: contract.externalReference,
+    })
+    .from(contract)
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.party,
+      and(eq(schema.party.id, contract.counterpartyId), eq(schema.party.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(contract.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(contract)
+    .where(where);
+
+  return listResult(
+    rows.map((row) => ({
+      ...row,
+      originalSum: num(row.originalSum),
+      currentSum: num(row.currentSum),
+      variationValue: num(row.currentSum) - num(row.originalSum),
+    })),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+export interface ApplicationListRow {
+  id: string;
+  number: string | null;
+  sequence: number;
+  status: string;
+  contractId: string;
+  contractNumber: string | null;
+  contractName: string;
+  projectCode: string | null;
+  counterpartyName: string | null;
+  currencyCode: string | null;
+  periodTo: string;
+  submittedOn: string | null;
+  certifiedOn: string | null;
+  dueOn: string | null;
+  paidOn: string | null;
+  totalApplied: number;
+  certifiedTotal: number | null;
+  /** Certified less applied. Negative is a disallowance. Null until certified. */
+  disallowed: number | null;
+  /** Certified, past due, unpaid. */
+  isOverdue: boolean;
+  /** Submitted and awaiting a certificate. The clock the client is running. */
+  awaitingCertificate: boolean;
+}
+
+/**
+ * Payment applications across every contract.
+ *
+ * Cross-contract on purpose: the question this answers is "what have we applied
+ * for and not been paid", which is a cash-flow question about the business, not
+ * about one job. A per-contract view answers a different question and is one
+ * filter away.
+ *
+ * `disallowed` is carried on the row rather than left to the reader to subtract.
+ * The gap between applied and certified is the single most useful commercial
+ * fact here — a client who certifies 85% of everything is a pattern you can
+ * price against — and it is invisible if two columns have to be compared by eye.
+ */
+export async function listPaymentApplications(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; contractId?: string; outstandingOnly?: boolean } = {},
+): Promise<ListResult<ApplicationListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(paymentApplication.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(paymentApplication.status, filters.status as never));
+  if (filters.contractId) conditions.push(eq(paymentApplication.contractId, filters.contractId));
+  if (filters.outstandingOnly) {
+    // Everything the business is still waiting on: applied and uncertified, or
+    // certified and unpaid. Not a status — it spans two of them.
+    conditions.push(
+      inArray(paymentApplication.status, ['submitted', 'certified', 'disputed'] as never[]),
+    );
+    conditions.push(sql`${paymentApplication.paidOn} is null`);
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(paymentApplication.number, pattern),
+        ilike(paymentApplication.certificateReference, pattern),
+        ilike(contract.number, pattern),
+        ilike(contract.name, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: paymentApplication.number,
+    status: paymentApplication.status,
+    periodTo: paymentApplication.periodTo,
+    dueOn: paymentApplication.dueOn,
+    totalApplied: paymentApplication.totalApplied,
+    createdAt: paymentApplication.createdAt,
+  }[params.sort as string] ?? paymentApplication.periodTo;
+
+  const joined = () =>
+    tx
+      .select({
+        id: paymentApplication.id,
+        number: paymentApplication.number,
+        sequence: paymentApplication.sequence,
+        status: paymentApplication.status,
+        contractId: paymentApplication.contractId,
+        contractNumber: contract.number,
+        contractName: contract.name,
+        projectCode: schema.project.code,
+        counterpartyName: schema.party.name,
+        currencyCode: contract.currencyCode,
+        periodTo: paymentApplication.periodTo,
+        submittedOn: paymentApplication.submittedOn,
+        certifiedOn: paymentApplication.certifiedOn,
+        dueOn: paymentApplication.dueOn,
+        paidOn: paymentApplication.paidOn,
+        totalApplied: paymentApplication.totalApplied,
+        certifiedTotal: paymentApplication.certifiedTotal,
+        isOverdue: sql<boolean>`(
+          ${paymentApplication.dueOn} is not null
+          and ${paymentApplication.dueOn} < current_date
+          and ${paymentApplication.paidOn} is null
+          and ${paymentApplication.certifiedOn} is not null
+        )`,
+      })
+      .from(paymentApplication)
+      .innerJoin(
+        contract,
+        and(eq(contract.id, paymentApplication.contractId), eq(contract.tenantId, tenantId)),
+      )
+      .leftJoin(
+        schema.project,
+        and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+      )
+      .leftJoin(
+        schema.party,
+        and(eq(schema.party.id, contract.counterpartyId), eq(schema.party.tenantId, tenantId)),
+      );
+
+  const rows = await joined()
+    .where(where)
+    .orderBy(
+      params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn),
+      asc(paymentApplication.id),
+    )
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(paymentApplication)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, paymentApplication.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => {
+      const applied = num(row.totalApplied);
+      const certified = row.certifiedTotal == null ? null : num(row.certifiedTotal);
+
+      return {
+        ...row,
+        totalApplied: applied,
+        certifiedTotal: certified,
+        disallowed: certified == null ? null : certified - applied,
+        isOverdue: Boolean(row.isOverdue),
+        awaitingCertificate: row.status === 'submitted',
+      };
+    }),
+    counted?.total ?? 0,
+    params,
+  );
+}
+
+/**
+ * Records that written notice was given, against the contract's time bar.
+ *
+ * The one operation this module warned about and could not perform. Notice is
+ * what preserves entitlement: miss the deadline and the claim can be
+ * extinguished entirely however good it is, which is why the register shouts
+ * about it and why there has to be a way to answer.
+ *
+ * Late notice is recorded rather than refused. A notice given on day 30 of a
+ * 28-day bar is still evidence, still worth having on file, and still better
+ * than nothing — refusing to record it would leave the strongest available fact
+ * out of the file to keep a status column tidy.
+ */
+export async function recordVariationNotice(
+  tx: Transaction,
+  input: { variationId: string; noticeGivenOn: string; noticeReference?: string | null },
+): Promise<{ number: string | null; wasLate: boolean; deadlineOn: string | null }> {
+  const { tenantId } = requireTenantContext();
+
+  const [row] = await tx
+    .select()
+    .from(variation)
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  if (!row) throw new ContractsError('Variation not found.');
+
+  const [head] = await tx
+    .select({ noticePeriodDays: contract.noticePeriodDays })
+    .from(contract)
+    .where(and(eq(contract.tenantId, tenantId), eq(contract.id, row.contractId)));
+
+  // The event the clock runs from is the instruction. Without one there is no
+  // deadline to be late against — the notice is simply recorded.
+  const eventOn = row.instructedOn ?? null;
+  const noticePeriodDays = head?.noticePeriodDays ?? null;
+
+  let wasLate = false;
+  let deadlineOn: string | null = null;
+
+  if (eventOn && noticePeriodDays != null) {
+    const status = noticeStatus({
+      eventOn: new Date(`${eventOn}T00:00:00Z`),
+      noticePeriodDays,
+      noticeGivenOn: new Date(`${input.noticeGivenOn}T00:00:00Z`),
+    });
+    wasLate = status.wasLate;
+    deadlineOn = status.deadlineOn.toISOString().slice(0, 10);
+  }
+
+  await tx
+    .update(variation)
+    .set({
+      noticeGivenOn: input.noticeGivenOn,
+      noticeReference: input.noticeReference ?? null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(variation.tenantId, tenantId), eq(variation.id, input.variationId)));
+
+  await recordAudit(tx, {
+    moduleKey: MODULE_KEY,
+    action: 'update',
+    entityType: 'contracts.variation',
+    entityId: input.variationId,
+    entityLabel: row.number,
+    metadata: {
+      noticeGivenOn: input.noticeGivenOn,
+      noticeReference: input.noticeReference,
+      deadlineOn,
+      // Recorded as a fact rather than hidden, because a late notice changes
+      // how the claim has to be argued and whoever picks this up later needs
+      // to know without recomputing it.
+      wasLate,
+    },
+  });
+
+  return { number: row.number, wasLate, deadlineOn };
+}
+
+export interface VariationListRow {
+  id: string;
+  number: string | null;
+  title: string;
+  status: string;
+  basis: string;
+  contractId: string;
+  contractNumber: string | null;
+  contractName: string;
+  projectCode: string | null;
+  currencyCode: string | null;
+  instructedOn: string | null;
+  noticeGivenOn: string | null;
+  noticePeriodDays: number | null;
+  approvedOn: string | null;
+  quotedValue: number | null;
+  approvedValue: number | null;
+  percentExecuted: number;
+  /** Null when there is no instruction date to run the clock from. */
+  notice: {
+    deadlineOn: string;
+    daysRemaining: number;
+    isGiven: boolean;
+    isTimeBarred: boolean;
+    wasLate: boolean;
+  } | null;
+}
+
+/**
+ * Variations across every contract, with the notice clock resolved per row.
+ *
+ * The clock is computed here rather than in the browser on purpose: it is a
+ * contractual rule, it depends on the contract's own notice period, and two
+ * clients disagreeing about whether something is time-barred because one of them
+ * has a different system clock is not a bug anybody wants to debug.
+ */
+export async function listVariations(
+  tx: Transaction,
+  params: ListParams,
+  filters: { status?: string; contractId?: string; atRiskOnly?: boolean } = {},
+): Promise<ListResult<VariationListRow>> {
+  const { tenantId } = requireTenantContext();
+
+  const conditions = [eq(variation.tenantId, tenantId)];
+  if (filters.status) conditions.push(eq(variation.status, filters.status as never));
+  if (filters.contractId) conditions.push(eq(variation.contractId, filters.contractId));
+  if (filters.atRiskOnly) {
+    // Instructed, no notice yet, and not settled either way. Everything whose
+    // clock is still running — which is the only set worth a morning's attention.
+    conditions.push(sql`${variation.instructedOn} is not null`);
+    conditions.push(sql`${variation.noticeGivenOn} is null`);
+    conditions.push(inArray(variation.status, [...INSTRUCTED_STATUSES]));
+  }
+
+  if (params.search) {
+    const pattern = searchPattern(params.search);
+    conditions.push(
+      or(
+        ilike(variation.number, pattern),
+        ilike(variation.title, pattern),
+        ilike(variation.instructionReference, pattern),
+        ilike(contract.number, pattern),
+      )!,
+    );
+  }
+
+  const where = and(...conditions);
+
+  const sortColumn = {
+    number: variation.number,
+    title: variation.title,
+    status: variation.status,
+    instructedOn: variation.instructedOn,
+    quotedValue: variation.quotedValue,
+    createdAt: variation.createdAt,
+  }[params.sort as string] ?? variation.instructedOn;
+
+  const rows = await tx
+    .select({
+      id: variation.id,
+      number: variation.number,
+      title: variation.title,
+      status: variation.status,
+      basis: variation.basis,
+      contractId: variation.contractId,
+      contractNumber: contract.number,
+      contractName: contract.name,
+      projectCode: schema.project.code,
+      currencyCode: contract.currencyCode,
+      noticePeriodDays: contract.noticePeriodDays,
+      instructedOn: variation.instructedOn,
+      noticeGivenOn: variation.noticeGivenOn,
+      approvedOn: variation.approvedOn,
+      quotedValue: variation.quotedValue,
+      approvedValue: variation.approvedValue,
+      percentExecuted: variation.percentExecuted,
+    })
+    .from(variation)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, variation.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .leftJoin(
+      schema.project,
+      and(eq(schema.project.id, contract.projectId), eq(schema.project.tenantId, tenantId)),
+    )
+    .where(where)
+    .orderBy(params.direction === 'asc' ? asc(sortColumn) : desc(sortColumn), asc(variation.id))
+    .limit(params.pageSize)
+    .offset(params.offset);
+
+  const [counted] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(variation)
+    .innerJoin(
+      contract,
+      and(eq(contract.id, variation.contractId), eq(contract.tenantId, tenantId)),
+    )
+    .where(where);
+
+  return listResult(
+    rows.map((row) => {
+      const notice =
+        row.instructedOn && row.noticePeriodDays != null
+          ? noticeStatus({
+              eventOn: new Date(`${row.instructedOn}T00:00:00Z`),
+              noticePeriodDays: row.noticePeriodDays,
+              noticeGivenOn: row.noticeGivenOn
+                ? new Date(`${row.noticeGivenOn}T00:00:00Z`)
+                : null,
+            })
+          : null;
+
+      return {
+        ...row,
+        quotedValue: row.quotedValue == null ? null : num(row.quotedValue),
+        approvedValue: row.approvedValue == null ? null : num(row.approvedValue),
+        percentExecuted: num(row.percentExecuted),
+        notice: notice
+          ? {
+              deadlineOn: notice.deadlineOn.toISOString().slice(0, 10),
+              daysRemaining: notice.daysRemaining,
+              isGiven: notice.isGiven,
+              isTimeBarred: notice.isTimeBarred,
+              wasLate: notice.wasLate,
+            }
+          : null,
+      };
+    }),
+    counted?.total ?? 0,
+    params,
+  );
+}

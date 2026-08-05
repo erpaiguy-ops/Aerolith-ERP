@@ -1,0 +1,118 @@
+{
+  "packVersion": "1.0.0",
+  "code": "OM",
+  "code3": "OMN",
+  "numericCode": "512",
+  "name": "Oman",
+  "nativeName": "عُمان",
+
+  "currencyCode": "OMR",
+  "defaultLocale": "en",
+  "supportedLocales": ["en", "ar"],
+  "defaultTimezone": "Asia/Muscat",
+  "dateFormat": "dd/MM/yyyy",
+  "weekendDays": [5, 6],
+  "fiscalYearStartMonth": 1,
+
+  "adminDivisionLabel": "Governorate",
+  "adminDivisions": [
+    { "code": "MA", "name": "Muscat", "nativeName": "مسقط", "sortOrder": 1 },
+    { "code": "DA", "name": "Ad Dakhiliyah", "nativeName": "الداخلية", "sortOrder": 2 },
+    { "code": "BS", "name": "Al Batinah South", "nativeName": "جنوب الباطنة", "sortOrder": 3 },
+    { "code": "BN", "name": "Al Batinah North", "nativeName": "شمال الباطنة", "sortOrder": 4 },
+    { "code": "SS", "name": "Ash Sharqiyah South", "nativeName": "جنوب الشرقية", "sortOrder": 5 },
+    { "code": "SN", "name": "Ash Sharqiyah North", "nativeName": "شمال الشرقية", "sortOrder": 6 },
+    { "code": "ZA", "name": "Adh Dhahirah", "nativeName": "الظاهرة", "sortOrder": 7 },
+    { "code": "BU", "name": "Al Buraimi", "nativeName": "البريمي", "sortOrder": 8 },
+    { "code": "WU", "name": "Al Wusta", "nativeName": "الوسطى", "sortOrder": 9 },
+    { "code": "DH", "name": "Dhofar", "nativeName": "ظفار", "sortOrder": 10 },
+    { "code": "MU", "name": "Musandam", "nativeName": "مسندم", "sortOrder": 11 }
+  ],
+
+  "addressFormat": [
+    { "key": "building", "label": "Building", "required": false, "order": 1 },
+    { "key": "way", "label": "Way No.", "required": false, "order": 2 },
+    { "key": "area", "label": "Area", "required": true, "order": 3 },
+    { "key": "poBox", "label": "P.O. Box", "required": false, "order": 4 },
+    { "key": "postalCode", "label": "Postal Code", "required": false, "order": 5, "maxLength": 3 },
+    { "key": "governorate", "label": "Governorate", "required": true, "order": 6, "source": "admin_division" }
+  ],
+
+  "phoneCode": "+968",
+  "phoneFormat": "+968 #### ####",
+
+  "requirements": [
+    { "code": "PASSPORT", "name": "Passport", "subject": "employee", "category": "identity", "hasExpiry": true, "expiryNoticeDays": [180, 90, 60, 30], "blocksOnboarding": true, "sortOrder": 1 },
+    { "code": "RESIDENT_CARD", "name": "Resident Card", "nativeName": "البطاقة المدنية", "subject": "employee", "category": "identity", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30, 14], "issuingAuthority": "Royal Oman Police", "blocksOnboarding": true, "blocksSiteAccess": true, "sortOrder": 2 },
+    { "code": "LABOUR_CLEARANCE", "name": "Labour Clearance / Work Permit", "subject": "employee", "category": "permit", "appliesTo": { "nationality": "expatriate" }, "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "issuingAuthority": "Ministry of Labour", "blocksOnboarding": true, "sortOrder": 3 },
+    { "code": "MEDICAL_INSURANCE", "name": "Health Insurance", "subject": "employee", "category": "insurance", "hasExpiry": true, "expiryNoticeDays": [60, 30], "typicalValidityMonths": 12, "sortOrder": 4 },
+    { "code": "COMMERCIAL_REGISTRATION", "name": "Commercial Registration (CR)", "subject": "company", "category": "registration", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "typicalValidityMonths": 12, "issuingAuthority": "Ministry of Commerce, Industry and Investment Promotion", "sortOrder": 20 },
+    { "code": "CHAMBER_OF_COMMERCE", "name": "Oman Chamber Membership", "subject": "company", "category": "registration", "isMandatory": false, "hasExpiry": true, "expiryNoticeDays": [60, 30], "sortOrder": 21 },
+    { "code": "VAT_REGISTRATION", "name": "VAT Registration", "subject": "company", "category": "tax", "isMandatory": false, "hasExpiry": false, "issuingAuthority": "Oman Tax Authority", "sortOrder": 22 },
+    { "code": "MUNICIPALITY_LICENCE", "name": "Municipality Licence", "subject": "company", "category": "licence", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "sortOrder": 23 },
+    { "code": "VEHICLE_REGISTRATION", "name": "Vehicle Registration (Mulkiya)", "subject": "vehicle", "category": "registration", "hasExpiry": true, "expiryNoticeDays": [60, 30, 14], "sortOrder": 40 },
+    { "code": "VEHICLE_INSURANCE", "name": "Vehicle Insurance", "subject": "vehicle", "category": "insurance", "hasExpiry": true, "expiryNoticeDays": [60, 30, 14], "sortOrder": 41 },
+    { "code": "ACCOMMODATION_PERMIT", "name": "Labour Accommodation Permit", "subject": "accommodation", "category": "permit", "hasExpiry": true, "expiryNoticeDays": [90, 60, 30], "sortOrder": 50 }
+  ],
+
+  "taxRegimes": [
+    {
+      "code": "OM_VAT",
+      "name": "Oman Value Added Tax",
+      "type": "vat",
+      "registrationLabel": "VATIN",
+      "filingFrequency": "quarterly",
+      "supportsReverseCharge": true,
+      "registrationThreshold": 38500,
+      "effectiveFrom": "2021-04-16",
+      "taxCodes": [
+        { "code": "SR", "name": "Standard Rated 5%", "rate": 5, "applicability": "both", "isDefault": true, "sortOrder": 1 },
+        { "code": "ZR", "name": "Zero Rated", "rate": 0, "applicability": "both", "sortOrder": 2 },
+        { "code": "EX", "name": "Exempt", "rate": 0, "applicability": "both", "isRecoverable": false, "sortOrder": 3 },
+        { "code": "RC", "name": "Reverse Charge", "rate": 5, "applicability": "purchase", "isReverseCharge": true, "sortOrder": 4 },
+        { "code": "OS", "name": "Out of Scope", "rate": 0, "applicability": "both", "isRecoverable": false, "sortOrder": 5 }
+      ]
+    }
+  ],
+
+  "holidays": [
+    { "code": "EID_AL_FITR", "name": "Eid Al Fitr", "calculation": "hijri", "rule": { "hijriMonth": 10, "hijriDay": 1 }, "defaultDurationDays": 3 },
+    { "code": "EID_AL_ADHA", "name": "Eid Al Adha", "calculation": "hijri", "rule": { "hijriMonth": 12, "hijriDay": 10 }, "defaultDurationDays": 3 },
+    { "code": "HIJRI_NEW_YEAR", "name": "Islamic New Year", "calculation": "hijri", "rule": { "hijriMonth": 1, "hijriDay": 1 }, "defaultDurationDays": 1 },
+    { "code": "PROPHET_BIRTHDAY", "name": "Prophet Muhammad's Birthday", "calculation": "hijri", "rule": { "hijriMonth": 3, "hijriDay": 12 }, "defaultDurationDays": 1 },
+    { "code": "NATIONAL_DAY", "name": "Oman National Day", "calculation": "fixed_gregorian", "rule": { "month": 11, "day": 18 }, "defaultDurationDays": 2 }
+  ],
+
+  "rules": {
+    "hr.working_time.standard_daily_hours": 8,
+    "hr.working_time.standard_weekly_hours": 45,
+    "hr.working_time.ramadan_daily_hours": 6,
+    "payroll.overtime.weekday_multiplier": 1.25,
+    "payroll.overtime.night_multiplier": 1.5,
+    "payroll.overtime.rest_day_multiplier": 1.5,
+    "payroll.overtime.holiday_multiplier": 1.5,
+    "hr.leave.annual_days": 30,
+    "hr.leave.annual_accrual_basis": "calendar",
+    "hr.leave.maternity_days": 98,
+    "hr.probation.max_months": 3,
+    "hr.notice.minimum_days": 30,
+    "payroll.end_of_service.scheme": {
+      "basis": "basic_salary",
+      "bands": [{ "fromYears": 0, "toYears": null, "daysPerYear": 30 }],
+      "minimumServiceYears": 1
+    },
+    "payroll.end_of_service.cap_years": null,
+    "payroll.wps.enabled": true,
+    "payroll.wps.file_format": "OM_WPS",
+    "payroll.wps.deadline_days": 7,
+    "contract.retention.default_percent": 10,
+    "contract.dlp.default_months": 12,
+    "contract.payment_terms.default_days": 60,
+    "document.retention.statutory_years": 10,
+    "tax.invoice.language_requirement": ["en", "ar"],
+    "accommodation.max_occupants_per_room": 4,
+    "accommodation.min_area_per_occupant_sqm": 4
+  },
+
+  "notes": "Statutory values are seeded as a starting point and must be verified against current Omani law before payroll or tax is run in production."
+}

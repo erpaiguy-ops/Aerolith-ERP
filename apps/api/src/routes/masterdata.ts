@@ -1,0 +1,432 @@
+/**
+ * Parties — the shared master data every module already joins against.
+ *
+ * Kernel-owned, like Approvals and Notifications: no module manifest
+ * declares this, because every module that trades with a client or a
+ * supplier needs it regardless of which modules a tenant has bought.
+ */
+import {
+  COST_CENTRE_SORTS,
+  COST_CODE_SORTS,
+  COST_CODE_TYPES,
+  MasterDataError,
+  PARTY_SORTS,
+  addPartyContact,
+  createCostCentre,
+  createCostCode,
+  createParty,
+  getPartyDetail,
+  listCostCentres,
+  listCostCodes,
+  listParties,
+  parseListParams,
+  removePartyContact,
+  setPartyCustomFields,
+  updateCostCentre,
+  updateCostCode,
+  updateParty,
+  withTenant,
+  type PartyRole,
+} from '@aerolith/kernel';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+
+import { authenticate, requirePermission, withPrincipal } from '../context';
+
+const ROLES = new Set(['customer', 'supplier', 'subcontractor', 'consultant', 'employee']);
+
+/**
+ * Who may choose a party's code rather than take the allocated one.
+ *
+ * An owner, or somebody trusted with `kernel.number_series.manage` — the
+ * permission that already governs how documents are numbered, so extending it
+ * to "may override an allocated number" needs no new permission and no new
+ * concept for an administrator to reason about. Everybody else creating a party
+ * gets a code from the series, which is the point: a shared naming convention
+ * nobody has to be told about.
+ */
+const MAY_CHOOSE_CODE = 'kernel.number_series.manage';
+
+const createBody = z.object({
+  // Optional. Omitted, the kernel allocates from the `kernel.party` series;
+  // supplied, it is honoured — but only for a principal allowed to supply it,
+  // which is checked in the route rather than here because zod cannot see who
+  // is asking.
+  code: z.string().min(1).max(32).optional(),
+  name: z.string().min(1),
+  type: z.enum(['organisation', 'individual']).optional(),
+  nativeName: z.string().nullish(),
+  legalName: z.string().nullish(),
+  isCustomer: z.boolean().optional(),
+  isSupplier: z.boolean().optional(),
+  isSubcontractor: z.boolean().optional(),
+  isConsultant: z.boolean().optional(),
+  isEmployee: z.boolean().optional(),
+  countryCode: z.string().length(2).nullish(),
+  email: z.string().email().nullish().or(z.literal('')),
+  phone: z.string().nullish(),
+  website: z.string().nullish(),
+  taxRegistrationNumber: z.string().nullish(),
+  currencyCode: z.string().length(3).nullish(),
+  paymentTermDays: z.number().int().nullish(),
+  creditLimit: z.number().nullish(),
+});
+
+const updateBody = createBody
+  .omit({ code: true })
+  .partial()
+  .extend({
+    isBlocked: z.boolean().optional(),
+    blockReason: z.string().nullish(),
+  });
+
+const createCostCodeBody = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(1),
+  costType: z.enum(COST_CODE_TYPES),
+  parentId: z.string().uuid().nullish(),
+});
+
+const updateCostCodeBody = createCostCodeBody
+  .omit({ code: true })
+  .partial()
+  .extend({ isActive: z.boolean().optional() });
+
+const createCostCentreBody = z.object({
+  code: z.string().min(1).max(32),
+  name: z.string().min(1),
+  legalEntityId: z.string().uuid().nullish(),
+  parentId: z.string().uuid().nullish(),
+  ownerId: z.string().uuid().nullish(),
+});
+
+const updateCostCentreBody = createCostCentreBody
+  .omit({ code: true })
+  .partial()
+  .extend({ isActive: z.boolean().optional() });
+
+const contactBody = z.object({
+  name: z.string().min(1),
+  jobTitle: z.string().nullish(),
+  email: z.string().email().nullish().or(z.literal('')),
+  phone: z.string().nullish(),
+  isPrimary: z.boolean().optional(),
+  notes: z.string().nullish(),
+});
+
+export async function masterDataRoutes(app: FastifyInstance) {
+  app.get<{ Querystring: { page?: string; pageSize?: string; sort?: string; direction?: string; q?: string; role?: string; includeInactive?: string } }>(
+    '/master-data/parties',
+    async (request) => {
+      const principal = await authenticate(request);
+      requirePermission(principal, 'kernel.master_data.read');
+
+      const role =
+        request.query.role && ROLES.has(request.query.role)
+          ? (request.query.role as PartyRole)
+          : undefined;
+
+      const params = parseListParams(request.query, {
+        sortable: PARTY_SORTS,
+        defaultSort: 'name',
+        defaultDirection: 'asc',
+      });
+
+      return withPrincipal(principal, () =>
+        withTenant((tx) =>
+          listParties(tx, params, {
+            role,
+            includeInactive: request.query.includeInactive === 'true',
+          }),
+        ),
+      );
+    },
+  );
+
+  app.post('/master-data/parties', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = createBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    // Refused outright rather than quietly ignored. Silently dropping a code
+    // somebody typed would create the party under a different one and tell
+    // them nothing — they would find out when a colleague could not search for
+    // it. The form already hides the field from anyone this applies to, so
+    // reaching here means the request did not come from the form.
+    const mayChooseCode =
+      principal.isOwner || Boolean(principal.context.permissions?.has(MAY_CHOOSE_CODE));
+    if (parsed.data.code !== undefined && !mayChooseCode) {
+      return reply.code(403).send({
+        error: 'Party codes are allocated automatically. Choosing one requires permission to manage number series.',
+      });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          createParty(tx, { ...parsed.data, email: parsed.data.email || null }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/master-data/parties/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.read');
+
+    const detail = await withPrincipal(principal, () =>
+      withTenant((tx) => getPartyDetail(tx, request.params.id)),
+    );
+
+    if (!detail) return reply.code(404).send({ error: 'Party not found.' });
+    return detail;
+  });
+
+  app.patch<{ Params: { id: string } }>('/master-data/parties/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = updateBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) =>
+          updateParty(tx, {
+            partyId: request.params.id,
+            ...parsed.data,
+            email: parsed.data.email === '' ? null : parsed.data.email,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/master-data/parties/:id/contacts',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      requirePermission(principal, 'kernel.master_data.manage');
+
+      const parsed = contactBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            addPartyContact(tx, {
+              partyId: request.params.id,
+              ...parsed.data,
+              email: parsed.data.email || null,
+            }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof MasterDataError) {
+          return reply.code(409).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.patch<{ Params: { id: string } }>(
+    '/master-data/parties/:id/custom-fields',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      requirePermission(principal, 'kernel.master_data.manage');
+
+      const parsed = z.record(z.unknown()).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+      }
+
+      try {
+        return await withPrincipal(principal, () =>
+          withTenant((tx) =>
+            setPartyCustomFields(tx, { partyId: request.params.id, values: parsed.data }),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof MasterDataError) {
+          return reply.code(409).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string; contactId: string } }>(
+    '/master-data/parties/:id/contacts/:contactId/remove',
+    async (request, reply) => {
+      const principal = await authenticate(request);
+      requirePermission(principal, 'kernel.master_data.manage');
+
+      try {
+        await withPrincipal(principal, () =>
+          withTenant((tx) => removePartyContact(tx, { contactId: request.params.contactId })),
+        );
+      } catch (error) {
+        if (error instanceof MasterDataError) {
+          return reply.code(404).send({ error: error.message });
+        }
+        throw error;
+      }
+
+      return { removed: true };
+    },
+  );
+
+  // --- Cost codes and cost centres ----------------------------------------
+  //
+  // Same permissions as parties: kernel master data with no owning module,
+  // read open to whoever can see the workspace's master data, write gated on
+  // the same admin-ish authority that can block a party.
+
+  app.get<{
+    Querystring: { page?: string; pageSize?: string; sort?: string; direction?: string; q?: string; costType?: string; includeInactive?: string };
+  }>('/master-data/cost-codes', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.read');
+
+    const params = parseListParams(request.query, {
+      sortable: COST_CODE_SORTS,
+      defaultSort: 'code',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listCostCodes(tx, params, {
+          costType: request.query.costType,
+          includeInactive: request.query.includeInactive === 'true',
+        }),
+      ),
+    );
+  });
+
+  app.post('/master-data/cost-codes', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = createCostCodeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () => withTenant((tx) => createCostCode(tx, parsed.data)));
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/master-data/cost-codes/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = updateCostCodeBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateCostCode(tx, { costCodeId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+
+  app.get<{
+    Querystring: { page?: string; pageSize?: string; sort?: string; direction?: string; q?: string; includeInactive?: string };
+  }>('/master-data/cost-centres', async (request) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.read');
+
+    const params = parseListParams(request.query, {
+      sortable: COST_CENTRE_SORTS,
+      defaultSort: 'code',
+      defaultDirection: 'asc',
+    });
+
+    return withPrincipal(principal, () =>
+      withTenant((tx) =>
+        listCostCentres(tx, params, { includeInactive: request.query.includeInactive === 'true' }),
+      ),
+    );
+  });
+
+  app.post('/master-data/cost-centres', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = createCostCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      return await withPrincipal(principal, () =>
+        withTenant((tx) => createCostCentre(tx, parsed.data)),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/master-data/cost-centres/:id', async (request, reply) => {
+    const principal = await authenticate(request);
+    requirePermission(principal, 'kernel.master_data.manage');
+
+    const parsed = updateCostCentreBody.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request.', issues: parsed.error.issues });
+    }
+
+    try {
+      await withPrincipal(principal, () =>
+        withTenant((tx) => updateCostCentre(tx, { costCentreId: request.params.id, ...parsed.data })),
+      );
+    } catch (error) {
+      if (error instanceof MasterDataError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    return { updated: true };
+  });
+}

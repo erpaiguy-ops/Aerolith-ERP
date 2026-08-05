@@ -1,0 +1,165 @@
+# Render Blueprint — a FREE, TEMPORARY test deployment, not the production
+# topology docs/04-infrastructure.md recommends.
+#
+# Real differences from that doc's plan, stated so nobody is surprised:
+#  - The API is a public `web` service here, not hidden behind a tunnel —
+#    Render's free plan does not support private services. Fine for a test
+#    login; not the posture to ship a paying customer's data behind.
+#  - The free Postgres instance expires 30 days after creation (a 14-day
+#    grace period follows). This is for trying the app, not running it.
+#  - Every free web service spins down after 15 minutes idle and takes ~1
+#    minute to wake back up on the next request. Expect that on first load.
+#
+# Four values below are `sync: false` rather than guessed at: Render only
+# assigns each service's public hostname once it exists, and only generates
+# each secret on the first apply, so WEB_URL, AEROLITH_API_URL,
+# DATABASE_APP_URL and DATABASE_PLATFORM_URL cannot be known until after that
+# apply. See the deploy steps for exactly what to paste in and where.
+
+databases:
+  - name: aerolith-db
+    plan: free
+    databaseName: aerolith
+    user: aerolith
+
+services:
+  - type: web
+    name: aerolith-api
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    # `preDeployCommand` is a paid-plan feature — Render's free tier refuses
+    # it outright ("pre-deploy command is not supported for free tier
+    # services"). `dockerCommand` overrides the Dockerfile's CMD instead, to
+    # chain migrate and seed before the actual server starts.
+    #
+    # This points at a script (render-start.sh) rather than an inline
+    # `/bin/sh -c "a && b && c"` string: the inline form was tried first and
+    # failed — Render's dockerCommand field did not preserve the `-c` flag or
+    # the quoting, and `sh` tried to execute the entire literal string,
+    # `&&`s included, as one nonexistent filename. A single-token path is
+    # immune to whatever that field's tokenizing does, because there is
+    # nothing left to tokenize.
+    #
+    # migrate/seed are both idempotent (upsert, not insert-only — the same
+    # reason docker-compose.prod.yml's one-shot `migrate`/`seed` containers
+    # are safe to re-run on every deploy), which matters more here: a free
+    # service spins down after 15 minutes idle, so this script re-runs on
+    # every cold-start wake, not just on deploy. A few extra seconds per
+    # wake, and otherwise a no-op once the schema and country packs are
+    # current.
+    dockerCommand: apps/api/render-start.sh
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 3001
+      # Render's own routing convention, separate from API_PORT above (which
+      # apps/api/src/main.ts actually reads to decide what to listen on).
+      # Render injects a PORT var itself (default 10000) and recommends the
+      # app bind to it; it can sometimes auto-detect a different port from
+      # the Dockerfile's EXPOSE instead, but that is documented as "usually",
+      # not guaranteed. Setting this to the same 3001 the app actually
+      # listens on removes the ambiguity either way, rather than leaving the
+      # service reachable-or-not depending on which behaviour Render chose.
+      - key: PORT
+        value: 3001
+      # The migration superuser connection. Render provisions and manages
+      # this; `pnpm db:migrate` uses it to create the RLS-enforced
+      # `aerolith_app` role that the running API actually connects as.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aerolith-db
+          property: connectionString
+      # Password for the app role `db:migrate` creates. Render generates and
+      # stores a real secret here — nothing to type in.
+      - key: APP_DB_PASSWORD
+        generateValue: true
+      # Password for the SELECT-only cross-tenant role, same deal. Its presence
+      # is what turns `aerolith_platform` from NOLOGIN into a role that can
+      # actually connect (see packages/kernel/scripts/migrate.ts) — a
+      # deployment with no operator surface simply omits it and then no
+      # credential anywhere can read across tenants.
+      #
+      # Deliberately set HERE and not on aerolith-operator: this is the service
+      # that runs migrations, so this is the service that creates the role.
+      # aerolith-operator gets the assembled connection string instead, and
+      # never the owner URL that could grant itself more.
+      - key: PLATFORM_DB_PASSWORD
+        generateValue: true
+      # Cannot be filled in until aerolith-db exists and its host is known.
+      # See step 5 in the deploy instructions: same host/port/database as
+      # DATABASE_URL above, but user `aerolith_app` and this APP_DB_PASSWORD.
+      - key: DATABASE_APP_URL
+        sync: false
+      # The web service's CORS origin. Cannot be filled in until the web
+      # service below exists and Render has assigned it a hostname.
+      - key: WEB_URL
+        sync: false
+
+  - type: web
+    name: aerolith-web
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/web/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Without this, the server-side `fetch()` calls in apps/web/src/lib/api.ts
+      # (every page load, sign-in included) fail with an empty
+      # `AggregateError` wrapping ECONNREFUSED or ETIMEDOUT — Node 18+'s
+      # default "Happy Eyeballs" dual-stack connection algorithm tries the
+      # target's IPv6 address first, and IPv6 resolves via DNS but is not
+      # actually routable from inside this container. This disables that
+      # algorithm and falls back to trying the first resolved address
+      # directly, which is the documented fix (not `--dns-result-order`,
+      # which undici's own DNS resolution ignores). Confirmed via
+      # aerolith-web's own logs showing exactly this AggregateError/
+      # ECONNREFUSED pattern on every sign-in attempt.
+      - key: NODE_OPTIONS
+        value: --no-network-family-autoselection
+      # Cannot be filled in until aerolith-api exists and Render has
+      # assigned it a hostname.
+      - key: AEROLITH_API_URL
+        sync: false
+
+  # The VENDOR's surface — every customer in one list, and their entitlements.
+  # Not a page inside aerolith-web behind a permission flag: a different
+  # audience, a different identity realm (platform.operator, TOTP required) and
+  # a different database role. Anyone who does not want a cross-tenant surface
+  # in their deployment deletes this block and omits PLATFORM_DB_PASSWORD above,
+  # and then no process anywhere holds a credential that can read every tenant.
+  #
+  # Read-only by construction, not by convention: it connects as
+  # `aerolith_platform`, which Postgres permits SELECT and nothing else across
+  # the tenant schemas, and `assertPlatformRole` refuses to serve a single page
+  # if the connection it was handed can write `kernel.tenant`. Pointing
+  # DATABASE_PLATFORM_URL at DATABASE_URL or DATABASE_APP_URL to "make it work"
+  # fails loudly rather than silently succeeding with far more access.
+  - type: web
+    name: aerolith-operator
+    runtime: docker
+    plan: free
+    dockerfilePath: apps/operator/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Same reasoning as aerolith-api's PORT above: the Dockerfile EXPOSEs
+      # 3002 and Next's standalone server reads PORT, so setting both to the
+      # same number removes any dependence on Render's port auto-detection.
+      - key: PORT
+        value: 3002
+      # Cannot be filled in until aerolith-db exists and PLATFORM_DB_PASSWORD
+      # has been generated on aerolith-api. Same host/port/database as the
+      # API's DATABASE_URL, but user `aerolith_platform` and that password.
+      # See the deploy steps.
+      #
+      # This service gets NO other database variable. It has no DATABASE_URL and
+      # no DATABASE_APP_URL, and that absence is the whole security posture:
+      # what a compromised operator process can do is bounded by Postgres, not
+      # by this app being careful.
+      - key: DATABASE_PLATFORM_URL
+        sync: false

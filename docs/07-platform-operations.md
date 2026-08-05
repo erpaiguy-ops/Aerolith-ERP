@@ -1,0 +1,461 @@
+# 07 — Platform operations
+
+The vendor's own view of the estate: who the customers are, what they are
+entitled to, what they are paying for, and how a new one comes into existence.
+
+This does not exist today. Nothing in the codebase creates a tenant — `grep`
+for an insert into `kernel.tenant` outside the seed scripts returns nothing —
+so onboarding a customer currently means writing SQL by hand. And nothing can
+read across tenants, by design: every route resolves a tenant from the session
+and RLS enforces it in Postgres. Those two facts are the whole of this
+document. Phase 5 in the roadmap already names "tenant billing and self-serve
+onboarding"; this is what that entails.
+
+---
+
+## The one decision everything else follows from
+
+**A platform operator is not a user with an extra permission.** It is a
+different kind of principal, in a different realm, reached through a different
+door.
+
+The tempting version is an `is_platform_owner` boolean on `kernel.app_user` and
+a permission check on some new routes. Resist it. That design puts every tenant
+user exactly one boolean away from reading every customer's commercial data,
+and puts the check that stops them in application code — the layer this system
+has consistently refused to trust alone. RLS exists precisely because "the
+application will remember to filter" is not a security model.
+
+So: separate identity table, separate session table, separate cookie, separate
+authentication path, separate database role, separate deployed surface. The
+cost is real duplication. The benefit is that a bug in the tenant application
+cannot escalate into the estate, because the tenant application holds no
+credential that can read it.
+
+**Blast radius is the thing to keep in mind throughout.** A bug in the
+Contracts module inconveniences one customer. A bug here exposes all of them to
+each other, or to an attacker. Everything below is more conservative than it
+would be for a tenant-facing feature, deliberately.
+
+---
+
+## Stage 1 — Read-only estate visibility
+
+The smallest thing that answers the original question, and the right place to
+prove the isolation model before anything can write.
+
+### The database role
+
+Cross-tenant reads need a role the RLS policies recognise. Two ways:
+
+- `BYPASSRLS` on a new role. Simple, and on a managed Postgres you may not be
+  able to grant it — it needs superuser, which Render's provisioned role is not
+  (proved the hard way: `seed-demo.ts` connecting as the owner hit
+  `new row violates row-level security policy`, so the owner is subject to RLS
+  like anyone else).
+- **Explicit policies naming the role.** Generate a second set alongside the
+  existing ones in `packages/kernel/src/db/rls.ts` —
+  `CREATE POLICY platform_read ON <table> FOR SELECT TO aerolith_platform USING (true)`.
+
+Take the second. It needs no superuser, it is generated from the same list that
+generates tenant isolation so a new table cannot be forgotten by one and
+remembered by the other, and it is greppable: `SELECT` only, no `WITH CHECK`,
+so the role provably cannot write. `buildRlsStatementsFor` already takes an
+options object; this is another field on it.
+
+The connection string (`DATABASE_PLATFORM_URL`) belongs only to the operator
+service. It must not appear in the tenant API's environment — if it is not
+there, no bug in that codebase can reach it.
+
+### The reporting model
+
+Everything needed is already in the schema:
+
+| Question | Source |
+|---|---|
+| How many customers | `kernel.tenant`, `status`, `deleted_at` |
+| Trials about to lapse | `kernel.tenant.trial_ends_at` |
+| Which modules each has | `kernel.tenant_module.module_key`, `status` |
+| Entitlement expiry | `kernel.tenant_module.expires_on` |
+| Seat/usage caps | `kernel.tenant_module.limits` (jsonb) |
+| How many users | `kernel.membership`, `status = 'active'` |
+| Whether anyone is using it | `kernel.session`, `kernel.audit_log.occurred_at` |
+
+Note what is *not* there: no plan, no price, no invoice, no subscription
+period. "Plan" today is implicit — the set of enabled modules plus a jsonb of
+limits. Stage 3 makes it explicit; Stage 1 should report what exists rather
+than invent a vocabulary the data cannot back.
+
+### Deliverable — built
+
+Shipped as a command rather than a web page, deliberately. The isolation model
+is the part worth getting right first, and a CLI proves all of it without also
+standing up an operator identity realm, a second session mechanism and a login
+form — each of which is somewhere a cross-tenant surface can go wrong. The
+surface comes with Stage 4; this is the model underneath it.
+
+```
+PLATFORM_DB_PASSWORD=…   # once, at migration time, to enable the role
+DATABASE_PLATFORM_URL=postgres://aerolith_platform:…@host/db pnpm estate
+pnpm estate --json       # same data, for piping somewhere
+```
+
+Reports tenant count by status, per-tenant status, active users, module counts
+and trial expiry; module take-up across the estate; and trials ending or
+already lapsed. `listEstate`, `getEstateTenant` and `summariseEstate` in
+`packages/kernel/src/platform/estate.ts` are the read model — a Stage 4 web
+surface should call those rather than write its own queries.
+
+Two things it refuses to do, both verified against a real database:
+
+- **Write anything.** `INSERT`, `UPDATE` and `DELETE` as the platform role are
+  refused by Postgres, not by application code.
+- **Run as the wrong role.** `assertPlatformRole` checks the connection cannot
+  write to `kernel.tenant` before reading a single row, and aborts if it can.
+  Pointing `DATABASE_PLATFORM_URL` at the app or owner credential would
+  otherwise work perfectly — producing correct reports from a connection that
+  was never supposed to be capable of more, which is exactly the state nobody
+  notices until it matters.
+
+The role is created on every migration, `NOLOGIN` unless `PLATFORM_DB_PASSWORD`
+is set. It has to exist regardless, because `CREATE POLICY … TO <role>` naming
+a role Postgres does not know is a hard error rather than a no-op — a
+deployment with no operator surface would otherwise fail to migrate at all. A
+role that cannot log in is inert, so enabling the surface later is only setting
+the password: no policy or grant changes.
+
+---
+
+## Stage 2 — Provisioning
+
+The gap that matters more than reporting: today a new customer cannot be
+created through any code path.
+
+Creating a tenant is not one insert. It is:
+
+1. `kernel.tenant` — slug, name, country, currency, timezone, status.
+2. `adoptCountry` — the tenant's own copies of tax codes, requirements,
+   holidays and rule values. Without this, contract terms and tax resolve to
+   nothing.
+3. The owner `kernel.app_user` and their `kernel.membership` with
+   `is_owner = true`.
+4. `kernel.tenant_module` rows for what they have bought.
+5. `provisionSeries` for each enabled module's declared number series.
+6. An invitation email so the owner can set their own password — the operator
+   must never choose a customer's credential.
+
+All of it in one transaction. A half-provisioned tenant is worse than none: the
+owner logs in and every screen fails on something absent, and diagnosing that
+costs more than the signup was worth.
+
+### Built
+
+```
+DATABASE_APP_URL=… pnpm provision create \
+  --slug acme --name "Acme Joinery" --country AE --currency AED \
+  --timezone Asia/Dubai --owner-email owner@acme.test --owner-name "A. Owner" \
+  --modules projects,contracts,inventory [--trial-days 30] [--password …]
+
+DATABASE_APP_URL=… pnpm provision suspend|resume|delete --tenant <uuid>
+```
+
+`apps/api/src/provisioning.ts`, and `apps/api` rather than the kernel on
+purpose: enabling a module needs the module registry, which is
+application-level by design — the kernel must not know a module exists. Putting
+it in the kernel would either invert that dependency or fork `enableModule`'s
+dependency resolution, and a second copy would drift.
+
+**No new credential.** This writes, so the SELECT-only platform role cannot be
+used; it connects as `aerolith_app` and writes exactly the way the application
+does — `kernel.tenant` and `kernel.app_user` carry no RLS policy and are written
+unguarded, then everything tenant-scoped goes through `withTenantId` for the
+tenant just created. The isolation model is untouched, which is the point. The
+plan above says "a separate credential"; that turned out to be unnecessary, and
+inventing one would have meant a second way to write across tenants for no gain.
+
+**Not one transaction**, which the plan also assumed. `kernel.tenant` has to be
+committed before the tenant-scoped writes can see it — `withTenantId` opens its
+own transaction, and an uncommitted tenant row is invisible to it. So the shape
+is create-then-populate, with a compensating delete if a later step fails. That
+delete is narrow on purpose: it removes the tenant and, only if this run created
+it, the owner account. An owner who already had an account is never deleted,
+because that would remove their access to a different workspace.
+
+**The initial password is generated and printed once.** There is no mail
+transport — `addMember` already says so — so an invitation link would be a link
+nobody receives. Generating beats letting an operator choose, because the one
+they choose is memorable, reused across customers, and sometimes still in place
+a year later. When the email already had an account, the output says so
+explicitly: it keeps its existing password, and an operator who assumed
+otherwise would hand the customer a credential that does not work.
+
+### What this found
+
+The first provisioned owner could not log in. `loadMemberships` admitted
+`status === 'active'` alone, under a comment saying a *suspended* workspace is
+not one you can log into — the intent and not the code. `trial` is the schema
+DEFAULT for a new tenant, so every tenant created through the schema began in a
+state nobody could sign in to, and a trial customer was locked out of their own
+trial. Now `SIGN_IN_STATUSES`, exported and tested from both sides.
+
+`past_due` is deliberately still excluded, and deliberately worth revisiting:
+nothing sets it today, so the choice is inert, and locking a customer out the
+moment an invoice is late is harsher than most would choose. Stage 3 has to
+decide that on purpose rather than inherit it.
+
+**Suspension and deletion** belong here too, and are the operations most worth
+getting right, because they are the ones done in anger. Suspending sets
+`tenant.status`; `loadMemberships` already refuses to log a user into a
+non-active tenant, so suspension takes effect on the next request without any
+new enforcement. Deletion should be a soft delete with a retention window and
+an explicit, separately-authorised purge — a customer who leaves and comes back
+in a month is a customer, and a purge that runs on the wrong id is unrecoverable.
+
+---
+
+## Stage 3 — Plans and subscriptions
+
+Only now is there enough shape to make "plan" mean something.
+
+```
+platform.plan            code, name, module keys, default limits, is_public
+platform.subscription    tenant, plan, period start/end, status, seats
+```
+
+The important design point: **`kernel.tenant_module` stays the runtime read
+path.** `modulesForTenant` reads it on every request and it is already indexed
+and correct; a subscription model that made the request path join through
+billing tables would be a performance regression bought with nothing. Instead
+the subscription is the source of truth and *writes* `tenant_module` when it
+changes — so the runtime keeps its cheap read and the commercial state has one
+authoritative home.
+
+That also means an operator can still grant a module outside a plan (a
+proof-of-concept, a goodwill extension) without the model fighting them. It
+should be visible that they did — a `source` column distinguishing "from plan"
+from "granted manually" is a small thing that answers a real question later.
+
+**What this stage is not.** No payment processing, no invoicing, no dunning.
+Those are a product decision and probably a third-party integration, not
+schema. This stage answers "what did we agree to sell them", which is the part
+that has to live in the data model regardless of who takes the money.
+
+---
+
+## Stage 4 — The surface
+
+A separate Next application (`apps/operator`), not a route group in the tenant
+app.
+
+Reasons, in order of weight: the auth realm is different, so sharing a codebase
+means two session mechanisms in one middleware and one mistake away from
+crossing them; it can be deployed on a hostname that is not the customers', or
+behind a VPN, or not deployed at all in environments that do not need it; and
+the tenant application's bundle then provably contains no operator code.
+
+Shared UI components can move to a package if the duplication becomes annoying.
+Do not do that pre-emptively — the two surfaces will diverge more than expected,
+and a shared component library that serves two masters gets worse at both.
+
+### Authentication — built
+
+The realm, not yet the pages. Establishing it first is the point: retrofitting a
+realm split after routes already live in the tenant app is the migration nobody
+wants to do.
+
+```
+DATABASE_URL=… pnpm operator create --email ops@vendor.test --name "Ops Person"
+DATABASE_URL=… pnpm operator confirm --email ops@vendor.test --code 123456
+DATABASE_URL=… pnpm operator list|enable|disable
+```
+
+**Its own Postgres schema, and that is the load-bearing part.** Grants are
+per-schema: `aerolith_app` holds SELECT/INSERT/UPDATE/DELETE on ALL TABLES IN
+SCHEMA kernel, so putting `operator` there would have let the tenant
+application create an operator account — the exact escalation the split exists
+to prevent, handed over by a blanket grant nobody would think to re-read. In
+`platform` the application role has no privileges at all, verified: it cannot
+even resolve the schema name.
+
+**Three credentials, three capabilities**, none of which is "all of them":
+
+| Role | Tenant data | Estate | Operator identity |
+|---|---|---|---|
+| `aerolith_app` | read/write, RLS-scoped | — | none at all |
+| `aerolith_platform` | SELECT only, all tenants | read | sign-in bookkeeping only |
+| owner (`DATABASE_URL`) | migrations | — | create, confirm, enable/disable |
+
+`aerolith_platform` may write exactly two tables — `operator_session` and
+`operator_action` — plus a COLUMN-scoped update on `operator` limited to
+`last_login_at`, `failed_login_count` and `locked_until`. `password_hash`,
+`totp_secret`, `totp_confirmed_at`, `email` and `is_active` are all outside it,
+so a compromised operator session cannot rotate its own credential, re-enrol a
+second factor onto a device it controls, reactivate a disabled account, or mint
+a second operator. Those need the owner credential, which lives with whoever
+administers the database rather than in a running web process.
+
+That column grant was not in the design — running the login flow as the
+platform role failed with `permission denied for table operator`, because the
+design was right and the grants had not caught up with it.
+
+**TOTP is mandatory and implemented, not depended on.** Forty lines of HMAC and
+base32 against a new supply-chain dependency in the one place a compromised
+package would be worst. Proved against all six RFC 6238 vectors including the
+post-2038 one, so it is correct by specification rather than by trust.
+Enrolment is two steps — create, then confirm with a live code — because a
+mistyped secret otherwise produces an account with a second factor nobody
+holds, discovered at the worst possible moment. An unconfirmed account cannot
+sign in.
+
+**Sessions are eight hours and do not slide.** Shorter than the tenant
+application's fourteen days by two orders of magnitude, because the risks are
+not comparable: a stale tenant session exposes one company's own data to
+someone who already worked there; a stale operator session exposes every
+customer to whoever finds the laptop.
+
+### The pages — built
+
+`apps/operator`, a separate Next application on port 3002 with its own
+Dockerfile. Sign in with email, password and a TOTP code; the estate list with
+customer counts, status, users, entitlements and lapsed trials; a per-customer
+page with entitlements and lifecycle.
+
+**Read-only by construction rather than by discipline.** It connects only as
+`aerolith_platform`, and `assertPlatformRole` runs at startup and refuses to
+serve a page if that connection can write to `kernel.tenant` — so pointing
+`DATABASE_PLATFORM_URL` at the app or owner credential fails loudly instead of
+producing a working application with a silently enormous blast radius. There
+are no buttons that change anything: the tenant page prints the `pnpm provision`
+command instead, so the path forward is obvious rather than absent.
+
+**Deliberately not a customer data browser.** The platform role can read every
+tenant's contracts, projects and money, which is exactly why these pages show
+none of it. "The vendor can technically see everything" and "the vendor's
+support tool shows everything" are different promises, and only the second one
+is ours to make.
+
+**The palette is colder and darker than apps/web's**, which is a safety feature
+rather than decoration: an operator with both surfaces open is one tab-switch
+from confusing "my workspace" with "every customer's data".
+
+Every screen writes to `operator_action` before rendering — `estate.read` with
+the number of customers it exposed, `tenant.read` naming the customer. That is
+the entry that answers "has anyone at the vendor looked at us".
+
+One build-time gotcha if this is extended: `middleware.ts` runs on the EDGE
+runtime, so it must not import anything reaching the kernel. The session
+cookie's name lives in its own `lib/cookie.ts` for exactly that reason —
+importing it from `lib/session` pulled `pg` and `node:url` into the edge bundle
+and failed the build with a module-not-found several layers deep that named the
+kernel's localisation loader and gave no hint that middleware was the cause.
+
+### Deploying it — built
+
+`render.yaml` carries a third web service, `aerolith-operator`. Three things
+about how it is wired are decisions rather than details:
+
+**`PLATFORM_DB_PASSWORD` is set on `aerolith-api`, not on the operator
+service.** That is the service that runs migrations, and the password's presence
+is what turns `aerolith_platform` from `NOLOGIN` into a role that can connect at
+all. The operator service receives only the assembled
+`DATABASE_PLATFORM_URL` — no `DATABASE_URL`, no `DATABASE_APP_URL`. What a
+compromised operator process can reach is bounded by Postgres rather than by
+this application being careful.
+
+**Omitting the service is a supported configuration.** Delete the block and
+leave `PLATFORM_DB_PASSWORD` unset, and the role stays inert: no process
+anywhere holds a credential that can read across tenants, and nothing else in
+the deployment changes.
+
+**The first operator is created by `operator bootstrap`, from the API service's
+boot script.** A managed platform's free tier usually has no shell, so the
+`create` + `confirm` pair — which assumes a terminal and a psql-reachable
+database — cannot be run, and without an alternative the deployment produces a
+login page nobody can get past. Setting `BOOTSTRAP_OPERATOR_EMAIL` (and
+optionally `BOOTSTRAP_OPERATOR_NAME`) on `aerolith-api` creates the account on
+the next boot and prints the password and enrolment URI to the deploy log.
+It is idempotent — an existing account is left alone — and
+`BOOTSTRAP_OPERATOR_RESET` replaces it, revoking its sessions, which is also the
+rotation path.
+
+**The reset applies once per value, not once per boot.** That distinction is the
+whole difference between a rotation switch and a trap. The variable is set in a
+dashboard and the boot script re-reads it on every container start — which on a
+free tier means every wake from idle, several times a day. A presence-only
+switch left set would therefore regenerate the password and TOTP secret behind
+the operator's back on every wake, and the symptom would be an authenticator
+that "randomly stops working", diagnosed against a login page whose error
+message is deliberately uninformative. Each applied value is recorded in
+`operator_action`, so setting it once rotates once, leaving it set does nothing,
+and rotating again means changing the value (`rotate-august`, `2`, anything).
+The marker is not a workaround living in the audit table: a credential rotation
+is exactly the sort of vendor action that table exists to record.
+
+Two honest costs, neither of them hidden:
+
+- The account is created **already confirmed**, unlike `create`. The confirm
+  round-trip exists to catch a secret mistyped into an authenticator by hand;
+  here the secret is machine-generated and delivered as a scannable URI, so
+  there is nothing to catch, and requiring one would mean a second deploy
+  carrying a six-digit code in an environment variable.
+- The password and TOTP secret are written to the **deployment platform's log
+  store**, which retains them and which more people can usually read than can
+  reach the database. That is a real downgrade from running `create` on a
+  laptop, and it is the right trade only because the alternative is no operator
+  surface at all — and because `--reset` means it can be undone rather than
+  lived with.
+
+The audit trail survives a reset: `operator_action.operator_id` is a plain
+column rather than a foreign key, precisely so deleting an operator never
+deletes the record of what they did. Verified against a real database — three
+sign-ins recorded before a reset were all still present afterwards, while the
+old session and the old password had both stopped working, and repeating the
+same reset value twice more left the account untouched both times.
+
+---
+
+## Auditing, and why it is not optional here
+
+`kernel.audit_log` is tenant-scoped and append-only, which is right for tenant
+activity and useless for this: an operator action spans tenants, or targets one
+without acting inside it.
+
+`platform.operator_action` — append-only, same `REVOKE UPDATE, DELETE` treatment
+the existing append-only tables get, recording who, when, what, which tenant,
+and from where. **Reads are included, not just writes.** In a normal application
+auditing reads is overkill; in one where an employee can read every customer's
+commercial position, "who looked at what" is the entire point. It is also what
+makes an honest answer possible when a customer asks whether anyone at the
+vendor has been in their data.
+
+---
+
+## Sequencing, and what to build first
+
+Stage 1 is worth building alone — it answers the immediate question, and it
+forces the isolation model (separate role, separate policies, separate
+credential) to be built and reviewed while the surface is read-only and the
+consequences of getting it wrong are smallest.
+
+Stage 2 has the highest practical value: it removes hand-written SQL from
+customer onboarding, which is both a bottleneck and the single most likely
+source of a corrupted tenant.
+
+Stage 3 only pays off once there are enough customers on enough different terms
+that the implicit model stops fitting. Before that it is a schema you maintain
+for a spreadsheet's worth of information. Build it when the second or third
+pricing conversation is awkward, not before.
+
+Stage 4's separation should be established as soon as *anything* operator-facing
+exists — retrofitting a realm split after routes are already living in the
+tenant app is exactly the migration nobody wants to do.
+
+## The risk worth naming
+
+Every stage here increases the number of ways a vendor employee, or someone
+holding their credential, can read customer data. That is inherent to the
+feature — you cannot support customers you cannot see — but it should be a
+deliberate exchange rather than a side effect. The controls that make it
+defensible are the separate credential, the SELECT-only policy set, the second
+factor, and the read audit. None of them is the sort of thing that gets added
+later once the surface is useful and busy.
